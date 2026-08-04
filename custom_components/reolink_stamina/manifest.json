@@ -1,0 +1,31 @@
+{
+  "domain": "reolink_stamina",
+  "name": "Reolink Stamina",
+  "codeowners": [
+    "@marl1w"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "dhcp": [
+    {
+      "hostname": "reolink*"
+    },
+    {
+      "macaddress": "EC71DB*"
+    }
+  ],
+  "after_dependencies": [
+    "reolink"
+  ],
+  "documentation": "https://github.com/marl1w/reolink-stamina-ha",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/marl1w/reolink-stamina-ha/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}

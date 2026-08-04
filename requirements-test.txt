@@ -1,0 +1,14 @@
+# Test dependencies.
+#
+# reolink-aio MUST be pinned to the version Home Assistant ships, not PyPI's latest.
+# Installing a newer one lets code depend on attributes real installs lack, which is how
+# the 0.1.0 `is_dual_lens` regression shipped. Home Assistant 2026.7.4 pins 0.21.4.
+# Keep this in sync with SUPPORTED_REOLINK_AIO in tests/test_upstream_contract.py.
+pytest-homeassistant-custom-component
+reolink-aio==0.21.4
+home-assistant-frontend
+
+# Importing the Reolink integration's views pulls in the camera component,
+# which imports turbojpeg at module load. Only the Python package is needed;
+# the native library is not, because nothing instantiates a decoder.
+PyTurboJPEG

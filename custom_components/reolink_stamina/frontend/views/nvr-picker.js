@@ -1,0 +1,418 @@
+/**
+ * NVR and camera selection.
+ *
+ * Everything here comes from the official Reolink integration. NVRs that exist but are
+ * not usable are shown with the reason rather than hidden, so a missing recorder is
+ * never a silent mystery.
+ */
+
+import { adoptStyles, el, icon, reconcile } from "../dom.js";
+import { SHARED } from "../theme.js";
+
+const STATUS_TEXT = {
+  not_connected: { label: "Not connected", hint: "Home Assistant cannot reach this device right now." },
+  setup_error: { label: "Setup failed", hint: "Check the Reolink integration for this device." },
+  not_loaded: { label: "Disabled", hint: "This Reolink entry is disabled in Home Assistant." },
+  incompatible: {
+    label: "Unsupported",
+    hint: "This panel could not read the Reolink integration for this device.",
+  },
+};
+
+const STYLES = /* css */ `
+:host { display: block; }
+
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 20px 96px;
+}
+
+.intro { margin-bottom: 24px; }
+.intro p { margin: 8px 0 0; color: var(--rv-text-dim); line-height: 1.55; max-width: 68ch; }
+
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.nvr { padding: 0; overflow: hidden; }
+.nvr--off { opacity: 0.62; }
+
+.nvr__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--rv-line);
+}
+.nvr__head--plain { border-bottom: none; }
+
+.nvr__title { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.nvr__meta { font-size: 0.78rem; color: var(--rv-text-dim); }
+
+.nvr__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--rv-radius-pill);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--rv-text-dim);
+}
+.nvr__toggle:hover { background: color-mix(in srgb, var(--rv-text) 8%, transparent); }
+
+.cams { display: flex; flex-direction: column; padding: 6px; }
+
+.cam {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--rv-radius-sm);
+  text-align: left;
+  transition: background 120ms var(--rv-ease);
+}
+.cam:hover:not(:disabled) { background: color-mix(in srgb, var(--rv-accent) 9%, transparent); }
+.cam__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.cam__name { font-size: 0.92rem; font-weight: 500; }
+.cam__ai { display: flex; gap: 5px; flex-wrap: wrap; }
+.cam__ai span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--rv-text-dim);
+}
+.cam--disabled { opacity: 0.5; }
+
+.check {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid color-mix(in srgb, var(--rv-text) 32%, transparent);
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  transition: background 120ms var(--rv-ease), border-color 120ms var(--rv-ease);
+}
+.check[data-state="on"], .check[data-state="mixed"] {
+  background: var(--rv-accent);
+  border-color: var(--rv-accent);
+  color: var(--rv-text-on-accent);
+}
+.check .icon { --mdc-icon-size: 15px; width: 15px; height: 15px; }
+.check[data-state="off"] .icon { display: none; }
+
+.warn {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0 16px 14px;
+  padding: 10px 12px;
+  border-radius: var(--rv-radius-sm);
+  background: color-mix(in srgb, var(--rv-warn) 14%, transparent);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.warn .icon { color: var(--rv-warn); }
+
+.status-hint { padding: 0 16px 16px; font-size: 0.83rem; color: var(--rv-text-dim); line-height: 1.45; }
+
+.footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding: 14px 4px;
+  background: linear-gradient(to top, var(--rv-bg) 60%, transparent);
+}
+`;
+
+export class NvrPicker extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    adoptStyles(this.shadowRoot, SHARED + STYLES);
+    this._built = false;
+  }
+
+  set store(store) {
+    this._store = store;
+    this.render();
+  }
+
+  get store() {
+    return this._store;
+  }
+
+  render() {
+    if (!this._store) return;
+    if (!this._built) this._build();
+    this._update();
+  }
+
+  _build() {
+    const root = el("div", { class: "wrap" });
+
+    this._intro = el("div", { class: "intro" });
+    this._grid = el("div", { class: "grid" });
+    this._emptyHost = el("div");
+
+    this._count = el("div", { class: "small dim" });
+    this._continue = el(
+      "button",
+      {
+        class: "btn btn--primary",
+        onclick: () => this._store.completeSetup(),
+      },
+      "Review events",
+      icon("mdi:arrow-right")
+    );
+
+    this._footer = el(
+      "div",
+      { class: "footer" },
+      this._count,
+      el("div", { class: "spacer" }),
+      this._continue
+    );
+
+    root.append(this._intro, this._emptyHost, this._grid, this._footer);
+    this.shadowRoot.append(root);
+    this._built = true;
+  }
+
+  _update() {
+    const store = this._store;
+
+    this._intro.replaceChildren(
+      el("h1", { class: "h1", text: "Choose what to review" }),
+      el("p", {
+        text:
+          "These are the Reolink NVRs found through the Reolink integration. Pick the cameras you want in your event timeline — you can change this at any time.",
+      })
+    );
+
+    // Empty and error states
+    this._emptyHost.replaceChildren();
+    if (store.loadingNvrs) {
+      this._grid.replaceChildren(
+        ...[0, 1].map(() => el("div", { class: "card skeleton", style: { height: "220px" } }))
+      );
+      this._footer.style.display = "none";
+      return;
+    }
+
+    if (store.nvrError) {
+      this._emptyHost.append(
+        el(
+          "div",
+          { class: "empty" },
+          icon("mdi:alert-circle-outline"),
+          el("div", { class: "empty__title", text: "Could not load your NVRs" }),
+          el("div", { class: "empty__body", text: store.nvrError })
+        )
+      );
+      this._grid.replaceChildren();
+      this._footer.style.display = "none";
+      return;
+    }
+
+    if (store.nvrs.length === 0) {
+      this._emptyHost.append(
+        el(
+          "div",
+          { class: "empty" },
+          icon("mdi:nas"),
+          el("div", { class: "empty__title", text: "No Reolink NVR found" }),
+          el("div", {
+            class: "empty__body",
+            text:
+              "Set up an NVR in the official Reolink integration and it will appear here. Standalone cameras and Home Hubs are not supported by this panel.",
+          })
+        )
+      );
+      this._grid.replaceChildren();
+      this._footer.style.display = "none";
+      return;
+    }
+
+    this._footer.style.display = "";
+    reconcile(
+      this._grid,
+      store.nvrs,
+      (nvr) => nvr.entry_id,
+      (nvr) => this._createCard(nvr),
+      (node, nvr) => this._updateCard(node, nvr)
+    );
+
+    const selected = store.cameras.length;
+    this._count.textContent =
+      selected === 0
+        ? "No cameras selected"
+        : `${selected} camera${selected === 1 ? "" : "s"} selected`;
+    this._continue.disabled = selected === 0;
+  }
+
+  _createCard(nvr) {
+    const refs = {};
+    const card = el("section", { class: "card nvr" });
+
+    refs.title = el("div", { class: "h2 truncate" });
+    refs.meta = el("div", { class: "nvr__meta" });
+    refs.badge = el("span");
+    refs.toggle = el("button", {
+      class: "nvr__toggle",
+      onclick: () => this._store.toggleNvr(nvr.entry_id),
+    });
+    refs.check = el("span", { class: "check" }, icon("mdi:check", "icon--sm"));
+    refs.toggle.append(refs.check, el("span", { text: "All" }));
+
+    refs.head = el(
+      "header",
+      { class: "nvr__head" },
+      el("div", { class: "nvr__title" }, refs.title, refs.meta, refs.badge),
+      refs.toggle
+    );
+
+    refs.warn = el("div");
+    refs.cams = el("div", { class: "cams" });
+    refs.hint = el("div", { class: "status-hint" });
+
+    card.append(refs.head, refs.warn, refs.cams, refs.hint);
+    card.__refs = refs;
+    return card;
+  }
+
+  _updateCard(card, nvr) {
+    const refs = card.__refs;
+    const store = this._store;
+    const usable = nvr.status === "ok";
+
+    card.classList.toggle("nvr--off", !usable);
+    refs.title.textContent = nvr.name;
+
+    const meta = [nvr.model, nvr.sw_version].filter(Boolean).join(" · ");
+    refs.meta.textContent = meta;
+    refs.meta.style.display = meta ? "" : "none";
+
+    // Status
+    refs.badge.replaceChildren();
+    if (!usable) {
+      const status = STATUS_TEXT[nvr.status] || STATUS_TEXT.not_loaded;
+      refs.badge.append(
+        el("span", { class: "badge badge--warn", style: { marginTop: "4px" } }, status.label)
+      );
+      refs.hint.textContent = status.hint;
+      refs.hint.style.display = "";
+    } else {
+      refs.hint.textContent = "";
+      refs.hint.style.display = "none";
+    }
+
+    refs.toggle.style.display = usable ? "" : "none";
+    refs.head.classList.toggle("nvr__head--plain", !usable);
+
+    // Warnings that affect what the user can expect to find
+    refs.warn.replaceChildren();
+    if (usable && !nvr.has_storage) {
+      refs.warn.append(
+        el(
+          "div",
+          { class: "warn" },
+          icon("mdi:harddisk-remove"),
+          el("span", {
+            text:
+              "No storage detected on this NVR. Without a working HDD there are no recordings to review.",
+          })
+        )
+      );
+    }
+    if (usable && !nvr.reports_triggers) {
+      refs.warn.append(
+        el(
+          "div",
+          { class: "warn" },
+          icon("mdi:tag-off-outline"),
+          el("span", {
+            text:
+              "This NVR does not report event types, so recordings will be listed without person, vehicle or animal labels.",
+          })
+        )
+      );
+    }
+
+    // Select-all state
+    const state = store.isNvrFullySelected(nvr.entry_id)
+      ? "on"
+      : store.isNvrPartiallySelected(nvr.entry_id)
+        ? "mixed"
+        : "off";
+    refs.check.dataset.state = state;
+    refs.toggle.setAttribute("aria-pressed", state === "on" ? "true" : "false");
+
+    // Cameras
+    if (!usable) {
+      refs.cams.replaceChildren();
+      return;
+    }
+
+    reconcile(
+      refs.cams,
+      nvr.cameras,
+      (camera) => camera.channel,
+      (camera) => this._createCameraRow(nvr, camera),
+      (node, camera) => this._updateCameraRow(node, nvr, camera)
+    );
+  }
+
+  _createCameraRow(nvr, camera) {
+    const refs = {};
+    refs.check = el("span", { class: "check" }, icon("mdi:check", "icon--sm"));
+    refs.name = el("span", { class: "cam__name truncate" });
+    refs.ai = el("div", { class: "cam__ai" });
+
+    const row = el(
+      "button",
+      {
+        class: "cam",
+        onclick: () => {
+          if (camera.can_playback) this._store.toggleCamera(nvr.entry_id, camera.channel);
+        },
+      },
+      refs.check,
+      el("div", { class: "cam__body" }, refs.name, refs.ai)
+    );
+    row.__refs = refs;
+    return row;
+  }
+
+  _updateCameraRow(row, nvr, camera) {
+    const refs = row.__refs;
+    const selected = this._store.isCameraSelected(nvr.entry_id, camera.channel);
+
+    refs.name.textContent = camera.name;
+    refs.check.dataset.state = selected ? "on" : "off";
+    row.setAttribute("aria-pressed", selected ? "true" : "false");
+    row.disabled = !camera.can_playback;
+    row.classList.toggle("cam--disabled", !camera.can_playback);
+
+    refs.ai.replaceChildren();
+    if (!camera.can_playback) {
+      refs.ai.append(el("span", { text: "Playback not supported" }));
+    } else if (camera.ai_types?.length) {
+      refs.ai.append(...camera.ai_types.map((type) => el("span", { text: type })));
+    }
+  }
+}
+
+// Guarded: Home Assistant may import this module more than once (after an
+// update, or from a cached copy), and a duplicate define() throws and takes the
+// whole panel down with it.
+if (!customElements.get("reolink-nvr-picker")) customElements.define("reolink-nvr-picker", NvrPicker);

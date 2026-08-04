@@ -1,0 +1,160 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Reolink Stamina",
+        "description": "Adds a **Reolink Events** panel to the sidebar for reviewing events recorded by your Reolink NVRs.\n\nThere is nothing to configure: NVRs and cameras are discovered through the official Reolink integration, and no camera credentials are stored."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Reolink Stamina is already set up.",
+      "no_nvr": "No Reolink NVR is set up in the Reolink integration. Reolink Stamina only works with a recorder, so there is nothing for it to show yet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Reolink Stamina options",
+        "data": {
+          "browse_stream": "Stream used for browsing",
+          "split_minutes": "Event segment length",
+          "pre_roll": "Estimated pre-roll",
+          "hide_timer": "Show detections only",
+          "require_admin": "Restrict the panel to administrators",
+          "event_lead": "Start playback before the detection",
+          "clip_lead": "Clip: seconds before the first detection",
+          "clip_tail": "Clip: seconds after the last detection"
+        },
+        "data_description": {
+          "browse_stream": "Low resolution searches faster. Playback can still use high resolution.",
+          "split_minutes": "How finely long continuous recordings are split into separate events. Shorter gives sharper event boundaries but costs more searching. Set to 0 to list one event per recording file.",
+          "pre_roll": "Where to place the trigger marker for cameras that do not report their own pre-record time. Shown as an estimate.",
+          "hide_timer": "On by default: the timeline shows person, vehicle and animal detections, with motion available as a filter. Turn off to also include scheduled and unlabelled continuous recordings, which dominate a 24/7 recorder.",
+          "require_admin": "Recordings can be sensitive. Turn off to let non-admin users open the panel.",
+          "event_lead": "How many seconds before a detection to begin playing. Independent of the clip length above: this only places the playhead, and is clamped to the start of the clip when it reaches further back. The NVR stores long recording segments, so this skips straight to the event using the exact detection time from Home Assistant's recorder.",
+          "clip_lead": "On 24/7 footage the player trims a five-minute segment down to what actually happened: the clip starts this many seconds before the first detection in the segment. Cameras that record on events are left alone — the recorder already trimmed those, and its pre-record buffer must not be cut into.",
+          "clip_tail": "Where the trimmed clip ends: this many seconds after the last detection in the segment clears. Several detections in one segment stay in a single clip, spanning from the first to the last. The full segment is always one click away in the player."
+        }
+      }
+    }
+  },
+  "issues": {
+    "reolink_incompatible": {
+      "title": "Reolink Stamina cannot read the Reolink integration",
+      "description": "The installed Reolink integration no longer exposes its connection the way this panel expects, so events cannot be listed.\n\nThis usually means Home Assistant was updated and the panel needs updating too. Check for an update to Reolink Stamina, and open an issue if there is none."
+    }
+  },
+  "selector": {
+    "browse_stream": {
+      "options": {
+        "sub": "Low resolution (faster)",
+        "main": "High resolution"
+      }
+    },
+    "kinds": {
+      "options": {
+        "person": "Person",
+        "vehicle": "Vehicle",
+        "animal": "Animal",
+        "package": "Package",
+        "face": "Face",
+        "doorbell": "Doorbell",
+        "crying": "Crying",
+        "motion": "Motion (noisy)"
+      }
+    }
+  },
+  "config_subentries": {
+    "cloud_sync": {
+      "title": "Cloud sync",
+      "initiate_flow": {
+        "user": "Add cloud sync",
+        "reconfigure": "Reconfigure cloud sync"
+      },
+      "step": {
+        "user": {
+          "title": "Sync clips to the cloud",
+          "description": "Uploads a clip for every detection on this recorder's cameras, as soon as it has finished writing it. One cloud sync per NVR.",
+          "data": {
+            "nvr_entry_id": "Recorder",
+            "destination_entry_id": "Cloud account",
+            "quota_gb": "Storage quota",
+            "kinds": "Detections to upload",
+            "sync_stream": "Resolution",
+            "sync_lead": "Seconds before the event",
+            "sync_tail": "Seconds after the event",
+            "remote_folder": "Folder name"
+          },
+          "data_description": {
+            "nvr_entry_id": "Clips are uploaded for every camera on this Reolink NVR. Recorders that already have a cloud sync are not listed.",
+            "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
+            "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
+            "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
+            "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
+            "sync_lead": "How much footage to keep before the first detection.",
+            "sync_tail": "How much to keep after the last detection clears.",
+            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. May be several levels deep."
+          }
+        },
+        "reconfigure": {
+          "title": "Cloud sync settings",
+          "description": "Which recorder this syncs is fixed. To sync a different one, add a cloud sync for it.",
+          "data": {
+            "destination_entry_id": "Cloud account",
+            "quota_gb": "Storage quota",
+            "kinds": "Detections to upload",
+            "sync_stream": "Resolution",
+            "sync_lead": "Seconds before the event",
+            "sync_tail": "Seconds after the event",
+            "remote_folder": "Folder name"
+          },
+          "data_description": {
+            "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
+            "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
+            "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
+            "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
+            "sync_lead": "How much footage to keep before the first detection.",
+            "sync_tail": "How much to keep after the last detection clears.",
+            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. Changing it leaves clips already uploaded where they are, and they will no longer count towards the quota."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Settings saved.",
+        "no_nvr": "No Reolink NVR is set up in the Reolink integration yet.",
+        "all_nvrs_configured": "Every Reolink NVR already has a cloud sync."
+      },
+      "entry_type": "Cloud sync"
+    }
+  },
+  "entity": {
+    "switch": {
+      "cloud_sync": {
+        "name": "Cloud sync"
+      }
+    },
+    "sensor": {
+      "quota_used": {
+        "name": "Quota used"
+      },
+      "quota_free": {
+        "name": "Quota available"
+      },
+      "clips": {
+        "name": "Clips stored"
+      },
+      "queued": {
+        "name": "Queued uploads"
+      },
+      "uploaded": {
+        "name": "Uploads since restart"
+      },
+      "last_upload": {
+        "name": "Last upload"
+      },
+      "last_error": {
+        "name": "Last error"
+      }
+    }
+  }
+}
