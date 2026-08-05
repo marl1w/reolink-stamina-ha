@@ -543,3 +543,142 @@ def test_the_first_window_has_no_offset() -> None:
         "type": "sub",
     }
     assert serialize_file(_FakeVod(data, tz))["offset"] == 0.0
+
+
+# ----------------------------------------------- what a row is: sensors before the NVR
+
+
+async def test_the_sensors_classify_a_recording_the_nvr_left_untagged(hass) -> None:
+    """The B800 case, and the reason the merge lives here rather than in the panel.
+
+    A camera with no on-board AI is classified by the NVR, and the NVR writes those
+    recordings tagged as nothing at all — six minutes of footage its own detector was
+    calling a person throughout. Home Assistant's sensors know; the recorder does not.
+    """
+    api = FakeApi(files={"sub": [_file(20, 6, seconds=370)]})
+    runs = [
+        {"at": "2026-08-03T18:06:38+00:00", "kind": "person"},
+        {"at": "2026-08-03T18:07:30+00:00", "kind": "person"},
+        {"at": "2026-08-03T18:11:02+00:00", "kind": "animal"},
+        # After the recording ends: belongs to whatever came next, not to this row.
+        {"at": "2026-08-03T18:59:00+00:00", "kind": "person"},
+    ]
+    from unittest.mock import patch as mock_patch
+
+    with (
+        mock_patch(
+            "custom_components.reolink_stamina.vod.async_get_host", return_value=FakeHost(api)
+        ),
+        mock_patch(
+            "custom_components.reolink_stamina.detections.async_detections_in_window",
+            return_value=runs,
+        ),
+    ):
+        files, _unlabelled = await async_search_day(hass, "entry", 0, "sub", dt.date(2026, 8, 3), 0)
+
+    assert len(files) == 1
+    assert files[0]["triggers"] == [], "the recorder tagged it as nothing"
+    assert files[0]["kinds"] == ["animal", "person"]
+    assert files[0]["counts"] == {"person": 2, "animal": 1}
+
+
+async def test_a_detection_saves_a_segment_the_nvr_would_have_had_discarded(hass) -> None:
+    """Sensors decide what is filler, not the recorder's silence.
+
+    Continuous footage is still dropped wholesale — it has to be, it is 30:1 — but a
+    segment Home Assistant saw someone in is not filler, whatever the recorder says.
+    """
+    api = FakeApi(
+        files={
+            "sub": [
+                _file(1, 0, seconds=7 * 3600),
+                _file(13, 0, seconds=10 * 3600),
+                _file(9, 0, seconds=300),
+            ]
+        }
+    )
+    from unittest.mock import patch as mock_patch
+
+    with (
+        mock_patch(
+            "custom_components.reolink_stamina.vod.async_get_host", return_value=FakeHost(api)
+        ),
+        mock_patch(
+            "custom_components.reolink_stamina.detections.async_detections_in_window",
+            return_value=[{"at": "2026-08-03T07:02:00+00:00", "kind": "person"}],
+        ),
+    ):
+        files, unlabelled = await async_search_day(hass, "entry", 0, "sub", dt.date(2026, 8, 3), 0)
+
+    assert unlabelled == 2, "the two long filler recordings still go"
+    assert len(files) == 1
+    assert files[0]["kinds"] == ["person"]
+
+
+async def test_classification_is_skipped_when_the_caller_does_not_want_it(hass) -> None:
+    """Cloud sync searches to locate bytes for a window the sensors already decided.
+
+    Twelve stability attempts per clip, two days each: classifying there would be a
+    history query per attempt for an answer the syncer is holding.
+    """
+    api = FakeApi(files={"sub": [_file(9, 0, triggers=VOD_trigger.PERSON)]})
+    from unittest.mock import patch as mock_patch
+
+    with (
+        mock_patch(
+            "custom_components.reolink_stamina.vod.async_get_host", return_value=FakeHost(api)
+        ),
+        mock_patch(
+            "custom_components.reolink_stamina.detections.async_detections_in_window"
+        ) as query,
+    ):
+        await async_search_day(hass, "entry", 0, "sub", dt.date(2026, 8, 3), 0, classify=False)
+
+    assert query.call_count == 0
+
+
+def test_an_event_prefers_the_sensors_and_falls_back_to_the_recorder() -> None:
+    """Both directions of the rule, including what happens when the recorder is all we have."""
+    detected = serialize_file(_file(9, 0, triggers=VOD_trigger.MOTION))
+    detected["kinds"] = ["person"]
+    detected["counts"] = {"person": 3}
+    recorder_only = serialize_file(_file(10, 0, triggers=VOD_trigger.VEHICLE))
+
+    events = build_events(
+        entry_id="entry",
+        nvr_name="Test NVR",
+        channel=0,
+        camera={"name": "Driveway"},
+        primary_stream="sub",
+        primary_files=[detected, recorder_only],
+        other_files={},
+        pre_roll_default=5,
+    )
+
+    by_start = {event["start"][11:16]: event for event in events}
+    assert by_start["09:00"]["kinds"] == ["person"], "the sensors outrank the recorder's 'motion'"
+    assert by_start["09:00"]["counts"] == {"person": 3}
+    assert by_start["10:00"]["kinds"] == ["vehicle"], "no detections, so the recorder decides"
+
+
+def test_a_scheduled_recording_stays_scheduled_even_once_someone_walks_into_it() -> None:
+    """Nothing in Home Assistant reports "this was a scheduled recording".
+
+    So `timer` is the one flag carried over from the recorder even when the sensors have
+    an opinion — dropping it would empty the Scheduled filter.
+    """
+    file = serialize_file(_file(9, 0, triggers=VOD_trigger.TIMER))
+    file["kinds"] = ["person"]
+
+    events = build_events(
+        entry_id="entry",
+        nvr_name="Test NVR",
+        channel=0,
+        camera={"name": "Driveway"},
+        primary_stream="sub",
+        primary_files=[file],
+        other_files={},
+        pre_roll_default=5,
+    )
+
+    assert sorted(events[0]["kinds"]) == ["person", "timer"]

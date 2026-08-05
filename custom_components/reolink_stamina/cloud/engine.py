@@ -486,6 +486,10 @@ class NvrSyncer:
                     self.stream,
                     date,
                     0,  # unsplit: the recorder's own files are what we want to reason about
+                    # This search only locates the bytes for a window that was already
+                    # decided from the sensors, so classifying it again would be a history
+                    # query per attempt, twelve times per clip, for an answer we have.
+                    classify=False,
                 )
                 files.extend(found)
             covering = [

@@ -8,7 +8,14 @@
  * up rather than silently showing stale numbers.
  */
 
-import { DEFAULT_FILTERS, FILTER_GROUPS, addDays, isoDate, parseIsoDate } from "./format.js";
+import {
+  DEFAULT_FILTERS,
+  FILTER_GROUPS,
+  addDays,
+  isoDate,
+  parseIsoDate,
+  sortTriggers,
+} from "./format.js";
 
 const STORAGE_KEY = "reolink_stamina.ui";
 
@@ -45,16 +52,6 @@ export class StaminaStore extends EventTarget {
     /** @type {Map<string, number[]>} keyed by `entry|channel` */
     this.calendar = new Map();
     this.calendarMonth = null;
-
-    /**
-     * Detections from Home Assistant's recorder, keyed by `entry|channel`.
-     *
-     * Only ever an annotation on rows that already exist: the NVR says which triggers a
-     * segment carried, this says how many times each one fired. Arrives after the list, so
-     * counts appear when the recorder answers and are simply absent when it cannot.
-     */
-    this.detectionRuns = new Map();
-    this._countsCache = new Map();
 
     this.truncated = false;
     this.selectedEventId = null;
@@ -356,72 +353,23 @@ export class StaminaStore extends EventTarget {
     });
 
     this._subscribeCalendar(targets, generation, force);
-    this._loadDetectionCounts(targets, generation);
   }
 
   /**
-   * Fetch the recorder's detections for the range currently shown.
+   * What a row is, as decided when the day was searched: the detection sensors' verdict
+   * where there is one, the recorder's own flags where there is not.
    *
-   * Fire and forget: the rows are already on screen from cache, and the counts are an
-   * annotation that lands whenever the recorder gets round to it. A failure here means no
-   * counts, never a broken list.
+   * Merged in the backend rather than here, so the same answer drives the rows, the
+   * filters and what is worth keeping in the cache, and so it survives in storage instead
+   * of being recomputed per render.
    */
-  async _loadDetectionCounts(targets, generation) {
-    try {
-      const result = await this.api.detectionsRange({
-        targets,
-        startDate: this.startDate,
-        endDate: this.endDate,
-      });
-      if (generation !== this._generation) return;
-      // Parsed to epoch milliseconds on arrival. The recorder reports UTC while the NVR
-      // reports the device's own offset, so comparing the two as strings silently counts
-      // the wrong rows — and parsing per row per render would repeat that work thousands
-      // of times over a 30-day range.
-      this._setDetectionRuns(
-        (result.cameras || []).map((camera) => [
-          camera.key,
-          (camera.detections || []).map((run) => ({ kind: run.kind, at: Date.parse(run.at) })),
-        ])
-      );
-    } catch {
-      if (generation !== this._generation) return;
-      this._setDetectionRuns([]);
-    }
+  eventKinds(event) {
+    return sortTriggers(event.kinds || event.triggers || []);
   }
 
-  _setDetectionRuns(entries) {
-    this.detectionRuns = new Map(entries);
-    // Counts are memoised per row and only these runs can change them: a row's window is
-    // fixed by its id, so the cache outlives the patches that arrive for other rows.
-    this._countsCache = new Map();
-    this._emit();
-  }
-
-  /**
-   * How many times each kind of detection fired inside one row, by `kind`.
-   *
-   * Counted by where a detection *started*, so a person walking across a segment boundary
-   * is counted once, against the row the recorder tagged for it — the alternative
-   * double-counts every event that spans a split.
-   */
+  /** How many times each kind fired inside a row, by `kind`. */
   detectionCounts(event) {
-    const cached = this._countsCache.get(event.id);
-    if (cached) return cached;
-
-    const counts = new Map();
-    const runs = this.detectionRuns.get(this.cameraKey(event.entry_id, event.channel));
-    if (runs) {
-      const from = Date.parse(event.start);
-      const to = Date.parse(event.end);
-      for (const run of runs) {
-        if (run.at >= from && run.at < to) {
-          counts.set(run.kind, (counts.get(run.kind) || 0) + 1);
-        }
-      }
-    }
-    this._countsCache.set(event.id, counts);
-    return counts;
+    return new Map(Object.entries(event.counts || {}));
   }
 
   _subscribeCalendar(targets, generation, force) {
@@ -499,12 +447,13 @@ export class StaminaStore extends EventTarget {
     const all = [];
     for (const bucket of this.buckets.values()) {
       for (const event of bucket.events || []) {
-        const triggers = event.triggers || [];
-        if (triggers.length === 0) {
-          // Continuous recording, which real NVRs report with no trigger flag at all.
-          // Filterable in its own right, because it dominates a 24/7 recorder.
+        const kinds = this.eventKinds(event);
+        if (kinds.length === 0) {
+          // Nothing detected and nothing tagged: continuous recording, which real NVRs
+          // report with no trigger flag at all. Filterable in its own right, because it
+          // dominates a 24/7 recorder.
           if (!showUnclassified) continue;
-        } else if (!triggers.some((trigger) => enabled.has(trigger))) {
+        } else if (!kinds.some((kind) => enabled.has(kind))) {
           continue;
         }
         all.push(event);
@@ -547,7 +496,9 @@ export class StaminaStore extends EventTarget {
   get hasUnclassifiedEvents() {
     for (const bucket of this.buckets.values()) {
       for (const event of bucket.events || []) {
-        if ((event.triggers || []).length === 0) return true;
+        // Same rule the list filters by, or the chip offering to show unclassified rows
+        // would appear for rows the sensors have already classified.
+        if (this.eventKinds(event).length === 0) return true;
       }
     }
     return false;

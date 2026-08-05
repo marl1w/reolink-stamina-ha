@@ -116,8 +116,73 @@ def serialize_file(file: Any) -> dict[str, Any]:
         "size": file.size,
         "type": file.type,
         "triggers": trigger_names(file.triggers),
+        # Filled in by `_async_classify`: what Home Assistant's sensors detected inside
+        # this window, and how many times each fired. Empty until then, and empty for
+        # good on a recorder-less install.
+        "kinds": [],
+        "counts": {},
         "duration": max(0.0, (end - start).total_seconds()),
     }
+
+
+def _as_utc(value: str) -> dt.datetime | None:
+    """Parse a timestamp to UTC, whatever offset it arrived with.
+
+    A recording's times carry the recorder's offset; a detection's carry the recorder
+    database's UTC. Anything naive is read as local time, which is what a device that
+    reports no offset at all means by it.
+    """
+    parsed = dt_util.parse_datetime(value)
+    return None if parsed is None else dt_util.as_utc(parsed)
+
+
+async def _async_classify(
+    hass: HomeAssistant,
+    entry_id: str,
+    channel: int,
+    start: dt.datetime,
+    end: dt.datetime,
+    files: list[dict[str, Any]],
+) -> None:
+    """Stamp each recording with what the detection sensors saw inside it.
+
+    Counted by where a detection *started*, so a person walking across a segment boundary
+    is counted once, against the segment they walked into rather than both.
+
+    Best effort by design: no recorder, a purged history or a camera with no detection
+    sensors all mean no kinds, and the rows then fall back to the recorder's own flags.
+
+    Everything is compared as an absolute instant, and it has to be: the recorder answers
+    in UTC while the NVR answers in the device's own offset, so the same moment arrives as
+    18:06:38+00:00 from one and 20:06:30+02:00 from the other. Dropping the offsets to
+    compare them as wall clocks means no detection ever lands inside any recording — off
+    by exactly the local offset, everywhere except UTC.
+    """
+    from .detections import async_detections_in_window
+
+    try:
+        detections = await async_detections_in_window(
+            hass, entry_id, channel, dt_util.as_utc(start), dt_util.as_utc(end)
+        )
+    except Exception:
+        _LOGGER.debug("Could not classify %s channel %s from sensors", entry_id, channel)
+        return
+    if not detections:
+        return
+
+    moments = [(_as_utc(item["at"]), item["kind"]) for item in detections]
+    for data in files:
+        window_start = _as_utc(data["start"])
+        window_end = _as_utc(data["end"])
+        if window_start is None or window_end is None:
+            continue
+        counts: dict[str, int] = {}
+        for at, kind in moments:
+            if at is not None and window_start <= at < window_end:
+                counts[kind] = counts.get(kind, 0) + 1
+        if counts:
+            data["kinds"] = sorted(counts)
+            data["counts"] = counts
 
 
 async def async_search_day(
@@ -128,6 +193,7 @@ async def async_search_day(
     date: dt.date,
     split_minutes: int,
     include_unlabelled: bool = False,
+    classify: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     """Search one camera's recordings for one day on one stream.
 
@@ -168,6 +234,21 @@ async def async_search_day(
 
     serialised = [serialize_file(file) for file in vod_files]
 
+    # What Home Assistant saw, folded in before anything is judged or discarded.
+    #
+    # The recorder's own trigger flags are not a reliable account of what happened: a
+    # camera with no on-board AI is classified by the NVR, and the NVR writes those
+    # recordings tagged as nothing at all — six minutes of footage its own detector was
+    # calling a person throughout. So the detection sensors decide what a row is, and the
+    # recorder's flags are the fallback for when the sensors cannot answer, which happens
+    # whenever Home Assistant was down or its history has been purged.
+    #
+    # One history query per camera-day, against the search that just cost a round trip to
+    # the recorder. It is stamped onto the rows here so it reaches the cache: the panel
+    # then reads it straight out of storage instead of asking again per row.
+    if classify:
+        await _async_classify(hass, entry_id, channel, start, end, serialised)
+
     # Whether an unlabelled recording is filler or the event itself depends entirely on
     # how the camera records, and the recorder does not say which. Dropping unlabelled
     # recordings from an event-recording camera would hide every event it has, which is
@@ -189,7 +270,10 @@ async def async_search_day(
     files: list[dict[str, Any]] = []
     unlabelled = 0
     for data in serialised:
-        if not data["triggers"] and continuous and not include_unlabelled:
+        # Filler is a segment nothing was detected in and the recorder tagged as nothing.
+        # A detection is enough to keep it, whatever the recorder thinks — that is the
+        # whole point of asking Home Assistant first.
+        if not data["triggers"] and not data["kinds"] and continuous and not include_unlabelled:
             unlabelled += 1
             continue
         data["segments"] = segments.get(data.get("name") or "", 1)
@@ -268,6 +352,20 @@ def _pre_roll_for(
     if duration > 0:
         seconds = min(seconds, duration)
     return {"seconds": round(max(0.0, seconds), 1), "exact": exact}
+
+
+def _kinds_for(file: dict[str, Any]) -> list[str]:
+    """Return how a recording should be presented.
+
+    Sensors first, recorder second. `timer` is carried over from the recorder even when
+    the sensors have an opinion, because it is the one thing they cannot report.
+    """
+    detected = list(file.get("kinds") or [])
+    if not detected:
+        return list(file.get("triggers") or [])
+    if "timer" in (file.get("triggers") or []):
+        detected.append("timer")
+    return detected
 
 
 def build_events(
@@ -367,6 +465,14 @@ def build_events(
                 "end": file["end"],
                 "duration": duration,
                 "triggers": file.get("triggers") or [],
+                # What the row *is*, and what the filters match on: the sensors' verdict
+                # where there is one, the recorder's own flags where there is not.
+                # `timer` survives either way — nothing in Home Assistant reports that a
+                # recording was scheduled, so dropping it would empty that filter.
+                "kinds": _kinds_for(file),
+                # Per kind, how many times it fired. The recorder says a segment carried a
+                # person, never that it carried three.
+                "counts": file.get("counts") or {},
                 "size": file.get("size") or 0,
                 # False when `size` describes the parent recording, not this row.
                 "size_is_exact": whole_file,

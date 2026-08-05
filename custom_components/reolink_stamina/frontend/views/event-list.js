@@ -15,8 +15,6 @@ import {
   formatSize,
   formatTime,
   primaryTrigger,
-  sortTriggers,
-  streamLabel,
   triggerMeta,
 } from "../format.js";
 
@@ -87,7 +85,6 @@ const STYLES = /* css */ `
 .side { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
 .facts { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
 .facts__main { font-size: 0.86rem; font-variant-numeric: tabular-nums; }
-.streams { display: flex; gap: 4px; }
 .checking { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--rv-text-dim); }
 .checking .spinner { width: 10px; height: 10px; border-width: 1.5px; }
 .go { color: var(--rv-text-dim); }
@@ -339,7 +336,8 @@ export class EventList extends HTMLElement {
     const store = this._store;
 
     // Leading mark reflects the most significant trigger.
-    const primary = primaryTrigger(event.triggers);
+    const kinds = store.eventKinds(event);
+    const primary = primaryTrigger(kinds);
     const meta = primary ? triggerMeta(primary) : null;
     refs.mark.dataset.tone = meta ? meta.tone : "neutral";
     if (refs.markIcon.tagName.toLowerCase() === "ha-icon") {
@@ -349,10 +347,10 @@ export class EventList extends HTMLElement {
     refs.time.textContent = formatTime(event.start);
     refs.camera.textContent = event.camera;
 
-    // Trigger chips
-    const triggers = sortTriggers(event.triggers || []);
+    // Trigger chips. `eventKinds` puts Home Assistant's detection sensors ahead of the
+    // recorder's own tags, so a camera the NVR never labels still reads as what was seen.
     refs.chips.replaceChildren();
-    if (triggers.length === 0) {
+    if (kinds.length === 0) {
       refs.chips.append(
         el("span", { class: "chip", dataset: { tone: "neutral" } }, icon("mdi:video-outline"), "Recording")
       );
@@ -360,7 +358,7 @@ export class EventList extends HTMLElement {
       // How many times each trigger actually fired, where the recorder can say. The NVR
       // only reports that a segment carried a person, never that it carried three.
       const counts = store.detectionCounts(event);
-      for (const trigger of triggers) {
+      for (const trigger of kinds) {
         const info = triggerMeta(trigger);
         const count = counts.get(trigger) || 0;
         refs.chips.append(
@@ -374,7 +372,7 @@ export class EventList extends HTMLElement {
       }
     }
 
-    // Facts: duration, size and which resolutions the clip exists in.
+    // Facts: duration and size. Deliberately not the resolutions — see below.
     refs.facts.replaceChildren();
     refs.facts.append(
       el("div", {
@@ -388,24 +386,14 @@ export class EventList extends HTMLElement {
       })
     );
 
+    // No resolution badges. Only the stream actually searched is known here, so every row
+    // claimed "Low" and nothing else — while the same clip downloads perfectly well in
+    // high, because the player resolves the other resolution when asked. Being truthful
+    // would cost a second search per camera-day against a recorder that is slow enough
+    // already, and the choice belongs in the player, where it is offered and where it is
+    // already known by the time it matters.
     if (!event.playable) {
       refs.facts.append(el("span", { class: "badge badge--error" }, "Unplayable"));
-    } else {
-      // Only the resolution actually searched is asserted here. Discovering the others
-      // would cost a second search per camera-day, so the player resolves them on demand.
-      refs.facts.append(
-        el(
-          "div",
-          { class: "streams" },
-          ...event.streams.map((stream) =>
-            el(
-              "span",
-              { class: "badge", title: `Found in ${streamLabel(stream)} resolution` },
-              streamLabel(stream)
-            )
-          )
-        )
-      );
     }
 
     node.dataset.selected = String(store.selectedEventId === event.id);

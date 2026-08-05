@@ -80,22 +80,6 @@ export class StaminaApi {
   }
 
   /**
-   * Every detection across a date range, per camera.
-   *
-   * Annotates rows with how many times each trigger actually fired, which the NVR never
-   * reports. Deliberately a plain call rather than part of the event subscription: it is
-   * an extra that arrives when the recorder answers, and the list must not wait for it.
-   */
-  async detectionsRange({ targets, startDate, endDate }) {
-    return this.hass.callWS({
-      type: `${DOMAIN}/detections_range`,
-      targets,
-      start_date: startDate,
-      end_date: endDate,
-    });
-  }
-
-  /**
    * A signed URL that streams a recording, optionally starting `seek` seconds in.
    *
    * The recorder serves FLV, which the browser demuxes itself — the same thing the

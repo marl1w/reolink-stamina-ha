@@ -138,7 +138,6 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_playback_url)
     websocket_api.async_register_command(hass, ws_stream_url)
     websocket_api.async_register_command(hass, ws_detections)
-    websocket_api.async_register_command(hass, ws_detections_range)
     websocket_api.async_register_command(hass, ws_clip_url)
 
 
@@ -729,68 +728,6 @@ async def ws_detections(
             "clip_tail": data.options.clip_tail,
         },
     )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/detections_range",
-        vol.Required("targets"): vol.All(cv.ensure_list, [TARGET_SCHEMA]),
-        vol.Required("start_date"): cv.string,
-        vol.Required("end_date"): cv.string,
-    }
-)
-@websocket_api.async_response
-async def ws_detections_range(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Return every detection across a date range, per camera.
-
-    This is what lets a row say "Person (2)": the NVR reports *which* triggers a segment
-    carried but never how many times one fired, so the count can only come from Home
-    Assistant's recorder.
-
-    One query per camera covering the whole range, rather than one per row — a five-minute
-    segmentation means nearly 300 rows a day per camera, and asking the recorder once for
-    the range it is showing is the difference between one query and hundreds.
-
-    Only ever an annotation: a recorder that is disabled, purged or still starting returns
-    nothing here and the rows simply show no counts.
-    """
-    data = _access(hass, connection, msg)
-    if data is None:
-        return
-
-    try:
-        start_date = _parse_date(msg["start_date"])
-        end_date = _parse_date(msg["end_date"])
-    except vol.Invalid as err:
-        connection.send_error(msg["id"], websocket_api.const.ERR_INVALID_FORMAT, str(err))
-        return
-
-    start_date, end_date = _clamp_range(start_date, end_date)
-    start = dt_util.start_of_local_day(start_date)
-    end = dt_util.start_of_local_day(end_date) + dt.timedelta(days=1)
-
-    cameras: list[dict[str, Any]] = []
-    for target in msg["targets"][:MAX_BUCKETS]:
-        entry_id = target["entry_id"]
-        channel = target["channel"]
-        found = await async_detections_in_window(hass, entry_id, channel, start, end)
-        cameras.append(
-            {
-                "key": f"{entry_id}|{channel}",
-                # Offsets are meaningless outside a single recording's window, so only the
-                # absolute times travel; the panel matches them against the rows it holds.
-                "detections": [
-                    {"kind": item["kind"], "at": item["at"], "until": item.get("until")}
-                    for item in found
-                ],
-            }
-        )
-
-    connection.send_result(msg["id"], {"cameras": cameras})
 
 
 # ---------------------------------------------------------------- clip download

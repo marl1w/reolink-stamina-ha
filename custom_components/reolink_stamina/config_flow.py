@@ -64,6 +64,9 @@ class ReolinkStaminaConfigFlow(ConfigFlow, domain=DOMAIN):
     is a single confirmation.
     """
 
+    # The config *entry* schema version, not the release. Bumping it makes Home Assistant
+    # demand an `async_migrate_entry` for every entry created at a lower number, and abort
+    # setup when there is none. The release version lives in manifest.json.
     VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
