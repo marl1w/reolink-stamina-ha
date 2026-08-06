@@ -1,12 +1,12 @@
-"""Stale-while-revalidate cache for Reolink NVR search results.
+"""Stale-while-revalidate cache for Reolink recording searches.
 
-Searching an NVR is slow — seconds per camera per day, sometimes much worse on a busy
+Searching a device is slow — seconds per camera per day, sometimes much worse on a busy
 24/7 recorder. The panel must never wait on it. The rules this module implements:
 
 * A cached answer is served **immediately**, however old it is.
 * A refresh runs in the background and pushes a patch when it lands.
 * A failed refresh never discards good cached data; it is reported alongside it.
-* Identical concurrent requests share one fetch, and each NVR has a hard concurrency
+* Identical concurrent requests share one fetch, and each device has a hard concurrency
   cap so the panel cannot overwhelm the recorder.
 * A day in the past is immutable once recorded, so it is cached for a week. Only today
   expires quickly.
@@ -38,13 +38,13 @@ from .const import (
     TTL_PAST,
     TTL_TODAY,
 )
-from .nvr_registry import NvrUnavailableError, ReolinkIncompatibleError
+from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
 from .vod import async_search_calendar, async_search_day
 
 _LOGGER = logging.getLogger(__name__)
 
 # A refresh that failed is retried sooner than a successful one, but not so soon that
-# an offline NVR gets hammered.
+# an offline device gets hammered.
 TTL_ERROR = 30.0
 
 
@@ -136,7 +136,7 @@ class CalendarRecord:
 
 
 class VodCache:
-    """Persistent, coalescing, stale-while-revalidate cache of NVR search results."""
+    """Persistent, coalescing, stale-while-revalidate cache of recording searches."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the cache."""
@@ -173,7 +173,7 @@ class VodCache:
         )
 
     def _prune(self) -> None:
-        """Drop anything older than the NVR's own search window.
+        """Drop anything older than the device's own search window.
 
         Both halves of the cache, on the same cutoff: a month whose last day has fallen out
         of the search window can never be asked about again, so keeping its calendar only
@@ -327,7 +327,7 @@ class VodCache:
     # ----------------------------------------------------------------- fetching
 
     def _semaphore(self, entry_id: str) -> asyncio.Semaphore:
-        """Per-NVR concurrency gate."""
+        """Per-device concurrency gate."""
         if entry_id not in self._semaphores:
             self._semaphores[entry_id] = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
         return self._semaphores[entry_id]
@@ -389,7 +389,7 @@ class VodCache:
                     split_minutes,
                     include_unlabelled,
                 )
-            except (NvrUnavailableError, ReolinkIncompatibleError) as err:
+            except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
                 self._record_day_error(key, str(err))
                 return
             except asyncio.CancelledError:

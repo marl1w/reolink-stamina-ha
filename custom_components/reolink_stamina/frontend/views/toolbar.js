@@ -170,6 +170,22 @@ const STYLES = /* css */ `
   .bar { padding: 10px 12px; }
   .presets { order: 3; width: 100%; overflow-x: auto; }
 }
+
+/*
+ * Folded away while the list is being read — the panel sets the collapsed attribute on the
+ * way down and clears it on the way up.
+ *
+ * The date, the freshness pill and the camera picker stay: they say where you are and are one
+ * tap each. What goes is the two tall rows, the range presets and the trigger chips, which
+ * together are most of the toolbar's height and none of its context.
+ *
+ * A wider breakpoint than the layout tweaks above, on purpose: a phone in landscape is short
+ * rather than narrow, and that is exactly when a toolbar this tall costs the most.
+ */
+@media (max-width: 900px) {
+  :host([collapsed]) .presets,
+  :host([collapsed]) .line--filters { display: none; }
+}
 `;
 
 const DOW = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -273,7 +289,7 @@ export class StaminaToolbar extends HTMLElement {
     this._fresh = el("div", { class: "fresh" });
     this._refresh = el(
       "button",
-      { class: "icon-btn", title: "Refresh from the NVR", onclick: () => store.refresh() },
+      { class: "icon-btn", title: "Refresh from the device", onclick: () => store.refresh() },
       icon("mdi:refresh")
     );
 
@@ -311,7 +327,13 @@ export class StaminaToolbar extends HTMLElement {
     // --- filters
     this._filters = el("div", { class: "line row--tight" });
     this._hiddenNote = el("div", { class: "hidden-note" });
-    const line2 = el("div", { class: "line" }, this._filters, el("div", { class: "spacer" }), this._hiddenNote);
+    const line2 = el(
+      "div",
+      { class: "line line--filters" },
+      this._filters,
+      el("div", { class: "spacer" }),
+      this._hiddenNote
+    );
 
     this.shadowRoot.append(el("div", { class: "bar" }, line1, line2));
     this._built = true;
@@ -507,10 +529,10 @@ export class StaminaToolbar extends HTMLElement {
     const store = this._store;
     const content = el("div", { class: "cams scroll" });
 
-    for (const nvr of store.usableNvrs) {
-      content.append(el("div", { class: "cams__group", text: nvr.name }));
-      for (const camera of nvr.cameras) {
-        const selected = store.isCameraSelected(nvr.entry_id, camera.channel);
+    for (const device of store.usableDevices) {
+      content.append(el("div", { class: "cams__group", text: device.name }));
+      for (const camera of device.cameras) {
+        const selected = store.isCameraSelected(device.entry_id, camera.channel);
         content.append(
           el(
             "button",
@@ -518,7 +540,7 @@ export class StaminaToolbar extends HTMLElement {
               class: "cam",
               disabled: !camera.can_playback,
               onclick: () => {
-                store.toggleCamera(nvr.entry_id, camera.channel);
+                store.toggleCamera(device.entry_id, camera.channel);
                 this.render();
               },
             },
@@ -548,7 +570,7 @@ export class StaminaToolbar extends HTMLElement {
             },
           },
           icon("mdi:tune-variant"),
-          "Change NVRs"
+          "Change devices"
         )
       )
     );

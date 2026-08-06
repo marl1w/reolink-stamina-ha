@@ -1,6 +1,6 @@
 """Exact detection times, from Home Assistant's recorder.
 
-The NVR's own search cannot answer "when did the person appear?". It reports which
+The device's own search cannot answer "when did the person appear?". It reports which
 triggers occurred somewhere inside a recording segment, and with 24/7 recording that
 segment is minutes long — so a person detection means "somewhere in these 300 seconds",
 which is tedious to review.
@@ -24,7 +24,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .nvr_registry import async_get_host
+from .reolink_registry import async_get_host
 
 _LOGGER = logging.getLogger(__name__)
 

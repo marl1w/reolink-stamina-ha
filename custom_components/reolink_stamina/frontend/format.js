@@ -47,7 +47,7 @@ export const FILTER_GROUPS = [
   },
   { id: "motion", label: "Motion", icon: "mdi:motion-sensor", triggers: ["motion"] },
   { id: "timer", label: "Scheduled", icon: "mdi:clock-outline", triggers: ["timer"] },
-  // Continuous recording often carries no trigger flag at all — real NVRs report
+  // Continuous recording often carries no trigger flag at all — real devices report
   // VOD_trigger.NONE rather than TIMER for it. Without its own group these rows could
   // not be filtered, and they outnumber real events by roughly 30:1 on a 24/7 recorder.
   //

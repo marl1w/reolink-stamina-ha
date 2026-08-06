@@ -38,7 +38,7 @@ from ..const import (
 )
 from ..detections import async_detection_entities
 from ..flv_proxy import async_playback_source
-from ..nvr_registry import async_discover_nvrs, async_get_host
+from ..reolink_registry import async_discover_devices, async_get_host
 from .destination import Destination, DestinationError
 from .fetch import (
     FetchError,
@@ -304,7 +304,7 @@ class NvrSyncer:
         nvr = next(
             (
                 item
-                for item in async_discover_nvrs(self.hass)
+                for item in async_discover_devices(self.hass)
                 if item.entry_id == self.entry_id and item.status == "ok"
             ),
             None,

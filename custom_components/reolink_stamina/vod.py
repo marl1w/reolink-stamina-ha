@@ -1,6 +1,6 @@
 """Recording search, event composition and playback URLs.
 
-Talks to the NVR through the live reolink_aio object and turns its answers into plain
+Talks to the device through the live reolink_aio object and turns its answers into plain
 dictionaries. Nothing here caches; see cache.py. Nothing here filters by trigger type
 either — the panel does that client-side so toggling a filter is instant.
 """
@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import CONTINUOUS_COVERAGE, STREAM_MAIN, STREAM_SUB
-from .nvr_registry import async_get_host
+from .reolink_registry import async_get_host
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ async def _async_classify(
     sensors all mean no kinds, and the rows then fall back to the recorder's own flags.
 
     Everything is compared as an absolute instant, and it has to be: the recorder answers
-    in UTC while the NVR answers in the device's own offset, so the same moment arrives as
+    in UTC while the device answers in its own offset, so the same moment arrives as
     18:06:38+00:00 from one and 20:06:30+02:00 from the other. Dropping the offsets to
     compare them as wall clocks means no detection ever lands inside any recording — off
     by exactly the local offset, everywhere except UTC.
@@ -205,7 +205,7 @@ async def async_search_day(
     the earliest point we control, so they are never serialised, never persisted to
     .storage, never sent over the websocket and never turned into rows.
 
-    Note this cannot save the NVR any work: reolink_aio's own `trigger=` argument runs
+    Note this cannot save the device any work: reolink_aio's own `trigger=` argument runs
     the same single search and then returns one bucket from it, so filtering per trigger
     would mean more round trips, not fewer. What it saves is everything after that.
     """
@@ -237,7 +237,7 @@ async def async_search_day(
     # What Home Assistant saw, folded in before anything is judged or discarded.
     #
     # The recorder's own trigger flags are not a reliable account of what happened: a
-    # camera with no on-board AI is classified by the NVR, and the NVR writes those
+    # camera with no on-board AI is classified by the recorder, and it writes those
     # recordings tagged as nothing at all — six minutes of footage its own detector was
     # calling a person throughout. So the detection sensors decide what a row is, and the
     # recorder's flags are the fallback for when the sensors cannot answer, which happens
@@ -252,7 +252,7 @@ async def async_search_day(
     # Whether an unlabelled recording is filler or the event itself depends entirely on
     # how the camera records, and the recorder does not say which. Dropping unlabelled
     # recordings from an event-recording camera would hide every event it has, which is
-    # exactly what happened to a camera whose NVR reports no event type at all.
+    # exactly what happened to a camera whose recorder reports no event type at all.
     #
     # Measured against every file the search returned, before any are discarded.
     continuous = is_continuous_day(serialised, date)
@@ -296,7 +296,7 @@ async def async_search_calendar(
 ) -> list[int]:
     """Return the days of a month that contain recordings.
 
-    Uses the NVR's own per-month bitmap, which is one cheap call instead of searching
+    Uses the device's own per-month bitmap, which is one cheap call instead of searching
     every day in detail.
     """
     host = async_get_host(hass, entry_id)
@@ -333,7 +333,7 @@ def _pre_roll_for(
     """Work out where to put the trigger marker on the scrub bar.
 
     Exact only when the camera actually reports its pre-record time; otherwise this is
-    an estimate and says so, because wired cameras on an NVR generally do not expose
+    an estimate and says so, because wired cameras on a recorder generally do not expose
     their pre-alarm setting.
     """
     seconds = float(default_seconds)
@@ -371,7 +371,7 @@ def _kinds_for(file: dict[str, Any]) -> list[str]:
 def build_events(
     *,
     entry_id: str,
-    nvr_name: str,
+    device_name: str,
     channel: int,
     camera: dict[str, Any] | None,
     primary_stream: str,
@@ -458,7 +458,7 @@ def build_events(
             {
                 "id": f"{entry_id}:{channel}:{file['start_id']}",
                 "entry_id": entry_id,
-                "nvr": nvr_name,
+                "device": device_name,
                 "channel": channel,
                 "camera": camera_name,
                 "start": file["start"],
@@ -497,69 +497,3 @@ def build_events(
 
     events.sort(key=lambda event: event["start"], reverse=True)
     return events
-
-
-def async_playback_path(
-    hass: HomeAssistant,
-    entry_id: str,
-    channel: int,
-    stream: str,
-    filename: str,
-    start_id: str,
-    end_id: str,
-) -> dict[str, Any]:
-    """Build the (unsigned) proxy path that streams a recording.
-
-    Reuses the Reolink integration's own authenticated video proxy rather than
-    reimplementing it. The caller signs this path via Home Assistant's ``auth/sign_path``
-    websocket command before handing it to a <video> element.
-
-    Imports are deferred: reolink_aio is only installed once the Reolink integration is
-    present, and this integration must still load without it.
-    """
-    from homeassistant.components.reolink.views import (
-        async_generate_playback_proxy_url,
-    )
-    from reolink_aio.enums import VodRequestType
-
-    host = async_get_host(hass, entry_id)
-    api = host.api
-
-    if not api.is_nvr:
-        # Standalone cameras are filtered out of the NVR list, so this is unreachable
-        # in practice; refuse clearly rather than guessing an RTMP/HLS path.
-        raise NotImplementedError("Only NVR playback is supported by this panel")
-
-    # Which request type a recorder accepts varies by model and firmware, and the
-    # choice the Reolink media source makes is not universally right: on an RLN8-410
-    # (fw v3.6.5) every recording has a synthetic, extension-less name, which sends
-    # that logic down NvrDownload -- and the NVR answers HTTP 400 "Server disconnected"
-    # for both NvrDownload and Playback, while Download returns a valid MP4.
-    #
-    # So rather than commit to one, return the candidates in the order most likely to
-    # work and let the player fall through on error. That keeps this working on
-    # hardware nobody here can test.
-    candidates: list[tuple[VodRequestType, str]] = [
-        (VodRequestType.DOWNLOAD, filename),
-        # Identifies the recording by time range rather than by name.
-        (VodRequestType.NVR_DOWNLOAD, f"{start_id}_{end_id}"),
-        (VodRequestType.PLAYBACK, filename),
-    ]
-
-    resolved = [
-        {
-            "vod_type": vod_type.value,
-            "path": async_generate_playback_proxy_url(
-                entry_id, channel, name, stream, vod_type.value
-            ),
-        }
-        for vod_type, name in candidates
-    ]
-
-    return {
-        # First candidate is the one to try; `candidates` is the fallback chain.
-        "path": resolved[0]["path"],
-        "vod_type": resolved[0]["vod_type"],
-        "mime": "video/mp4",
-        "candidates": resolved,
-    }

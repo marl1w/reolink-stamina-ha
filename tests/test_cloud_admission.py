@@ -210,7 +210,7 @@ def test_a_recorder_that_was_down_at_startup_is_picked_up_later() -> None:
     unsubscribe = MagicMock()
 
     with (
-        patch(f"{ENGINE}.async_discover_nvrs", side_effect=lambda _hass: discovered[0]),
+        patch(f"{ENGINE}.async_discover_devices", side_effect=lambda _hass: discovered[0]),
         patch(f"{ENGINE}.async_detection_entities", return_value={PERSON: "person"}),
         patch(f"{ENGINE}.async_track_state_change_event", return_value=unsubscribe) as track,
     ):

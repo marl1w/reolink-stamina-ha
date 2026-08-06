@@ -1,6 +1,6 @@
 """The Reolink Stamina integration.
 
-Registers a sidebar panel for reviewing AI events recorded by Reolink NVRs. All camera
+Registers a sidebar panel for reviewing AI events recorded by Reolink devices. All camera
 access goes through the official Reolink integration; this integration stores no
 credentials of its own.
 """
@@ -27,6 +27,8 @@ from .cloud.devices import async_entry_device_name, async_nvr_identifier, async_
 from .cloud.engine import NvrSyncer
 from .const import (
     BYTES_PER_GB,
+    CONF_BETA_ALL_DEVICES,
+    CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
     CONF_CLIP_TAIL,
@@ -44,6 +46,8 @@ from .const import (
     CONF_SYNC_LEAD,
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
+    DEFAULT_BETA_ALL_DEVICES,
+    DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
     DEFAULT_CLIP_TAIL,
@@ -69,7 +73,12 @@ from .const import (
     SUBENTRY_TYPE_SYNC,
 )
 from .flv_proxy import ReolinkStaminaFlvView
-from .nvr_registry import async_is_compatible
+from .reolink_registry import async_is_compatible
+from .restream import (
+    ReolinkStaminaHlsView,
+    ReolinkStaminaRestreamView,
+    async_shutdown as async_shutdown_restreams,
+)
 from .websocket_api import async_register as async_register_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +105,9 @@ class StaminaOptions:
     event_lead: int = DEFAULT_EVENT_LEAD
     clip_lead: int = DEFAULT_CLIP_LEAD
     clip_tail: int = DEFAULT_CLIP_TAIL
+    # Betas. Off is the behaviour this integration has always had.
+    beta_restream: bool = DEFAULT_BETA_RESTREAM
+    beta_all_devices: bool = DEFAULT_BETA_ALL_DEVICES
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> StaminaOptions:
@@ -113,6 +125,8 @@ class StaminaOptions:
             event_lead=int(options.get(CONF_EVENT_LEAD, DEFAULT_EVENT_LEAD)),
             clip_lead=int(options.get(CONF_CLIP_LEAD, DEFAULT_CLIP_LEAD)),
             clip_tail=int(options.get(CONF_CLIP_TAIL, DEFAULT_CLIP_TAIL)),
+            beta_restream=bool(options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM)),
+            beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -127,6 +141,8 @@ class StaminaOptions:
             "event_lead": self.event_lead,
             "clip_lead": self.clip_lead,
             "clip_tail": self.clip_tail,
+            "beta_restream": self.beta_restream,
+            "beta_all_devices": self.beta_all_devices,
         }
 
 
@@ -191,6 +207,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Streams a recording straight from the recorder to the browser. No subprocess,
         # nothing cached, nothing to leak.
         hass.http.register_view(ReolinkStaminaFlvView())
+        # The adaptive beta's two routes. Registered whether or not the beta is on — a view
+        # cannot be added and removed as an option changes — and both refuse outright while
+        # it is off, so the URLs exist but do nothing.
+        hass.http.register_view(ReolinkStaminaRestreamView())
+        hass.http.register_view(ReolinkStaminaHlsView())
         hass.data[_VIEW_REGISTERED] = True
 
     if hass.data.get(_STATIC_REGISTERED) != static_url:
@@ -273,6 +294,10 @@ async def _async_start_syncers(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the panel."""
     frontend.async_remove_panel(hass, PANEL_URL_PATH)
+
+    # Whatever the adaptive beta was converting stops here: an ffmpeg left pulling from a
+    # recorder is exactly the failure this integration was built to avoid.
+    await async_shutdown_restreams(hass)
 
     data: StaminaData | None = hass.data.get(DOMAIN)
     if data is not None and data.syncers:

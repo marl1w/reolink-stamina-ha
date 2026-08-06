@@ -7,14 +7,14 @@ export class StaminaApi {
     this.hass = hass;
   }
 
-  /** Discovered NVRs plus the integration's options. Cheap; no NVR round trip. */
-  async nvrs() {
-    return this.hass.callWS({ type: `${DOMAIN}/nvrs` });
+  /** Discovered devices plus the integration's options. Cheap; no round trip to any of them. */
+  async devices() {
+    return this.hass.callWS({ type: `${DOMAIN}/devices` });
   }
 
   /**
    * Subscribe to event rows. The first message is a snapshot built from cache and
-   * arrives immediately; `patch` messages follow as the NVR answers.
+   * arrives immediately; `patch` messages follow as each device answers.
    */
   subscribeEvents({ targets, startDate, endDate, force = false }, callback) {
     return this.hass.connection.subscribeMessage(callback, {
@@ -37,19 +37,6 @@ export class StaminaApi {
     });
   }
 
-  /** The unsigned proxy path for one recording. */
-  async playbackPath({ entryId, channel, stream, filename, startId, endId }) {
-    return this.hass.callWS({
-      type: `${DOMAIN}/playback_url`,
-      entry_id: entryId,
-      channel,
-      stream,
-      filename,
-      start_id: startId,
-      end_id: endId,
-    });
-  }
-
   /**
    * Sign a path so a <video> element can fetch it.
    *
@@ -65,7 +52,7 @@ export class StaminaApi {
   /**
    * The exact moments detections fired inside a recording.
    *
-   * The NVR only tags a whole segment, so this comes from Home Assistant's recorder.
+   * A device only tags a whole segment, so this comes from Home Assistant's recorder.
    * It is what lets playback open just before the event rather than at the start of a
    * long segment.
    */
@@ -82,11 +69,16 @@ export class StaminaApi {
   /**
    * A signed URL that streams a recording, optionally starting `seek` seconds in.
    *
-   * The recorder serves FLV, which the browser demuxes itself — the same thing the
-   * recorder's own web player does. Home Assistant only passes the bytes through, so no
-   * transcoding happens and there is no server-side process to outlive the clip.
+   * By default the recorder serves FLV and the browser demuxes it itself — the same thing
+   * the recorder's own web player does. Home Assistant only passes the bytes through, so
+   * nothing is transcoded and there is no server-side process to outlive the clip.
    *
-   * Seeking is server-side: a different offset means a different stream.
+   * `route` asks for one of the beta conversion routes instead, for a browser that cannot
+   * play what the recorder sends: `remux` repackages, `transcode` re-encodes. `format`
+   * says which container this browser can take — HLS for anything Apple.
+   *
+   * Seeking is server-side whichever route is used: a different offset means a different
+   * stream.
    */
   async streamUrl({
     entryId,
@@ -99,6 +91,8 @@ export class StaminaApi {
     start = "",
     end = "",
     seek = 0,
+    route = "passthrough",
+    format = "mp4",
   }) {
     const result = await this.hass.callWS({
       type: `${DOMAIN}/stream_url`,
@@ -115,25 +109,13 @@ export class StaminaApi {
       start,
       end,
       seek: Math.max(0, Math.floor(seek)),
+      route,
+      format,
     });
-    return { ...result, url: await this.signPath(result.path) };
-  }
-
-  /**
-   * Signed, directly playable URLs for a recording, best candidate first.
-   *
-   * Which request type a recorder accepts varies by model and firmware, so the backend
-   * returns an ordered fallback chain and the player works down it on error.
-   */
-  async playbackUrl(args) {
-    const result = await this.playbackPath(args);
-    const candidates = result.candidates || [{ vod_type: result.vod_type, path: result.path }];
-    const signed = await Promise.all(
-      candidates.map(async (candidate) => ({
-        vodType: candidate.vod_type,
-        url: await this.signPath(candidate.path),
-      }))
-    );
-    return { candidates: signed, mime: result.mime };
+    // An HLS session is addressed by its own unguessable token and says so, because iOS
+    // hands playback to the system player, which sends no Home Assistant credentials and
+    // resolves each segment against the playlist's own URL.
+    const url = result.sign === false ? result.path : await this.signPath(result.path);
+    return { ...result, url };
   }
 }

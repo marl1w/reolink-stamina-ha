@@ -141,7 +141,7 @@ async def test_search_calendar_uses_status_only(hass, patch_host) -> None:
 def _events(primary, other=None, camera=None, pre_roll=5, continuous=False):
     return build_events(
         entry_id="entry",
-        nvr_name="Test NVR",
+        device_name="Test NVR",
         channel=0,
         camera=camera or {"name": "Driveway"},
         primary_stream="sub",
@@ -161,11 +161,11 @@ def test_events_are_newest_first() -> None:
     assert [event["start"][11:16] for event in events] == ["16:00", "15:00", "14:00"]
 
 
-def test_event_carries_camera_and_nvr_names() -> None:
-    """Rows must be attributable when several NVRs are merged into one list."""
+def test_event_carries_camera_and_device_names() -> None:
+    """Rows must be attributable when several devices are merged into one list."""
     event = _events([_file(14, 0)])[0]
     assert event["camera"] == "Driveway"
-    assert event["nvr"] == "Test NVR"
+    assert event["device"] == "Test NVR"
     assert event["channel"] == 0
 
 
@@ -376,7 +376,7 @@ def test_a_counted_segment_beats_counting_the_survivors() -> None:
 
     events = build_events(
         entry_id="entry",
-        nvr_name="Test NVR",
+        device_name="Test NVR",
         channel=0,
         camera={"name": "Driveway"},
         primary_stream="sub",
@@ -423,7 +423,7 @@ async def test_a_surviving_slice_of_continuous_footage_does_not_claim_the_whole_
 
     events = build_events(
         entry_id="entry",
-        nvr_name="Test NVR",
+        device_name="Test NVR",
         channel=0,
         camera={"name": "Driveway"},
         primary_stream="sub",
@@ -646,7 +646,7 @@ def test_an_event_prefers_the_sensors_and_falls_back_to_the_recorder() -> None:
 
     events = build_events(
         entry_id="entry",
-        nvr_name="Test NVR",
+        device_name="Test NVR",
         channel=0,
         camera={"name": "Driveway"},
         primary_stream="sub",
@@ -672,7 +672,7 @@ def test_a_scheduled_recording_stays_scheduled_even_once_someone_walks_into_it()
 
     events = build_events(
         entry_id="entry",
-        nvr_name="Test NVR",
+        device_name="Test NVR",
         channel=0,
         camera={"name": "Driveway"},
         primary_stream="sub",

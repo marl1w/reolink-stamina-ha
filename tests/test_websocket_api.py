@@ -19,7 +19,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
-from custom_components.reolink_stamina.const import DOMAIN
+from custom_components.reolink_stamina.const import CONF_BETA_RESTREAM, DOMAIN
 
 from .conftest import FakeApi, FakeHost
 
@@ -45,17 +45,17 @@ async def setup_stamina(hass: HomeAssistant):
     return SimpleNamespace(api=api, reolink=reolink, entry=entry)
 
 
-async def test_nvrs_command_lists_the_recorder(
+async def test_the_devices_command_lists_the_recorder(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """Discovery over the wire, including the options the panel needs."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id({"type": f"{DOMAIN}/nvrs"})
+    await client.send_json_auto_id({"type": f"{DOMAIN}/devices"})
     response = await client.receive_json()
 
     assert response["success"]
-    assert len(response["result"]["nvrs"]) == 1
-    assert response["result"]["nvrs"][0]["name"] == "Test NVR"
+    assert len(response["result"]["devices"]) == 1
+    assert response["result"]["devices"][0]["name"] == "Test NVR"
     assert response["result"]["options"]["browse_stream"] == "sub"
     assert response["result"]["search_window_days"] == 30
 
@@ -362,93 +362,6 @@ async def test_calendar_reports_days_with_recordings(
     assert patch_message["event"]["camera"]["days"] == [1, 4, 9]
 
 
-async def test_playback_url_is_unsigned_and_proxied(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
-) -> None:
-    """The panel signs this itself; the backend must return the proxy path."""
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id(
-        {
-            "type": f"{DOMAIN}/playback_url",
-            "entry_id": setup_stamina.reolink.entry_id,
-            "channel": 0,
-            "stream": "sub",
-            "filename": "Mp4Record/2026-08-03/RecM01_x.mp4",
-            "start_id": "20260803140000",
-            "end_id": "20260803140030",
-        }
-    )
-    response = await client.receive_json()
-
-    assert response["success"]
-    result = response["result"]
-    assert result["path"].startswith("/api/reolink/video/")
-    assert result["mime"] == "video/mp4"
-
-    # Download first: it is the only type an RLN8-410 (fw v3.6.5) actually serves, and
-    # the type upstream would pick for these extension-less names returns HTTP 400.
-    assert result["vod_type"] == "Download"
-    assert [c["vod_type"] for c in result["candidates"]] == [
-        "Download",
-        "NvrDownload",
-        "Playback",
-    ]
-    assert result["candidates"][0]["path"] == result["path"]
-
-
-async def test_playback_candidates_encode_the_right_filenames(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
-) -> None:
-    """NvrDownload identifies a recording by time range, the others by name."""
-    from base64 import urlsafe_b64decode
-
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id(
-        {
-            "type": f"{DOMAIN}/playback_url",
-            "entry_id": setup_stamina.reolink.entry_id,
-            "channel": 0,
-            "stream": "sub",
-            "filename": "0-8-0-01260703140001-00000",
-            "start_id": "20260803160001",
-            "end_id": "20260803160307",
-        }
-    )
-    response = await client.receive_json()
-    assert response["success"]
-
-    names = {
-        candidate["vod_type"]: urlsafe_b64decode(
-            candidate["path"].rsplit("/", 1)[1] + "===="
-        ).decode()
-        for candidate in response["result"]["candidates"]
-    }
-    assert names["Download"] == "0-8-0-01260703140001-00000"
-    assert names["Playback"] == "0-8-0-01260703140001-00000"
-    assert names["NvrDownload"] == "20260803160001_20260803160307"
-
-
-async def test_playback_url_rejects_an_unknown_nvr(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
-) -> None:
-    """A vanished NVR must fail cleanly rather than raise."""
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id(
-        {
-            "type": f"{DOMAIN}/playback_url",
-            "entry_id": "gone",
-            "channel": 0,
-            "stream": "sub",
-            "filename": "x.mp4",
-            "start_id": "1",
-            "end_id": "2",
-        }
-    )
-    response = await client.receive_json()
-    assert not response["success"]
-    assert response["error"]["code"] == "not_found"
-
-
 async def test_non_admin_is_refused_by_default(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -457,7 +370,7 @@ async def test_non_admin_is_refused_by_default(
 ) -> None:
     """Recordings are sensitive, so the default is admin-only."""
     client = await hass_ws_client(hass, hass_read_only_access_token)
-    await client.send_json_auto_id({"type": f"{DOMAIN}/nvrs"})
+    await client.send_json_auto_id({"type": f"{DOMAIN}/devices"})
     response = await client.receive_json()
 
     assert not response["success"]
@@ -477,7 +390,7 @@ async def test_non_admin_is_allowed_when_the_option_is_off(
     await hass.async_block_till_done()
 
     client = await hass_ws_client(hass, hass_read_only_access_token)
-    await client.send_json_auto_id({"type": f"{DOMAIN}/nvrs"})
+    await client.send_json_auto_id({"type": f"{DOMAIN}/devices"})
     response = await client.receive_json()
 
     assert response["success"]
@@ -492,7 +405,7 @@ async def test_calls_after_unload_fail_cleanly(
     assert await hass.config_entries.async_unload(setup_stamina.entry.entry_id)
     await hass.async_block_till_done()
 
-    await client.send_json_auto_id({"type": f"{DOMAIN}/nvrs"})
+    await client.send_json_auto_id({"type": f"{DOMAIN}/devices"})
     response = await client.receive_json()
 
     assert not response["success"]
@@ -671,3 +584,131 @@ async def test_stream_url_adds_the_window_offset_to_the_seek(
     assert response["result"]["path"].endswith("/1230")
     # Echoed back row-relative, which is what the player displays.
     assert response["result"]["seek"] == 30
+
+
+# --------------------------------------------------- the adaptive playback beta
+
+
+@pytest.fixture
+async def setup_beta(hass: HomeAssistant):
+    """Set up Stamina with adaptive playback switched on."""
+    assert await async_setup_component(hass, "http", {})
+
+    api = FakeApi(channels=[0])
+    reolink = MockConfigEntry(domain="reolink", title="Backyard NVR")
+    reolink.add_to_hass(hass)
+    reolink.runtime_data = SimpleNamespace(host=FakeHost(api))
+    reolink.mock_state(hass, ConfigEntryState.LOADED)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Reolink Events", options={CONF_BETA_RESTREAM: True}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    return SimpleNamespace(api=api, reolink=reolink, entry=entry)
+
+
+def _stream_url(target, **extra):
+    """Build the command the player sends to open a recording."""
+    return {
+        "type": f"{DOMAIN}/stream_url",
+        "entry_id": target.reolink.entry_id,
+        "channel": 0,
+        "stream": "sub",
+        "filename": "a-file",
+        "start_id": "20260803090001",
+        "playback_id": "20260803070001",
+        **extra,
+    }
+
+
+async def test_a_conversion_is_refused_while_the_beta_is_off(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Nothing can be made to convert without the option being on, panel or not."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_stamina, route="remux"))
+    response = await client.receive_json()
+
+    assert not response["success"]
+    assert response["error"]["code"] == "not_supported"
+
+
+async def test_passthrough_is_still_the_default_with_the_beta_on(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+) -> None:
+    """The option makes conversion possible; it does not make it happen."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_beta))
+    response = await client.receive_json()
+
+    assert response["success"]
+    assert "/flv/" in response["result"]["path"]
+    assert response["result"]["mime"] == "video/x-flv"
+
+
+async def test_a_remux_asks_ffmpeg_only_to_repackage(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+) -> None:
+    """The cheap rung has to be addressable, or it can never be the one that is used."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_beta, route="remux", seek=240))
+    response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["path"].startswith("/api/reolink_stamina/restream/copy/")
+    assert response["result"]["path"].endswith("/240")
+    assert response["result"]["mime"] == "video/mp4"
+
+
+async def test_a_transcode_says_so_in_its_path(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+) -> None:
+    """The view must not have to guess how much work it was asked to do."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_beta, route="transcode"))
+    response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["path"].startswith("/api/reolink_stamina/restream/encode/")
+
+
+async def test_an_hls_session_is_started_and_addressed_by_its_token(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+) -> None:
+    """What an iPhone is handed has to be a playlist it can fetch unaided.
+
+    iOS gives playback to the system player, which sends none of Home Assistant's
+    authentication and resolves each segment against the playlist's own URL — so the
+    session is started here and the URL says it must not be signed.
+    """
+    with patch(
+        "custom_components.reolink_stamina.websocket_api.async_start_hls",
+        return_value="tok123",
+    ) as start:
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(
+            _stream_url(setup_beta, route="remux", format="hls", seek=90)
+        )
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["path"] == "/api/reolink_stamina/hls/tok123/index.m3u8"
+    assert response["result"]["sign"] is False
+    assert response["result"]["mime"] == "application/vnd.apple.mpegurl"
+    # Repackaging, and starting where the player asked.
+    assert start.call_args.args[-1] == "copy"
+    assert start.call_args.args[-2] == 90
+
+
+async def test_an_unknown_route_is_rejected_by_the_schema(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+) -> None:
+    """Only the three real routes exist; anything else is a mistake worth naming."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_beta, route="magic"))
+    response = await client.receive_json()
+
+    assert not response["success"]

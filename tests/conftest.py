@@ -192,7 +192,7 @@ def patch_host(fake_api: FakeApi):
             return_value=host,
         ),
         patch(
-            "custom_components.reolink_stamina.nvr_registry.async_get_host",
+            "custom_components.reolink_stamina.reolink_registry.async_get_host",
             return_value=host,
         ),
         # Imported by name, so each module that uses it needs patching in its own right.

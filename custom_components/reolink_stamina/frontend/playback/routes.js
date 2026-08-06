@@ -1,0 +1,202 @@
+/**
+ * How a recording reaches this browser, and what to try when it does not.
+ *
+ * Three routes, cheapest first. The panel walks down them and stops at the first that
+ * actually draws a frame:
+ *
+ * 1. `stream` — the recorder's own FLV, demuxed in the browser. No server work at all,
+ *    and what every install used before the adaptive beta existed.
+ * 2. `remux` — ffmpeg changes the container and nothing else. This is what an iPhone needs
+ *    for an H.264 recording: the phone's own decoder still does the work.
+ * 3. `transcode` — the only route that re-encodes, for a codec the device itself cannot
+ *    decode. In practice that means H.265 anywhere but a very recent Safari.
+ *
+ * When all three fail there is no fourth: the recorder's own whole-file download used to sit
+ * here, and it was never worth having — unseekable, minutes long, and carrying the very
+ * codec the browser had just refused. Saying "download this clip and watch it locally" is
+ * both honest and what the download button already does properly.
+ *
+ * Nothing here touches the DOM beyond asking the browser what it can play, so the ladder
+ * and the memory of it can be reasoned about — and tested — on their own.
+ */
+
+export const ROUTE_STREAM = "stream";
+export const ROUTE_REMUX = "remux";
+export const ROUTE_TRANSCODE = "transcode";
+
+/** Routes that are converted server-side, and so cost the machine something to run. */
+export const CONVERTED_ROUTES = new Set([ROUTE_REMUX, ROUTE_TRANSCODE]);
+
+/**
+ * What to tell the user about the route a clip is arriving on.
+ *
+ * Every route says something, the cheap one included: "Direct play" is the good news, and
+ * knowing it is what makes the other two legible as the exception rather than the norm.
+ */
+export const ROUTE_LABELS = {
+  [ROUTE_STREAM]: {
+    icon: "mdi:flash-outline",
+    badge: "Direct play",
+    hint: "This recording is playing straight from the recorder — Reolink Stamina only forwards the bytes and this browser does the rest. Nothing is converted, and it costs the machine nothing.",
+  },
+  [ROUTE_REMUX]: {
+    icon: "mdi:package-variant-closed",
+    badge: "Repackaged by Reolink Stamina",
+    hint: "This browser could not play the recorder's own stream, so Reolink Stamina is repackaging it. The video itself is untouched — nothing is re-encoded.",
+  },
+  [ROUTE_TRANSCODE]: {
+    icon: "mdi:cog-sync-outline",
+    badge: "Re-encoded by Reolink Stamina",
+    hint: "This browser cannot decode this recording's codec, so Reolink Stamina is converting it to H.264 as it plays. Capped at 1080p, and only for watching — downloads keep the original.",
+  },
+};
+
+/**
+ * Whether this browser can decode H.265/HEVC.
+ *
+ * Reolink devices commonly encode the main stream as HEVC and the sub stream as H.264.
+ * Safari plays HEVC; Chrome and Firefox generally do not. Getting this wrong looks like
+ * "the device is broken" when the bytes arrived perfectly well.
+ */
+export const HEVC_SUPPORTED = (() => {
+  try {
+    const probe = document.createElement("video");
+    return (
+      probe.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "" ||
+      probe.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') !== ""
+    );
+  } catch {
+    return false;
+  }
+})();
+
+/**
+ * Which container a server-converted stream should arrive in, for *this* browser.
+ *
+ * HLS wherever the browser plays it natively, which means every Apple one. That is not a
+ * preference: iOS has no `MediaSource` at all, and Safari refuses a progressive stream
+ * whose length is unknown and whose server cannot answer range requests — which any
+ * live-paced route is. HLS is the only thing it will take, and it is what makes playback
+ * work in the Home Assistant app on an iPhone.
+ *
+ * Everywhere else, one chunked fragmented-MP4 response, which needs no session at all.
+ */
+export const CONVERTED_FORMAT = (() => {
+  try {
+    const probe = document.createElement("video");
+    if (probe.canPlayType("application/vnd.apple.mpegurl") !== "") return "hls";
+  } catch {
+    // Fall through to MP4.
+  }
+  return "mp4";
+})();
+
+/**
+ * The next route to try after this one failed, or null when there is nothing left.
+ *
+ * With the beta off there is nothing to try: the recorder's own stream either plays or it
+ * does not. With it on, the two conversions follow it, cheapest first.
+ *
+ * `decodeFailure` skips the repackaging step, and the distinction it draws is the one that
+ * matters most here: repackaging fixes a container the browser could not *read*, and can do
+ * nothing at all about a codec it could not *decode* — the bitstream comes out the other
+ * side unchanged. So it is only worth trying when the decoder was not the thing that failed.
+ * Safari is the case that proves it: it demuxes and claims H.265, then stalls on the H.265
+ * these recorders produce, and repackaging that hands the same stream to the same decoder.
+ */
+export function nextRoute(current, { adaptive, decodeFailure = false } = {}) {
+  if (!adaptive) return null;
+  switch (current) {
+    case ROUTE_STREAM:
+      return decodeFailure ? ROUTE_TRANSCODE : ROUTE_REMUX;
+    case ROUTE_REMUX:
+      return ROUTE_TRANSCODE;
+    default:
+      return null;
+  }
+}
+
+/**
+ * What worked last time, and for what.
+ *
+ * Walking the ladder costs a failed attempt, and the answer barely ever changes: which
+ * codec a stream carries is a setting on the recorder, not a state. So the winning route is
+ * remembered and used directly next time, and the conversion is only ever *discovered*
+ * once. localStorage is already per browser, so the keys only have to name the stream.
+ *
+ * Two levels, because the useful generalisation is by resolution:
+ *
+ * * A **hint per resolution** — "high resolution needed converting here" — which is what a
+ *   camera opened for the first time starts from. Recorders are configured as a whole, so
+ *   what the main stream needs on one camera is almost always what it needs on the next.
+ * * An **entry per camera and resolution**, which overrides the hint. This is what keeps a
+ *   camera that plays perfectly well from being converted for ever because a *different*
+ *   camera on the same recorder needed it.
+ *
+ * Only conversion updates the hint: passthrough is the default anyway, and one camera
+ * playing natively says nothing about the others. Both expire eventually, so a recorder
+ * switched to H.264 is re-examined rather than converted for the rest of time.
+ */
+// Versioned: an earlier build decided a route "worked" from the video element's reported
+// dimensions, which Safari fills in from a track header it never manages to decode. Those
+// entries pinned a black window in place, so they are abandoned rather than trusted.
+const ROUTE_MEMORY_KEY = "reolink_stamina.routes.v2";
+const ROUTE_MEMORY_TTL = 90 * 24 * 3600 * 1000;
+const ROUTE_MEMORY_MAX = 200;
+const HINT_PREFIX = "*|";
+
+/** The per-camera key and the per-resolution hint key for one row. */
+export function routeMemoryKeys(event, stream) {
+  return {
+    camera: `${event.entry_id}|${event.channel}|${stream}`,
+    hint: `${HINT_PREFIX}${stream}`,
+  };
+}
+
+export function readRouteMemory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ROUTE_MEMORY_KEY) || "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeRouteMemory(memory) {
+  try {
+    localStorage.setItem(ROUTE_MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    // Private browsing or a full quota: the ladder is simply walked again next time.
+  }
+}
+
+function liveEntry(memory, key, now) {
+  const entry = memory[key];
+  if (!entry || typeof entry.route !== "string") return null;
+  return now - (entry.at || 0) < ROUTE_MEMORY_TTL ? entry : null;
+}
+
+/** The route to start on for this camera and resolution, or null for passthrough. */
+export function recalledRoute(memory, keys, now = Date.now()) {
+  const exact = liveEntry(memory, keys.camera, now);
+  if (exact) return exact.route;
+  const hint = liveEntry(memory, keys.hint, now);
+  return hint ? hint.route : null;
+}
+
+/** Record what worked, against this camera and — for a conversion — its resolution. */
+export function rememberRoute(memory, keys, route, now = Date.now()) {
+  memory[keys.camera] = { route, at: now };
+  if (route !== ROUTE_STREAM) memory[keys.hint] = { route, at: now };
+
+  // Oldest first, and never the resolution hints, so a long-lived browser cannot grow this
+  // without bound while still generalising to a camera it has not seen before.
+  const cameras = Object.keys(memory).filter((key) => !key.startsWith(HINT_PREFIX));
+  if (cameras.length > ROUTE_MEMORY_MAX) {
+    cameras
+      .sort((a, b) => (memory[a].at || 0) - (memory[b].at || 0))
+      .slice(0, cameras.length - ROUTE_MEMORY_MAX)
+      .forEach((stale) => delete memory[stale]);
+  }
+  return memory;
+}

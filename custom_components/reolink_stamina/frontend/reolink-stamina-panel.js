@@ -10,7 +10,7 @@ import { adoptStyles, el, frameDebounce, icon } from "./dom.js";
 import { SHARED } from "./theme.js";
 import { StaminaApi } from "./api.js";
 import { StaminaStore } from "./store.js";
-import "./views/nvr-picker.js";
+import "./views/device-picker.js";
 import "./views/toolbar.js";
 import "./views/event-list.js";
 import "./views/player.js";
@@ -77,6 +77,16 @@ reolink-event-player { flex: 1 1 auto; min-width: 0; }
 }
 `;
 
+/**
+ * How far the timeline has to move before the toolbar reacts to it.
+ *
+ * The first number leaves the toolbar alone at the top of the list, where a small nudge
+ * should not take the filters with it. The second is slack against the pixel-by-pixel jitter
+ * of a touch scroll, without which the toolbar folds and unfolds under a resting thumb.
+ */
+const COLLAPSE_AFTER = 64;
+const COLLAPSE_SLACK = 14;
+
 class ReolinkStaminaPanel extends HTMLElement {
   constructor() {
     super();
@@ -86,9 +96,11 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._store = null;
     this._render = frameDebounce(() => this._doRender());
     this._onKeydown = (event) => {
-      if (event.key === "Escape" && this._store?.selectedEventId) {
-        this._closePlayer();
-      }
+      if (event.key !== "Escape" || !this._store?.selectedEventId) return;
+      // While the player fills the screen, Escape is how you come back out of it — the
+      // browser handles that, and closing the clip as well would be one press too many.
+      if (document.fullscreenElement || document.webkitFullscreenElement) return;
+      this._closePlayer();
     };
   }
 
@@ -161,13 +173,19 @@ class ReolinkStaminaPanel extends HTMLElement {
     );
 
     // Setup view
-    this._picker = el("reolink-nvr-picker", { class: "scroll", style: { overflow: "auto", flex: "1" } });
+    this._picker = el("reolink-device-picker", { class: "scroll", style: { overflow: "auto", flex: "1" } });
 
     // Main view
     this._toolbar = el("reolink-stamina-toolbar");
     this._list = el("reolink-event-list", { class: "pane-list scroll" });
     this._player = el("reolink-event-player");
     this._playerPane = el("div", { class: "pane-player", hidden: true }, this._player);
+
+    // Reading down the list folds the toolbar away; coming back up brings it back. Whether
+    // that attribute means anything is the toolbar's CSS to decide — on a wide screen there
+    // is room for both. Passive, so this can never hold up a scroll.
+    this._listScrollTop = 0;
+    this._list.addEventListener("scroll", () => this._onListScroll(), { passive: true });
 
     this._list.addEventListener("event-selected", (event) => {
       this._store.selectEvent(event.detail.id);
@@ -201,6 +219,25 @@ class ReolinkStaminaPanel extends HTMLElement {
   _syncMenuButton() {
     if (!this._menuBtn) return;
     this._menuBtn.hidden = !(this._narrow || this._hass?.dockedSidebar === "always_hidden");
+  }
+
+  /**
+   * Give the list the screen while it is being read.
+   *
+   * Direction rather than position, because the filters are wanted again the moment someone
+   * reaches for them — and reaching for them is a flick upwards, not a scroll all the way
+   * back to the top of a day with two hundred events in it.
+   */
+  _onListScroll() {
+    const top = this._list.scrollTop;
+    const previous = this._listScrollTop;
+    let collapsed;
+    if (top <= COLLAPSE_AFTER) collapsed = false;
+    else if (top > previous + COLLAPSE_SLACK) collapsed = true;
+    else if (top < previous - COLLAPSE_SLACK) collapsed = false;
+    else return; // too small a movement to have meant anything
+    this._listScrollTop = top;
+    this._toolbar.toggleAttribute("collapsed", collapsed);
   }
 
   _closePlayer() {

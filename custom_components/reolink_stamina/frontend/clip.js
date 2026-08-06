@@ -663,7 +663,7 @@ export async function remuxFlvToMp4(chunks, { seconds, maxBytes = 0, onProgress 
 export async function downloadClip(url, { seconds, maxBytes, onProgress, signal } = {}) {
   const response = await fetch(url, { signal });
   if (!response.ok || !response.body) {
-    throw new Error(`The NVR answered HTTP ${response.status}`);
+    throw new Error(`The device answered HTTP ${response.status}`);
   }
 
   const reader = response.body.getReader();

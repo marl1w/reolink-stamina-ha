@@ -1,14 +1,14 @@
 """Websocket API for the Reolink Stamina panel.
 
 The event and calendar commands are *subscriptions*, not request/response, because that
-is what makes the panel feel instant against a slow NVR:
+is what makes the panel feel instant against a slow recorder:
 
 1. On subscribe, whatever is cached is sent straight back as a snapshot, however stale,
    each bucket carrying its age and whether a refresh is running.
 2. Refreshes run in the background, and every result is pushed as a patch for that one
    camera-day.
 
-The panel therefore paints immediately and fills in as the NVR answers. A slow or
+The panel therefore paints immediately and fills in as the device answers. A slow or
 offline recorder degrades the freshness of the data, never the responsiveness of the UI.
 """
 
@@ -20,7 +20,6 @@ from typing import Any
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 import voluptuous as vol
@@ -35,18 +34,35 @@ from .const import (
 from .detections import async_detections_in_window
 from .flv_proxy import async_flv_path
 from .fragments import FragmentsUnsupportedError, async_fragment_path
-from .nvr_registry import (
-    NvrUnavailableError,
+from .reolink_registry import (
+    DeviceUnavailableError,
     ReolinkIncompatibleError,
-    async_discover_nvrs,
+    async_discover_devices,
 )
-from .vod import _overlap_seconds, async_playback_path, build_events, is_continuous_day
+from .restream import (
+    FORMAT_HLS,
+    FORMAT_MP4,
+    MODE_COPY,
+    MODE_ENCODE,
+    RESTREAM_FORMATS,
+    FfmpegUnavailableError,
+    async_hls_path,
+    async_restream_path,
+    async_start_hls,
+)
+from .vod import _overlap_seconds, build_events, is_continuous_day
 
 _LOGGER = logging.getLogger(__name__)
 
-# A generous ceiling that still prevents one subscription asking an NVR for thousands
+# A generous ceiling that still prevents one subscription asking a device for thousands
 # of searches.
 MAX_BUCKETS = 240
+
+# What the panel may ask `stream_url` for. Passthrough is the recorder's own bytes and the
+# only route available with the adaptive beta off; the other two are conversions.
+ROUTE_PASSTHROUGH = "passthrough"
+ROUTE_REMUX = "remux"
+ROUTE_TRANSCODE = "transcode"
 
 TARGET_SCHEMA = vol.Schema(
     {
@@ -103,7 +119,7 @@ def _parse_date(value: str) -> dt.date:
 
 
 def _clamp_range(start: dt.date, end: dt.date) -> tuple[dt.date, dt.date]:
-    """Clamp a requested range to what the NVR can actually search."""
+    """Clamp a requested range to what the device can actually search."""
     today = dt_util.now().date()
     earliest = today - dt.timedelta(days=SEARCH_WINDOW_DAYS)
     start = max(start, earliest)
@@ -132,26 +148,25 @@ def _secondary_stream(primary: str) -> str:
 
 def async_register(hass: HomeAssistant) -> None:
     """Register every websocket command."""
-    websocket_api.async_register_command(hass, ws_nvrs)
+    websocket_api.async_register_command(hass, ws_devices)
     websocket_api.async_register_command(hass, ws_events)
     websocket_api.async_register_command(hass, ws_calendar)
-    websocket_api.async_register_command(hass, ws_playback_url)
     websocket_api.async_register_command(hass, ws_stream_url)
     websocket_api.async_register_command(hass, ws_detections)
     websocket_api.async_register_command(hass, ws_clip_url)
 
 
-# --------------------------------------------------------------------------- NVRs
+# ------------------------------------------------------------------------ devices
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/nvrs"})
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/devices"})
 @callback
-def ws_nvrs(
+def ws_devices(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Return the NVRs discovered through the Reolink integration.
+    """Return the recording devices discovered through the Reolink integration.
 
     Cheap: everything comes from the already-running Reolink integration, with no call
     to the recorder itself.
@@ -162,11 +177,14 @@ def ws_nvrs(
 
     options = data.options
     try:
-        nvrs = [nvr.as_dict() for nvr in async_discover_nvrs(hass)]
+        devices = [
+            device.as_dict()
+            for device in async_discover_devices(hass, include_all_devices=options.beta_all_devices)
+        ]
     except Exception as err:
         # Without this the panel shows a bare "Unknown error" and the reason is only in
         # the log. Discovery reads a non-public Reolink attribute, so say what broke.
-        _LOGGER.exception("Reolink NVR discovery failed")
+        _LOGGER.exception("Reolink device discovery failed")
         connection.send_error(
             msg["id"],
             websocket_api.const.ERR_UNKNOWN_ERROR,
@@ -177,7 +195,7 @@ def ws_nvrs(
     connection.send_result(
         msg["id"],
         {
-            "nvrs": nvrs,
+            "devices": devices,
             "options": options.as_dict(),
             "search_window_days": SEARCH_WINDOW_DAYS,
         },
@@ -221,7 +239,10 @@ def ws_events(
     dates = _dates_in(start, end)
 
     # Resolve camera metadata once; needed for names and pre-roll marker placement.
-    nvrs = {nvr.entry_id: nvr for nvr in async_discover_nvrs(hass)}
+    devices = {
+        device.entry_id: device
+        for device in async_discover_devices(hass, include_all_devices=options.beta_all_devices)
+    }
 
     primary = options.browse_stream
     secondary = _secondary_stream(primary)
@@ -230,8 +251,8 @@ def ws_events(
     for target in msg["targets"]:
         entry_id = target["entry_id"]
         channel = target["channel"]
-        nvr = nvrs.get(entry_id)
-        if nvr is None or nvr.status != "ok":
+        device = devices.get(entry_id)
+        if device is None or device.status != "ok":
             continue
         for date in dates:
             buckets.append((entry_id, channel, date))
@@ -242,10 +263,10 @@ def ws_events(
 
     @callback
     def _camera_of(entry_id: str, channel: int) -> dict[str, Any] | None:
-        nvr = nvrs.get(entry_id)
-        if nvr is None:
+        device = devices.get(entry_id)
+        if device is None:
             return None
-        for camera in nvr.cameras:
+        for camera in device.cameras:
             if camera.channel == channel:
                 return camera.as_dict()
         return None
@@ -253,7 +274,7 @@ def ws_events(
     @callback
     def _compose(entry_id: str, channel: int, date: dt.date) -> dict[str, Any]:
         """Build the payload for one camera-day from whatever is cached."""
-        nvr = nvrs.get(entry_id)
+        device = devices.get(entry_id)
         camera = _camera_of(entry_id, channel)
 
         unlabelled_wanted = options.include_unlabelled
@@ -277,7 +298,7 @@ def ws_events(
 
         events = build_events(
             entry_id=entry_id,
-            nvr_name=nvr.name if nvr else entry_id,
+            device_name=device.name if device else entry_id,
             channel=channel,
             camera=camera,
             primary_stream=primary,
@@ -538,55 +559,7 @@ async def _async_resolve_playback_fields(
     return await _async_resolve_file(hass, data, entry_id, channel, stream, start, end)
 
 
-# ------------------------------------------------------------------ playback URL
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/playback_url",
-        vol.Required("entry_id"): cv.string,
-        vol.Required("channel"): vol.Coerce(int),
-        vol.Required("stream"): cv.string,
-        vol.Required("filename"): cv.string,
-        vol.Required("start_id"): cv.string,
-        vol.Required("end_id"): cv.string,
-    }
-)
-@callback
-def ws_playback_url(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Return the proxy path for a recording.
-
-    Unsigned: the panel signs it with Home Assistant's own ``auth/sign_path`` command,
-    which keeps this integration clear of the auth internals.
-    """
-    if _access(hass, connection, msg) is None:
-        return
-
-    try:
-        result = async_playback_path(
-            hass,
-            msg["entry_id"],
-            msg["channel"],
-            msg["stream"],
-            msg["filename"],
-            msg["start_id"],
-            msg["end_id"],
-        )
-    except (NvrUnavailableError, ReolinkIncompatibleError) as err:
-        connection.send_error(msg["id"], websocket_api.const.ERR_NOT_FOUND, str(err))
-        return
-    except NotImplementedError as err:
-        connection.send_error(msg["id"], websocket_api.const.ERR_NOT_SUPPORTED, str(err))
-        return
-    except HomeAssistantError as err:
-        connection.send_error(msg["id"], websocket_api.const.ERR_UNKNOWN_ERROR, str(err))
-        return
-
-    connection.send_result(msg["id"], result)
+# ------------------------------------------------------------------- stream URL
 
 
 @websocket_api.websocket_command(
@@ -609,6 +582,14 @@ def ws_playback_url(
         vol.Optional("offset", default=0): vol.Coerce(float),
         # Seconds into the recording to start from. Server-side, time-based seeking.
         vol.Optional("seek", default=0): vol.Coerce(int),
+        # Which route the panel wants. `passthrough` is the only one that costs the machine
+        # nothing, and the only one available with the adaptive beta off.
+        vol.Optional("route", default=ROUTE_PASSTHROUGH): vol.In(
+            (ROUTE_PASSTHROUGH, ROUTE_REMUX, ROUTE_TRANSCODE)
+        ),
+        # Which container a converted stream should arrive in, decided by what the browser
+        # asking can play.
+        vol.Optional("format", default=FORMAT_MP4): vol.In(RESTREAM_FORMATS),
     }
 )
 @websocket_api.async_response
@@ -617,14 +598,27 @@ async def ws_stream_url(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Return a signable path that streams a recording, starting part-way in if asked.
+    """Return a path that streams a recording, starting part-way in if asked.
 
-    The path points at this integration's own pass-through view: the recorder already
-    serves a container the browser can demux, so nothing is transcoded, segmented, or
-    processed server-side. Seeking is done by asking for a different offset.
+    By default the path points at this integration's own pass-through view: the recorder
+    already serves a container the browser can demux, so nothing is transcoded, segmented
+    or processed server-side. Seeking is done by asking for a different offset.
+
+    The `remux` and `transcode` routes are the adaptive beta, for a browser that cannot
+    play what the recorder sends — see restream.py. Which recording is wanted is resolved
+    identically for all three, which is the point of them sharing this command.
     """
     data = _access(hass, connection, msg)
     if data is None:
+        return
+
+    route = msg["route"]
+    if route != ROUTE_PASSTHROUGH and not data.options.beta_restream:
+        connection.send_error(
+            msg["id"],
+            websocket_api.const.ERR_NOT_SUPPORTED,
+            "Adaptive playback is not enabled for this integration",
+        )
         return
 
     filename = msg["filename"]
@@ -660,24 +654,79 @@ async def ws_stream_url(
     # frame of reference it has. The recorder counts from the start of the recording, so
     # the window's own offset is added here rather than being the panel's problem.
     within_window = max(0, int(msg["seek"]))
+    seek = int(offset) + within_window
 
-    result = {
-        "path": async_flv_path(
+    result: dict[str, Any] = {
+        # Echoed back window-relative, matching what the panel displays.
+        "seek": within_window,
+        # Seeking reopens the stream at a new offset, so it always works.
+        "seekable": True,
+        "route": route,
+    }
+
+    if route == ROUTE_PASSTHROUGH:
+        result["path"] = async_flv_path(
             msg["entry_id"],
             msg["channel"],
             msg["stream"],
             filename,
             start_id,
             playback_id,
-            int(offset) + within_window,
-        ),
-        "mime": "video/x-flv",
-        # Echoed back window-relative, matching what the panel displays.
-        "seek": within_window,
-        # Seeking reopens the stream at a new offset, so it always works.
-        "seekable": True,
-    }
+            seek,
+        )
+        result["mime"] = "video/x-flv"
+        connection.send_result(msg["id"], result)
+        return
 
+    mode = MODE_COPY if route == ROUTE_REMUX else MODE_ENCODE
+
+    if msg["format"] == FORMAT_HLS:
+        # Started here rather than on the first request, because what an iPhone is handed
+        # has to be a playlist it can fetch without following anything or signing anything.
+        try:
+            token = await async_start_hls(
+                hass,
+                msg["entry_id"],
+                msg["channel"],
+                msg["stream"],
+                filename,
+                start_id,
+                playback_id,
+                seek,
+                mode,
+            )
+        except FfmpegUnavailableError as err:
+            connection.send_error(msg["id"], websocket_api.const.ERR_NOT_SUPPORTED, str(err))
+            return
+        except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
+            connection.send_error(msg["id"], websocket_api.const.ERR_NOT_FOUND, str(err))
+            return
+        except Exception as err:
+            _LOGGER.exception("Could not start an HLS session")
+            connection.send_error(
+                msg["id"],
+                websocket_api.const.ERR_UNKNOWN_ERROR,
+                f"Could not start the conversion: {err}",
+            )
+            return
+        result["path"] = async_hls_path(token)
+        result["mime"] = "application/vnd.apple.mpegurl"
+        # Its own token is what authorises it; signing would be dropped by the segments.
+        result["sign"] = False
+        connection.send_result(msg["id"], result)
+        return
+
+    result["path"] = async_restream_path(
+        msg["entry_id"],
+        msg["channel"],
+        msg["stream"],
+        filename,
+        start_id,
+        playback_id,
+        seek,
+        mode,
+    )
+    result["mime"] = "video/mp4"
     connection.send_result(msg["id"], result)
 
 
@@ -701,7 +750,7 @@ async def ws_detections(
 ) -> None:
     """Return the exact moments detections fired inside a recording.
 
-    The NVR only tags a whole segment, so this comes from Home Assistant's recorder
+    The device only tags a whole segment, so this comes from Home Assistant's recorder
     instead. It is what lets playback open just before the event rather than at the start
     of a five-minute clip.
     """

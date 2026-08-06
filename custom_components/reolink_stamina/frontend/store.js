@@ -1,7 +1,7 @@
 /**
  * Panel state, and the orchestration that keeps the UI responsive.
  *
- * The rule the whole panel is built around: never block on the NVR. The backend answers
+ * The rule the whole panel is built around: never block on the device. The backend answers
  * every subscription immediately from cache and pushes patches as searches finish, so
  * this store's job is to merge those patches into a stable view model and tell the
  * views what changed — and to make it obvious in the UI which parts are still catching
@@ -32,11 +32,11 @@ export class StaminaStore extends EventTarget {
     super();
     this.api = api;
 
-    this.nvrs = [];
+    this.devices = [];
     this.options = {};
     this.searchWindowDays = 30;
-    this.loadingNvrs = true;
-    this.nvrError = null;
+    this.loadingDevices = true;
+    this.deviceError = null;
 
     /** @type {{entry_id: string, channel: number}[]} */
     this.cameras = [];
@@ -68,8 +68,8 @@ export class StaminaStore extends EventTarget {
 
   async init() {
     this._restore();
-    await this.loadNvrs();
-    // Only prune once the NVR list is known, so a temporarily unloaded NVR does not
+    await this.loadDevices();
+    // Only prune once the device list is known, so a temporarily unloaded one does not
     // silently wipe a saved selection.
     this._pruneSelection();
     if (this.cameras.length === 0) this._selectAllCameras();
@@ -78,13 +78,13 @@ export class StaminaStore extends EventTarget {
     this._resubscribe();
   }
 
-  async loadNvrs() {
+  async loadDevices() {
     try {
-      const result = await this.api.nvrs();
-      this.nvrs = result.nvrs || [];
+      const result = await this.api.devices();
+      this.devices = result.devices || [];
       this.options = result.options || {};
       this.searchWindowDays = result.search_window_days || 30;
-      this.nvrError = null;
+      this.deviceError = null;
       // Opting out of the detections-only default brings back scheduled and
       // unlabelled footage. Applied only before the user has set their own filters.
       if (!this._restoredFilters && this.options.hide_timer === false) {
@@ -92,10 +92,10 @@ export class StaminaStore extends EventTarget {
         this.filters.add("unclassified");
       }
     } catch (err) {
-      this.nvrError = err?.message || String(err);
-      this.nvrs = [];
+      this.deviceError = err?.message || String(err);
+      this.devices = [];
     } finally {
-      this.loadingNvrs = false;
+      this.loadingDevices = false;
     }
     this._emit();
   }
@@ -118,12 +118,12 @@ export class StaminaStore extends EventTarget {
 
   // ------------------------------------------------------------------ selection
 
-  get usableNvrs() {
-    return this.nvrs.filter((nvr) => nvr.status === "ok");
+  get usableDevices() {
+    return this.devices.filter((device) => device.status === "ok");
   }
 
-  get unavailableNvrs() {
-    return this.nvrs.filter((nvr) => nvr.status !== "ok");
+  get unavailableDevices() {
+    return this.devices.filter((device) => device.status !== "ok");
   }
 
   cameraKey(entryId, channel) {
@@ -147,10 +147,10 @@ export class StaminaStore extends EventTarget {
     this._afterSelectionChange();
   }
 
-  toggleNvr(entryId) {
-    const nvr = this.nvrs.find((item) => item.entry_id === entryId);
-    if (!nvr) return;
-    const playable = nvr.cameras.filter((camera) => camera.can_playback);
+  toggleDevice(entryId) {
+    const device = this.devices.find((item) => item.entry_id === entryId);
+    if (!device) return;
+    const playable = device.cameras.filter((camera) => camera.can_playback);
     const allSelected = playable.every((camera) =>
       this.isCameraSelected(entryId, camera.channel)
     );
@@ -164,35 +164,35 @@ export class StaminaStore extends EventTarget {
     this._afterSelectionChange();
   }
 
-  isNvrFullySelected(entryId) {
-    const nvr = this.nvrs.find((item) => item.entry_id === entryId);
-    if (!nvr) return false;
-    const playable = nvr.cameras.filter((camera) => camera.can_playback);
+  isDeviceFullySelected(entryId) {
+    const device = this.devices.find((item) => item.entry_id === entryId);
+    if (!device) return false;
+    const playable = device.cameras.filter((camera) => camera.can_playback);
     return (
       playable.length > 0 &&
       playable.every((camera) => this.isCameraSelected(entryId, camera.channel))
     );
   }
 
-  isNvrPartiallySelected(entryId) {
+  isDevicePartiallySelected(entryId) {
     return (
-      !this.isNvrFullySelected(entryId) &&
+      !this.isDeviceFullySelected(entryId) &&
       this.cameras.some((camera) => camera.entry_id === entryId)
     );
   }
 
   _selectAllCameras() {
-    this.cameras = this.usableNvrs.flatMap((nvr) =>
-      nvr.cameras
+    this.cameras = this.usableDevices.flatMap((device) =>
+      device.cameras
         .filter((camera) => camera.can_playback)
-        .map((camera) => ({ entry_id: nvr.entry_id, channel: camera.channel }))
+        .map((camera) => ({ entry_id: device.entry_id, channel: camera.channel }))
     );
   }
 
   _pruneSelection() {
     const valid = new Set(
-      this.usableNvrs.flatMap((nvr) =>
-        nvr.cameras.map((camera) => this.cameraKey(nvr.entry_id, camera.channel))
+      this.usableDevices.flatMap((device) =>
+        device.cameras.map((camera) => this.cameraKey(device.entry_id, camera.channel))
       )
     );
     this.cameras = this.cameras.filter((camera) =>
@@ -348,7 +348,7 @@ export class StaminaStore extends EventTarget {
     this._eventsUnsub = eventsPromise;
     eventsPromise.catch((err) => {
       if (generation !== this._generation) return;
-      this.nvrError = err?.message || String(err);
+      this.deviceError = err?.message || String(err);
       this._emit();
     });
 
@@ -449,7 +449,7 @@ export class StaminaStore extends EventTarget {
       for (const event of bucket.events || []) {
         const kinds = this.eventKinds(event);
         if (kinds.length === 0) {
-          // Nothing detected and nothing tagged: continuous recording, which real NVRs
+          // Nothing detected and nothing tagged: continuous recording, which real devices
           // report with no trigger flag at all. Filterable in its own right, because it
           // dominates a 24/7 recorder.
           if (!showUnclassified) continue;
@@ -478,7 +478,7 @@ export class StaminaStore extends EventTarget {
    * Continuous recordings the backend discarded before sending anything.
    *
    * Reported so a short list is explained rather than mysterious: on a 24/7 recorder
-   * this is the overwhelming majority of what the NVR returned.
+   * this is the overwhelming majority of what the device returned.
    */
   get unlabelledSkipped() {
     let total = 0;
@@ -487,7 +487,7 @@ export class StaminaStore extends EventTarget {
   }
 
   /**
-   * True when the range holds recordings the NVR gave no trigger for.
+   * True when the range holds recordings the device gave no trigger for.
    *
    * A camera that records on events gets these kept rather than discarded — for it they
    * *are* the events — so they can turn up whatever the integration's unlabelled option
@@ -567,8 +567,8 @@ export class StaminaStore extends EventTarget {
   }
 
   cameraLabel(entryId, channel) {
-    const nvr = this.nvrs.find((item) => item.entry_id === entryId);
-    const camera = nvr?.cameras.find((item) => item.channel === channel);
+    const device = this.devices.find((item) => item.entry_id === entryId);
+    const camera = device?.cameras.find((item) => item.channel === channel);
     return camera?.name || `Channel ${channel}`;
   }
 

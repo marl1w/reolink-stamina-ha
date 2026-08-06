@@ -18,6 +18,8 @@ from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 import voluptuous as vol
 
 from .const import (
+    CONF_BETA_ALL_DEVICES,
+    CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
     CONF_CLIP_TAIL,
@@ -34,6 +36,8 @@ from .const import (
     CONF_SYNC_LEAD,
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
+    DEFAULT_BETA_ALL_DEVICES,
+    DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
     DEFAULT_CLIP_TAIL,
@@ -54,13 +58,13 @@ from .const import (
     SUBENTRY_TYPE_SYNC,
     SYNC_KIND_CHOICES,
 )
-from .nvr_registry import async_discover_nvrs, async_has_configured_nvr
+from .reolink_registry import async_discover_devices, async_has_configured_nvr
 
 
 class ReolinkStaminaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Set up Reolink Stamina.
 
-    Nothing to ask: every NVR is discovered through the Reolink integration, so setup
+    Nothing to ask: every device is discovered through the Reolink integration, so setup
     is a single confirmation.
     """
 
@@ -212,6 +216,15 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                     CONF_REQUIRE_ADMIN,
                     default=options.get(CONF_REQUIRE_ADMIN, DEFAULT_REQUIRE_ADMIN),
                 ): selector.BooleanSelector(),
+                # Betas last, because with both off nothing above them behaves differently.
+                vol.Required(
+                    CONF_BETA_RESTREAM,
+                    default=options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM),
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_BETA_ALL_DEVICES,
+                    default=options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES),
+                ): selector.BooleanSelector(),
             }
         )
 
@@ -231,7 +244,7 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
         available = self._unsynced_nvrs()
         if not available:
             return self.async_abort(
-                reason="no_nvr" if not async_discover_nvrs(self.hass) else "all_nvrs_configured"
+                reason="no_nvr" if not async_discover_devices(self.hass) else "all_nvrs_configured"
             )
 
         if user_input is not None:
@@ -282,7 +295,7 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
         }
         return [
             selector.SelectOptionDict(value=nvr.entry_id, label=nvr.name)
-            for nvr in async_discover_nvrs(self.hass)
+            for nvr in async_discover_devices(self.hass)
             if nvr.entry_id not in used
         ]
 
@@ -290,7 +303,7 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
     def _nvr_name(self, entry_id: str) -> str:
         """Return the recorder's name, as the panel knows it."""
         return next(
-            (nvr.name for nvr in async_discover_nvrs(self.hass) if nvr.entry_id == entry_id),
+            (nvr.name for nvr in async_discover_devices(self.hass) if nvr.entry_id == entry_id),
             "NVR",
         )
 

@@ -1,13 +1,28 @@
 /**
- * NVR and camera selection.
+ * Device and camera selection.
  *
- * Everything here comes from the official Reolink integration. NVRs that exist but are
+ * Everything here comes from the official Reolink integration. Devices that exist but are
  * not usable are shown with the reason rather than hidden, so a missing recorder is
  * never a silent mystery.
  */
 
 import { adoptStyles, el, icon, reconcile } from "../dom.js";
 import { SHARED } from "../theme.js";
+
+/**
+ * What a device is, when it is not a recorder.
+ *
+ * Only ever shown with the beta that lists them: everything else here has been tested
+ * against a recorder, and a hub or a camera is worth labelling as the unknown quantity
+ * it is.
+ */
+const KIND_TEXT = {
+  hub: { label: "Home Hub (beta)", hint: "Hubs record to their own storage. Untested here — reports welcome." },
+  camera: {
+    label: "Camera (beta)",
+    hint: "A standalone camera recording to its own SD card. Untested here — reports welcome.",
+  },
+};
 
 const STATUS_TEXT = {
   not_connected: { label: "Not connected", hint: "Home Assistant cannot reach this device right now." },
@@ -37,22 +52,22 @@ const STYLES = /* css */ `
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
-.nvr { padding: 0; overflow: hidden; }
-.nvr--off { opacity: 0.62; }
+.device { padding: 0; overflow: hidden; }
+.device--off { opacity: 0.62; }
 
-.nvr__head {
+.device__head {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   padding: 16px 16px 12px;
   border-bottom: 1px solid var(--rv-line);
 }
-.nvr__head--plain { border-bottom: none; }
+.device__head--plain { border-bottom: none; }
 
-.nvr__title { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.nvr__meta { font-size: 0.78rem; color: var(--rv-text-dim); }
+.device__title { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.device__meta { font-size: 0.78rem; color: var(--rv-text-dim); }
 
-.nvr__toggle {
+.device__toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -62,7 +77,7 @@ const STYLES = /* css */ `
   font-weight: 600;
   color: var(--rv-text-dim);
 }
-.nvr__toggle:hover { background: color-mix(in srgb, var(--rv-text) 8%, transparent); }
+.device__toggle:hover { background: color-mix(in srgb, var(--rv-text) 8%, transparent); }
 
 .cams { display: flex; flex-direction: column; padding: 6px; }
 
@@ -134,7 +149,7 @@ const STYLES = /* css */ `
 }
 `;
 
-export class NvrPicker extends HTMLElement {
+export class DevicePicker extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -194,14 +209,15 @@ export class NvrPicker extends HTMLElement {
     this._intro.replaceChildren(
       el("h1", { class: "h1", text: "Choose what to review" }),
       el("p", {
-        text:
-          "These are the Reolink NVRs found through the Reolink integration. Pick the cameras you want in your event timeline — you can change this at any time.",
+        text: store.options?.beta_all_devices
+          ? "These are the Reolink devices found through the Reolink integration — recorders, and, because the beta is on, hubs and standalone cameras too. Pick the cameras you want in your event timeline; you can change this at any time."
+          : "These are the Reolink recorders found through the Reolink integration. Pick the cameras you want in your event timeline — you can change this at any time.",
       })
     );
 
     // Empty and error states
     this._emptyHost.replaceChildren();
-    if (store.loadingNvrs) {
+    if (store.loadingDevices) {
       this._grid.replaceChildren(
         ...[0, 1].map(() => el("div", { class: "card skeleton", style: { height: "220px" } }))
       );
@@ -209,14 +225,14 @@ export class NvrPicker extends HTMLElement {
       return;
     }
 
-    if (store.nvrError) {
+    if (store.deviceError) {
       this._emptyHost.append(
         el(
           "div",
           { class: "empty" },
           icon("mdi:alert-circle-outline"),
-          el("div", { class: "empty__title", text: "Could not load your NVRs" }),
-          el("div", { class: "empty__body", text: store.nvrError })
+          el("div", { class: "empty__title", text: "Could not load your devices" }),
+          el("div", { class: "empty__body", text: store.deviceError })
         )
       );
       this._grid.replaceChildren();
@@ -224,7 +240,7 @@ export class NvrPicker extends HTMLElement {
       return;
     }
 
-    if (store.nvrs.length === 0) {
+    if (store.devices.length === 0) {
       this._emptyHost.append(
         el(
           "div",
@@ -233,8 +249,9 @@ export class NvrPicker extends HTMLElement {
           el("div", { class: "empty__title", text: "No Reolink NVR found" }),
           el("div", {
             class: "empty__body",
-            text:
-              "Set up an NVR in the official Reolink integration and it will appear here. Standalone cameras and Home Hubs are not supported by this panel.",
+            text: store.options?.beta_all_devices
+              ? "Set up a Reolink device in the official Reolink integration and it will appear here. With this beta on that includes Home Hubs and standalone cameras, not only recorders."
+              : "Set up an NVR in the official Reolink integration and it will appear here. Home Hubs and standalone cameras are only listed with the beta option for them switched on.",
           })
         )
       );
@@ -246,10 +263,10 @@ export class NvrPicker extends HTMLElement {
     this._footer.style.display = "";
     reconcile(
       this._grid,
-      store.nvrs,
-      (nvr) => nvr.entry_id,
-      (nvr) => this._createCard(nvr),
-      (node, nvr) => this._updateCard(node, nvr)
+      store.devices,
+      (device) => device.entry_id,
+      (device) => this._createCard(device),
+      (node, device) => this._updateCard(node, device)
     );
 
     const selected = store.cameras.length;
@@ -260,24 +277,25 @@ export class NvrPicker extends HTMLElement {
     this._continue.disabled = selected === 0;
   }
 
-  _createCard(nvr) {
+  _createCard(device) {
     const refs = {};
-    const card = el("section", { class: "card nvr" });
+    const card = el("section", { class: "card device" });
 
     refs.title = el("div", { class: "h2 truncate" });
-    refs.meta = el("div", { class: "nvr__meta" });
+    refs.meta = el("div", { class: "device__meta" });
     refs.badge = el("span");
+    refs.kind = el("span");
     refs.toggle = el("button", {
-      class: "nvr__toggle",
-      onclick: () => this._store.toggleNvr(nvr.entry_id),
+      class: "device__toggle",
+      onclick: () => this._store.toggleDevice(device.entry_id),
     });
     refs.check = el("span", { class: "check" }, icon("mdi:check", "icon--sm"));
     refs.toggle.append(refs.check, el("span", { text: "All" }));
 
     refs.head = el(
       "header",
-      { class: "nvr__head" },
-      el("div", { class: "nvr__title" }, refs.title, refs.meta, refs.badge),
+      { class: "device__head" },
+      el("div", { class: "device__title" }, refs.title, refs.meta, refs.kind, refs.badge),
       refs.toggle
     );
 
@@ -290,22 +308,32 @@ export class NvrPicker extends HTMLElement {
     return card;
   }
 
-  _updateCard(card, nvr) {
+  _updateCard(card, device) {
     const refs = card.__refs;
     const store = this._store;
-    const usable = nvr.status === "ok";
+    const usable = device.status === "ok";
 
-    card.classList.toggle("nvr--off", !usable);
-    refs.title.textContent = nvr.name;
+    card.classList.toggle("device--off", !usable);
+    refs.title.textContent = device.name;
 
-    const meta = [nvr.model, nvr.sw_version].filter(Boolean).join(" · ");
+    const meta = [device.model, device.sw_version].filter(Boolean).join(" · ");
     refs.meta.textContent = meta;
     refs.meta.style.display = meta ? "" : "none";
+
+    // What it is, when it is not the recorder this panel was built for.
+    const kind = KIND_TEXT[device.kind];
+    refs.kind.replaceChildren();
+    refs.kind.style.display = kind ? "" : "none";
+    if (kind) {
+      const badge = el("span", { class: "badge", style: { marginTop: "4px" } }, kind.label);
+      badge.title = kind.hint;
+      refs.kind.append(badge);
+    }
 
     // Status
     refs.badge.replaceChildren();
     if (!usable) {
-      const status = STATUS_TEXT[nvr.status] || STATUS_TEXT.not_loaded;
+      const status = STATUS_TEXT[device.status] || STATUS_TEXT.not_loaded;
       refs.badge.append(
         el("span", { class: "badge badge--warn", style: { marginTop: "4px" } }, status.label)
       );
@@ -317,11 +345,11 @@ export class NvrPicker extends HTMLElement {
     }
 
     refs.toggle.style.display = usable ? "" : "none";
-    refs.head.classList.toggle("nvr__head--plain", !usable);
+    refs.head.classList.toggle("device__head--plain", !usable);
 
     // Warnings that affect what the user can expect to find
     refs.warn.replaceChildren();
-    if (usable && !nvr.has_storage) {
+    if (usable && !device.has_storage) {
       refs.warn.append(
         el(
           "div",
@@ -329,12 +357,14 @@ export class NvrPicker extends HTMLElement {
           icon("mdi:harddisk-remove"),
           el("span", {
             text:
-              "No storage detected on this NVR. Without a working HDD there are no recordings to review.",
+              device.kind === "nvr"
+                ? "No storage detected on this recorder. Without a working HDD there are no recordings to review."
+                : "No storage detected on this device. Without a working SD card there are no recordings to review.",
           })
         )
       );
     }
-    if (usable && !nvr.reports_triggers) {
+    if (usable && !device.reports_triggers) {
       refs.warn.append(
         el(
           "div",
@@ -342,16 +372,16 @@ export class NvrPicker extends HTMLElement {
           icon("mdi:tag-off-outline"),
           el("span", {
             text:
-              "This NVR does not report event types, so recordings will be listed without person, vehicle or animal labels.",
+              "This device does not report event types, so recordings will be listed without person, vehicle or animal labels.",
           })
         )
       );
     }
 
     // Select-all state
-    const state = store.isNvrFullySelected(nvr.entry_id)
+    const state = store.isDeviceFullySelected(device.entry_id)
       ? "on"
-      : store.isNvrPartiallySelected(nvr.entry_id)
+      : store.isDevicePartiallySelected(device.entry_id)
         ? "mixed"
         : "off";
     refs.check.dataset.state = state;
@@ -365,14 +395,14 @@ export class NvrPicker extends HTMLElement {
 
     reconcile(
       refs.cams,
-      nvr.cameras,
+      device.cameras,
       (camera) => camera.channel,
-      (camera) => this._createCameraRow(nvr, camera),
-      (node, camera) => this._updateCameraRow(node, nvr, camera)
+      (camera) => this._createCameraRow(device, camera),
+      (node, camera) => this._updateCameraRow(node, device, camera)
     );
   }
 
-  _createCameraRow(nvr, camera) {
+  _createCameraRow(device, camera) {
     const refs = {};
     refs.check = el("span", { class: "check" }, icon("mdi:check", "icon--sm"));
     refs.name = el("span", { class: "cam__name truncate" });
@@ -383,7 +413,7 @@ export class NvrPicker extends HTMLElement {
       {
         class: "cam",
         onclick: () => {
-          if (camera.can_playback) this._store.toggleCamera(nvr.entry_id, camera.channel);
+          if (camera.can_playback) this._store.toggleCamera(device.entry_id, camera.channel);
         },
       },
       refs.check,
@@ -393,9 +423,9 @@ export class NvrPicker extends HTMLElement {
     return row;
   }
 
-  _updateCameraRow(row, nvr, camera) {
+  _updateCameraRow(row, device, camera) {
     const refs = row.__refs;
-    const selected = this._store.isCameraSelected(nvr.entry_id, camera.channel);
+    const selected = this._store.isCameraSelected(device.entry_id, camera.channel);
 
     refs.name.textContent = camera.name;
     refs.check.dataset.state = selected ? "on" : "off";
@@ -415,4 +445,4 @@ export class NvrPicker extends HTMLElement {
 // Guarded: Home Assistant may import this module more than once (after an
 // update, or from a cached copy), and a duplicate define() throws and takes the
 // whole panel down with it.
-if (!customElements.get("reolink-nvr-picker")) customElements.define("reolink-nvr-picker", NvrPicker);
+if (!customElements.get("reolink-device-picker")) customElements.define("reolink-device-picker", DevicePicker);

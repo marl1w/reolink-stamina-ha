@@ -15,7 +15,7 @@ import dataclasses
 
 import pytest
 
-from custom_components.reolink_stamina.nvr_registry import _REQUIRED_API_ATTRS
+from custom_components.reolink_stamina.reolink_registry import _REQUIRED_API_ATTRS
 
 # The exact reolink_aio version this integration is developed and tested against.
 # Home Assistant 2026.7.4 pins this version.
@@ -29,7 +29,7 @@ def test_reolink_runtime_data_still_carries_a_host() -> None:
     fields = {field.name for field in dataclasses.fields(ReolinkData)}
     assert "host" in fields, (
         "The Reolink integration's runtime data no longer exposes `host`; "
-        "update nvr_registry.async_get_host"
+        "update reolink_registry.async_get_host"
     )
 
 
@@ -119,7 +119,12 @@ def test_the_triggers_we_present_still_exist() -> None:
 
 
 def test_vod_request_types_we_use_still_exist() -> None:
-    """The proxy URL encodes this value, and the view parses it back."""
+    """Each of these names one route out of the recorder that this integration takes.
+
+    `Playback` is what every stream is built from, `Download` is how cloud sync fetches a
+    recording whole, and `NvrDownload` is the fragment request in fragments.py — which
+    encodes the value into a URL the Reolink integration's own view parses back.
+    """
     from reolink_aio.enums import VodRequestType
 
     assert VodRequestType.DOWNLOAD.value == "Download"
@@ -128,7 +133,7 @@ def test_vod_request_types_we_use_still_exist() -> None:
 
 
 def test_playback_proxy_url_helper_still_exists() -> None:
-    """Playback reuses the Reolink integration's own authenticated proxy."""
+    """Clip fragments reuse the Reolink integration's own authenticated proxy."""
     import inspect
 
     from homeassistant.components.reolink.views import (
@@ -149,7 +154,7 @@ def test_playback_proxy_url_helper_still_exists() -> None:
 
 
 def test_the_proxy_url_shape_matches_what_we_assert_elsewhere() -> None:
-    """Keeps the websocket test's expected prefix honest."""
+    """Keeps the prefix that fragments.py hands out honest."""
     from homeassistant.components.reolink.views import async_generate_playback_proxy_url
 
     url = async_generate_playback_proxy_url("entry", 0, "file.mp4", "sub", "Download")

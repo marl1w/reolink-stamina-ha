@@ -26,7 +26,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import STREAM_MAIN, STREAM_SUB
-from .nvr_registry import NvrUnavailableError, ReolinkIncompatibleError, async_get_host
+from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError, async_get_host
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def async_playback_source(
     answer 404 or drop the connection.
 
     reolink_aio's own playback URL omits four of them and derives `start` by
-    pattern-matching the file name, which never matches the synthetic names an NVR
+    pattern-matching the file name, which never matches the synthetic names a recorder
     returns, so a library-built URL cannot be used here.
     """
     from reolink_aio.enums import VodRequestType
@@ -149,7 +149,7 @@ class ReolinkStaminaFlvView(HomeAssistantView):
                 playback_id,
                 seek_seconds,
             )
-        except (NvrUnavailableError, ReolinkIncompatibleError) as err:
+        except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
             return web.Response(status=404, text=str(err))
         except Exception as err:
             _LOGGER.debug("Could not resolve a playback URL", exc_info=True)
@@ -159,11 +159,11 @@ class ReolinkStaminaFlvView(HomeAssistantView):
         try:
             upstream = await session.get(source, timeout=STREAM_TIMEOUT)
         except Exception as err:
-            return web.Response(status=502, text=f"The NVR did not answer: {err}")
+            return web.Response(status=502, text=f"The device did not answer: {err}")
 
         if upstream.status != 200:
             upstream.release()
-            return web.Response(status=502, text=f"The NVR answered HTTP {upstream.status}")
+            return web.Response(status=502, text=f"The device answered HTTP {upstream.status}")
 
         response = web.StreamResponse(
             status=200,

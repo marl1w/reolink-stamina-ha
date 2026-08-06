@@ -25,6 +25,15 @@ CONF_EVENT_LEAD: Final = "event_lead"
 CONF_CLIP_LEAD: Final = "clip_lead"
 CONF_CLIP_TAIL: Final = "clip_tail"
 
+# Beta options. Both default to off, and with both off the integration behaves exactly as
+# it did before they existed: nothing in the normal paths reads them.
+#
+# They are opt-in because each trades a guarantee this project otherwise keeps. Adaptive
+# playback gives up "no ffmpeg, no subprocess, no CPU cost"; showing every device gives up
+# "only hardware this has been tested against". Both are here to be reported on.
+CONF_BETA_RESTREAM: Final = "beta_restream"
+CONF_BETA_ALL_DEVICES: Final = "beta_all_devices"
+
 DEFAULT_BROWSE_STREAM: Final = "sub"
 DEFAULT_SPLIT_MINUTES: Final = 5
 DEFAULT_HIDE_TIMER: Final = True
@@ -44,6 +53,8 @@ DEFAULT_EVENT_LEAD: Final = 30
 # pre-record buffer must not be trimmed away — so neither applies there.
 DEFAULT_CLIP_LEAD: Final = 15
 DEFAULT_CLIP_TAIL: Final = 15
+DEFAULT_BETA_RESTREAM: Final = False
+DEFAULT_BETA_ALL_DEVICES: Final = False
 
 STREAM_MAIN: Final = "main"
 STREAM_SUB: Final = "sub"
@@ -59,7 +70,7 @@ SEARCH_WINDOW_DAYS: Final = 30
 TTL_TODAY: Final = 300.0
 TTL_PAST: Final = 7 * 24 * 3600.0
 
-# Searching an NVR is expensive for the NVR itself; never hammer it.
+# Searching a device is expensive for the device itself; never hammer it.
 MAX_CONCURRENT_SEARCHES: Final = 2
 
 # A camera recording continuously covers essentially all of the day, so anything it

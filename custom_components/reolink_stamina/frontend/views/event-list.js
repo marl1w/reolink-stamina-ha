@@ -2,7 +2,7 @@
  * The event timeline.
  *
  * Rows are reconciled by event id rather than rebuilt, so the background patches that
- * arrive as the NVR answers never move the scroll position, drop keyboard focus, or
+ * arrive as a device answers never move the scroll position, drop keyboard focus, or
  * re-run the row animation on rows that were already there.
  */
 
@@ -179,7 +179,7 @@ export class EventList extends HTMLElement {
           { class: "notice" },
           icon("mdi:cloud-off-outline"),
           el("span", {
-            text: `Could not reach the NVR${age ? `, showing results from ${age}` : ""}. ${store.errors[0]}`,
+            text: `Could not reach the device${age ? `, showing results from ${age}` : ""}. ${store.errors[0]}`,
           })
         )
       );
@@ -232,7 +232,7 @@ export class EventList extends HTMLElement {
               "mdi:calendar-blank-outline",
               skipped > 0 ? "No detections" : "Nothing recorded",
               store.isUpdating
-                ? "Still searching the NVR…"
+                ? "Still searching the device…"
                 : skipped > 0
                   ? `${skipped} continuous recordings were found, but none carried a person, vehicle or animal detection.`
                   : "No recordings were found for these cameras in this period."
@@ -348,14 +348,14 @@ export class EventList extends HTMLElement {
     refs.camera.textContent = event.camera;
 
     // Trigger chips. `eventKinds` puts Home Assistant's detection sensors ahead of the
-    // recorder's own tags, so a camera the NVR never labels still reads as what was seen.
+    // recorder's own tags, so a camera the device never labels still reads as what was seen.
     refs.chips.replaceChildren();
     if (kinds.length === 0) {
       refs.chips.append(
         el("span", { class: "chip", dataset: { tone: "neutral" } }, icon("mdi:video-outline"), "Recording")
       );
     } else {
-      // How many times each trigger actually fired, where the recorder can say. The NVR
+      // How many times each trigger actually fired, where the recorder can say. A device
       // only reports that a segment carried a person, never that it carried three.
       const counts = store.detectionCounts(event);
       for (const trigger of kinds) {

@@ -1,17 +1,19 @@
 # Reolink Stamina
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.1%2B-41BDF5.svg)](https://www.home-assistant.io)
-[![Release](https://img.shields.io/github/v/release/marl1w/reolink-stamina-ha?display_name=tag&sort=semver)](https://github.com/marl1w/reolink-stamina-ha/releases)
-[![Licence: MIT](https://img.shields.io/badge/Licence-MIT-blue.svg)](LICENSE)
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.1%2B-41BDF5.svg)](https://www.home-assistant.io) [![Release](https://img.shields.io/github/v/release/marl1w/reolink-stamina-ha?display_name=tag&sort=semver)](https://github.com/marl1w/reolink-stamina-ha/releases) [![Licence: MIT](https://img.shields.io/badge/Licence-MIT-blue.svg)](LICENSE)
 
 *Your NVR has the memory. This has the stamina.*
 
-Reolink Stamina makes a **Reolink NVR** usable from Home Assistant. It adds a sidebar panel that puts every camera's detections on one timeline, one click from the footage, and a cloud sync that uploads a clip of each detection so the evidence is off-site before anyone reaches the recorder.
+Reolink hardware records diligently and then makes the footage tedious to get at: one camera at a time, one app or one folder at a time, and nothing that survives the recorder being stolen. **Reolink Stamina closes that gap** — it is about the experience of *using* the Reolink system you already own, from inside Home Assistant.
 
-It is a companion to the official [Reolink integration][reolink], not a replacement. Every NVR, camera and recording comes from it, so there are **no extra credentials to enter**.
+Two things so far:
 
-**Why "Stamina"?** Because everything else in this chain tires quickly. The recorder answers searches at its leisure, streams playback at walking pace, and drops your connection if you ask twice too fast. So this is built to outlast it: cached results appear instantly while it keeps asking in the background, clips queue instead of stampeding the NVR, a backlog survives a restart, and it will process the four hundredth cat of the evening without complaint.
+- **One timeline across every device.** Every camera's detections in a single list, whatever recorder they hang off, with the clip one click away and the playhead already at the event.
+- **An off-site copy of what mattered.** A clip of each detection uploaded to your own cloud storage, event by event, so the evidence outlives the recorder it was written on.
+
+It is a companion to the official [Reolink integration][reolink], not a replacement. Every device, camera and recording comes from it, so there are **no extra credentials to enter**.
+
+**Why "Stamina"?** Because everything else in this chain tires quickly, and a good experience has to outlast it. The recorder answers searches at its leisure, streams playback at walking pace, and drops your connection if you ask twice too fast. So: cached results appear instantly while it keeps asking in the background, clips queue instead of stampeding the recorder, a backlog survives a restart, and it will process the four hundredth cat of the evening without complaint.
 
 ### What you need
 
@@ -19,7 +21,7 @@ It is a companion to the official [Reolink integration][reolink], not a replacem
 - The official **Reolink integration**, with at least one **NVR** with a working HDD
 - For cloud sync only: an existing **OneDrive** integration — its credentials are reused
 
-Standalone cameras and Home Hubs are out of scope and filtered out.
+Standalone cameras and Home Hubs are filtered out, unless you switch on the [beta that lists them](#beta-options).
 
 ### Install through HACS
 
@@ -30,10 +32,7 @@ Standalone cameras and Home Hubs are out of scope and filtered out.
 
 That puts the code in place; see [Configuration](#configuration) to switch it on.
 
-> **Tested against:** Home Assistant 2026.7.4 · Reolink RLN8-410 (N7MB01) on firmware
-> v3.6.5.562_26062933 · cameras B800, RLC-81MA, Duo 2 PoE, Duo 2v PoE.
-> Other NVRs should work; other *models* of recorder are where surprises live, so reports are
-> welcome.
+> **Tested against:** Home Assistant 2026.8.4 · Reolink RLN8-410 (N7MB01) on firmware v3.6.5.562_26062933 · cameras B800, RLC-81MA, Duo 2 PoE, Duo 2v PoE. Other NVRs should work; other *models* of recorder are where surprises live, so reports are welcome.
 
 ## Features
 
@@ -45,14 +44,12 @@ Pick cameras, then a day or a range. Filter chips toggle each kind of detection 
 
 Rows say what fired and how often ("Person (2)"), the scrub bar marks each detection in the colour of what was detected, and clips open where the event is rather than at the top of a five-minute segment. **Download** saves the clip as MP4 in your choice of resolution.
 
-What a row is called comes from **Home Assistant's own detection sensors first**, and from the recorder's trigger flags only where the sensors cannot answer. This matters on cameras with no on-board AI: the NVR classifies those itself and then writes the recording tagged as nothing at all, so without the sensors they would read as plain "Recording".
-
 Worth knowing:
 
 - **Reach is about 30 days**, bounded by the Reolink search API and your HDD. Beyond that even stamina cannot help: the footage is gone.
-- **Playback uses the low-resolution stream** where available. High resolution is H.265 at full sensor size — slow to open, undecodable in most browsers — so it is offered for downloads, not for watching.
+- **Playback uses the low-resolution stream** where available. High resolution is H.265 at full sensor size — slow to open, undecodable in most browsers — so it is offered for downloads, not for watching. [Adaptive playback (beta)](#beta-options) makes it watchable, and adds a resolution picker to the player.
+- **The player says how a clip reached you.** A badge reads *Direct play* when the footage came straight off the recorder with nothing in between, and names the conversion when [adaptive playback](#beta-options) had to step in.
 - **High-resolution downloads won't open in QuickTime or Preview.** The file is valid and VLC and browsers play it, but the H.265 these recorders produce stalls Apple's decoder however it is packaged. Convert once if you need to: `ffmpeg -i clip.mp4 -c:v libx264 -crf 20 -c:a copy out.mp4`.
-- **The trigger marker is often an estimate**, drawn dashed unless the camera reports its own pre-record time.
 - **Downloads take about as long as the clip** — no fast-forward on the recorder's treadmill.
 - **Detection labels, counts and clip trimming need Home Assistant's recorder.** Disabled or purged, rows fall back to whatever the NVR itself reported and clips to whole segments.
 
@@ -78,7 +75,7 @@ How it behaves:
 - **One event is one clip.** Several sensors fire on one arrival, and people step in and out of frame. A clip runs from the first detection to a margin after the *last* one clears; stepping away and back rejoins the same clip. A sensor stuck on is cut off after ten minutes.
 - **One fetch at a time per recorder** — Reolink recorders are sprinters, not marathon runners.
 - **Cameras recording on events cost nothing extra:** their recording already *is* the clip, pre-record buffer included, so it goes up as it stands at wire speed.
-- **Cameras recording 24/7 are cut down.** Only the clip's bytes are streamed and ffmpeg copies them into MP4 — nothing is re-encoded. The only path needing ffmpeg, which ships with HA OS, Container and Supervised.
+- **Cameras recording 24/7 are cut down.** Only the clip's bytes are streamed and ffmpeg copies them into MP4 — nothing is re-encoded.
 - **Nothing is written to your Home Assistant machine**; clips stream through memory to the cloud.
 - **Clips land in Home Assistant's OneDrive app folder** — the access that integration holds, and what avoids a second app registration.
 
@@ -101,6 +98,28 @@ Then *Reolink Stamina → **Configure*** for how the panel searches and presents
 | Clip: seconds before / after | 15 s / 15 s | Where a trimmed clip starts and ends on 24/7 footage |
 | Hide scheduled recordings | on | Which filters start enabled. Off also brings back scheduled and unlabelled footage |
 | Restrict to administrators | on | Recordings can be sensitive. Off lets non-admins open the panel |
+| Adaptive playback (beta) | off | Convert a recording server-side when the browser cannot play it — see below |
+| Show hubs and standalone cameras (beta) | off | List devices other than recorders — see below |
+
+#### Beta options
+
+Two things this has been asked for repeatedly, both off by default. With both off, nothing above them behaves differently and no code path they add is reached.
+
+**Adaptive playback**
+
+Playback normally goes straight from the recorder to the browser with nothing in between, and that stays the first thing tried. Some viewers for different reason cannot use it, and none of them says so; each one just shows a black window.
+
+So the player works down a ladder and stops at the first rung that draws a frame:
+
+1. **The recorder's own stream**, demuxed in the browser. No server work at all.
+2. **Repackaged** — ffmpeg changes the container and nothing else. This is what an iPhone needs for H.264: the phone's own decoder still does the work. Cheap on any machine.
+3. **Re-encoded** — only for a codec the device itself cannot decode. Uses the machine's GPU where there is one (VideoToolbox, QSV, VAAPI, NVENC, Rockchip, Pi), falls back to software. Capped at 1080p, because re-encoding 8 megapixels in real time is beyond any machine Home Assistant usually runs on.
+
+**Hubs and standalone cameras**
+
+Lists Home Hubs and cameras with their own SD card alongside your recorders, tagged as the untested quantity they are. They answer the same search API, so the panel can browse them — but no hardware here has one, which is the whole reason this is a beta and reports are useful.
+
+A camera that is already a channel on one of your NVRs is left out even so: it would be the same footage listed twice, under two names. Cloud sync remains NVR-only atm.
 
 ### Turning on cloud sync
 
@@ -131,7 +150,15 @@ logger:
 | Symptom | Likely cause |
 | --- | --- |
 | No sidebar item | Integration not added, or you're a non-admin and *Restrict to administrators* is on |
-| "No Reolink NVR found" | No NVR in the Reolink integration, or it's a standalone camera / Home Hub |
+| "No Reolink NVR found" | No NVR in the Reolink integration, or it's a standalone camera / Home Hub — switch on the beta for those |
+| Black window, or "this browser cannot decode this recording" | The stream is H.265 and this is Chrome or Firefox. Switch on *Adaptive playback* |
+| Black window in Safari at high resolution | Same cause, despite Safari claiming H.265 support: Apple's decoder stalls on what these recorders produce. With *Adaptive playback* on it re-encodes instead, after a few seconds of finding out |
+| Nothing plays in the iPhone app | Same option: iOS cannot read the recorder's stream at all, and needs the repackaged one |
+| One camera is black on the phone while the others play | Its stream needs more than repackaging. With the beta on it lands on the re-encode rung by itself and stays there; the log says what ffmpeg made of it under `custom_components.reolink_stamina` at debug |
+| "Adaptive playback needs ffmpeg" | Install ffmpeg, or leave the option off |
+| Playback is slow and the player says "Re-encoded" | The machine is converting in software. Expected on a Pi at high resolution; low resolution is far cheaper |
+| "This clip cannot be played in this browser" | Every route was tried and none drew a frame. **Download this clip** beside the message writes it out as MP4 to watch locally, and the other resolution is often worth a try |
+| A camera on an NVR is missing from the beta list | Deliberate: it is listed under its recorder instead, so the same footage does not appear twice |
 | An NVR is greyed out | Its Reolink config entry isn't loaded — the card says why |
 | Rows read "Recording" with no detection type | Neither Home Assistant's sensors nor the NVR classified them: check the recorder is enabled and hasn't purged that far back |
 | Cloud sync has no entities | Its recorder is gone from the Reolink integration, or the chosen cloud account was removed — the log says which |
@@ -142,7 +169,7 @@ logger:
 
 ## Contributing
 
-Fork, open a pull request, follow the existing style, include tests.
+Fork, open a pull request with a description of your changes and the use case you are addressing, follow the existing style, include tests.
 
 ## Licence
 
