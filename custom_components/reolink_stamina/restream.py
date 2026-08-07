@@ -397,12 +397,7 @@ def build_args(
         filters = [f"scale=-2:min(ih\\,{MAX_HEIGHT})", *encoder.filters]
         args += ["-vf", ",".join(filters), "-c:v", encoder.name, *encoder.output_args]
     else:
-        # `hvc1` rather than whatever ffmpeg would have picked. Repackaging is the route that
-        # exists so a device can use its own decoder, and Safari — the device that most needs
-        # it — refuses HEVC in fragmented MP4 tagged `hev1`, which is what ffmpeg writes
-        # whenever the source carried no tag of its own to copy. The recorder's FLV never
-        # does. The tag is ignored for H.264, so it costs the common case nothing.
-        args += ["-c:v", "copy", "-tag:v", "hvc1"]
+        args += ["-c:v", "copy"]
 
     # `aresample=async=1` on top of that, for the audio alone. A recording opened part-way
     # through arrives with timestamps that step backwards over the first few packets, and the
@@ -420,6 +415,21 @@ def build_args(
             # longer than one segment. Copying cannot ask for keyframes, so there the
             # segment length follows whatever the recording already has.
             args += ["-force_key_frames", f"expr:gte(t,n_forced*{HLS_SEGMENT_SECONDS})"]
+        else:
+            # `hvc1` rather than whatever ffmpeg would have picked. Repackaging exists so a
+            # device can use its own decoder, and Safari — the device that most needs it —
+            # refuses HEVC in fragmented MP4 tagged `hev1`, which is what ffmpeg writes when
+            # the source carried no tag of its own to copy. The recorder's FLV never does.
+            #
+            # Only here, and this is the whole of why: the two muxers disagree about what an
+            # inapplicable tag means. The fragmented-MP4 segmenter ignores it and writes
+            # `avc1` for an H.264 stream, so it costs the common case nothing — but the plain
+            # MP4 muxer *refuses*, with "Tag hvc1 incompatible with output codec id '27'", and
+            # writes no header at all. Asking for it on the piped route therefore broke every
+            # H.264 remux outright, which is the route Chrome and Firefox use and the one an
+            # Apple device never takes. Nothing on that route wants the tag anyway: `hvc1`
+            # against `hev1` is a Safari quirk, and Safari is served HLS.
+            args += ["-tag:v", "hvc1"]
         args += [
             "-f",
             "hls",

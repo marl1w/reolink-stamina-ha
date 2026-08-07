@@ -1,9 +1,15 @@
 """Tests for the adaptive playback beta.
 
-Two things matter here and both are asserted without ever starting ffmpeg: that the command
-built for each rung of the ladder is the command intended — a remux must not re-encode, and
-a re-encode must not hand a hardware encoder frames it cannot take — and that only one
-stream can be running at a time.
+Two things matter here: that the command built for each rung of the ladder is the command
+intended — a remux must not re-encode, and a re-encode must not hand a hardware encoder
+frames it cannot take — and that only one stream can be running at a time.
+
+Mostly that is asserted without starting ffmpeg, which is cheap and enough for anything
+about the *shape* of the command. It is not enough for whether ffmpeg will accept it: a
+flag it rejects reads exactly like one it takes, and `-tag:v hvc1` on the piped route was
+precisely that — the intended arguments, refused, and the remux rung broken for H.264 in
+every non-Apple browser. So the two remux rungs are also run for real against a generated
+H.264 clip, and skipped where there is no ffmpeg to run them with.
 
 The rest is refusal: with the beta off, the views must behave as though they did not exist.
 """
@@ -13,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -164,18 +172,32 @@ def test_hls_segments_are_fragmented_mp4(tmp_path: Path) -> None:
     assert "-force_key_frames" not in args
 
 
-def test_a_copied_stream_is_tagged_so_safari_will_take_it() -> None:
+def test_a_copied_hls_stream_is_tagged_so_safari_will_take_it(tmp_path: Path) -> None:
     """`hev1` is what ffmpeg writes when the source carried no tag, and Safari refuses it.
 
     The recorder's FLV never carries one, so without this the rung that exists to let a device
     use its own decoder produces segments that device will not open — and the only way past it
     is the re-encode this was supposed to avoid.
     """
-    args = build_args("ffmpeg", _URL, mode=MODE_COPY, output_format=FORMAT_MP4)
+    args = build_args("ffmpeg", _URL, mode=MODE_COPY, output_format=FORMAT_HLS, directory=tmp_path)
 
     assert args[args.index("-tag:v") + 1] == "hvc1"
+    assert args.index("-tag:v") < args.index("-f")
     # Re-encoding produces H.264, where the tag would mean nothing.
-    assert "-tag:v" not in build_args("ffmpeg", _URL, mode=MODE_ENCODE, output_format=FORMAT_MP4)
+    assert "-tag:v" not in build_args(
+        "ffmpeg", _URL, mode=MODE_ENCODE, output_format=FORMAT_HLS, directory=tmp_path
+    )
+
+
+def test_the_piped_route_asks_for_no_tag_at_all() -> None:
+    """The plain MP4 muxer refuses a tag it cannot apply, where the segmenter ignores one.
+
+    `-tag:v hvc1` against an H.264 stream is "Tag hvc1 incompatible with output codec id
+    '27'", and ffmpeg then writes no header — so asking for it here broke every H.264 remux,
+    which is the common case and the route Chrome and Firefox use. Nothing on this route
+    wants it: preferring `hvc1` over `hev1` is a Safari quirk, and Safari is served HLS.
+    """
+    assert "-tag:v" not in build_args("ffmpeg", _URL, mode=MODE_COPY, output_format=FORMAT_MP4)
 
 
 def test_a_re_encoded_hls_stream_places_its_own_keyframes(tmp_path: Path) -> None:
@@ -190,6 +212,71 @@ def test_hls_needs_somewhere_to_write() -> None:
     """Refused rather than writing segments into the working directory."""
     with pytest.raises(ValueError):
         build_args("ffmpeg", _URL, mode=MODE_COPY, output_format=FORMAT_HLS)
+
+
+# ------------------------------------------------------- the command actually running
+
+_FFMPEG = shutil.which("ffmpeg")
+_needs_ffmpeg = pytest.mark.skipif(_FFMPEG is None, reason="needs a real ffmpeg to run")
+
+
+def _h264_sample(directory: Path) -> str:
+    """Two seconds of H.264 and AAC in MP4, standing in for an H.264 recording."""
+    path = directory / "h264.mp4"
+    subprocess.run(
+        [
+            _FFMPEG, "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=d=2:s=320x240",
+            "-f", "lavfi", "-i", "sine=d=2",
+            "-c:v", "libx264", "-c:a", "aac", str(path),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )  # fmt: skip
+    return str(path)
+
+
+@_needs_ffmpeg
+def test_an_h264_recording_survives_the_piped_remux(tmp_path: Path) -> None:
+    """The regression that asserting the argument list could never have caught.
+
+    Every check above reads the command and stops there, so a flag that ffmpeg itself
+    rejects looks identical to one it accepts. `-tag:v hvc1` on this route was exactly
+    that: the arguments were the intended ones and ffmpeg refused them, and the remux rung
+    was broken for H.264 — the ordinary case — in every browser that is not an Apple one.
+
+    So this one runs the binary. H.264 is what matters: HEVC was never the failing half.
+    """
+    args = build_args(_FFMPEG, _h264_sample(tmp_path), mode=MODE_COPY, output_format=FORMAT_MP4)
+
+    done = subprocess.run(args, capture_output=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr.decode(errors="replace")
+    # A header and at least one fragment, rather than the nothing a refused tag leaves.
+    assert len(done.stdout) > 1024
+
+
+@_needs_ffmpeg
+def test_an_h264_recording_survives_the_hls_remux(tmp_path: Path) -> None:
+    """And the tag the other rung does ask for is one this rung's muxer merely ignores.
+
+    Which is why the mistake survived: the segmenter writes `avc1` for an H.264 stream and
+    says nothing, so the tag really is free here — it is only the piped MP4 muxer that
+    refuses it. Asserted rather than assumed, because the whole bug was that assumption.
+    """
+    segments = tmp_path / "out"
+    segments.mkdir()
+    args = build_args(
+        _FFMPEG, _h264_sample(tmp_path), mode=MODE_COPY, output_format=FORMAT_HLS,
+        directory=segments,
+    )  # fmt: skip
+
+    done = subprocess.run(args, capture_output=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr.decode(errors="replace")
+    assert (segments / HLS_PLAYLIST).is_file()
+    assert b"avc1" in (segments / HLS_INIT).read_bytes()
 
 
 def test_encoder_listing_reads_video_encoders_only() -> None:
