@@ -79,7 +79,72 @@ def trigger_names(triggers: Any) -> list[str]:
     return names
 
 
-def serialize_file(file: Any) -> dict[str, Any]:
+def _wall_clock(moment: dt.datetime) -> dt.datetime:
+    """Return the wall clock a timestamp was reported as, with any assumed zone stripped."""
+    return moment.replace(tzinfo=None)
+
+
+# Only two conventions are being told apart and they differ by the whole UTC offset, so
+# the slack here only has to absorb a recorder that rounds one of the two timestamps.
+_CONVENTION_SLACK = dt.timedelta(seconds=2)
+
+
+def playback_time_is_utc(files: list[Any]) -> bool:
+    """Measure whether the recorder states PlaybackTime in UTC or in its own time.
+
+    reolink_aio reads `PlaybackTime` as UTC unconditionally. On the recorders this was
+    written against that is correct, but it is not universal, and where it does not hold
+    converting the timestamp again moves it by the whole UTC offset -- naming a moment
+    hours before the recording exists. The recorder then answers 404 for every clip on
+    every camera whatever the stream, which is what issue #1 turned out to be. Invisible
+    on a recorder keeping UTC, and invisible in the log, because the request itself is
+    perfectly well formed.
+
+    So it is measured rather than assumed, from the search results themselves. Splitting
+    rewrites StartTime and copies PlaybackTime, so among the rows sharing one PlaybackTime
+    the earliest is the one that still begins where the recording does -- and for that row
+    the two timestamps describe the same instant. Their difference as bare wall clocks is
+    therefore zero if PlaybackTime is already in the recorder's own time, or exactly the
+    UTC offset if it is in UTC.
+
+    Rows matching neither convention are not evidence and do not vote: a recording that
+    began before the day being searched can come back clipped to the window, and a clipped
+    StartTime is not the file's start. A recorder keeping UTC cannot be told apart at all,
+    since both conventions agree there -- and it does not matter, because they agree.
+    """
+    earliest: dict[dt.datetime, tuple[dt.datetime, dt.timedelta]] = {}
+    for file in files:
+        try:
+            start = file.start_time
+            playback = _wall_clock(file.playback_time)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        known = earliest.get(playback)
+        if known is None or _wall_clock(start) < known[0]:
+            earliest[playback] = (_wall_clock(start), start.utcoffset() or dt.timedelta(0))
+
+    as_utc = as_local = 0
+    for playback, (start, utc_offset) in earliest.items():
+        if not utc_offset:
+            continue
+        gap = start - playback
+        if abs(gap - utc_offset) <= _CONVENTION_SLACK:
+            as_utc += 1
+        elif abs(gap) <= _CONVENTION_SLACK:
+            as_local += 1
+
+    if as_local > as_utc:
+        _LOGGER.debug(
+            "Recorder states PlaybackTime in its own time, not UTC (%s recordings agree, "
+            "%s disagree); using it unconverted",
+            as_local,
+            as_utc,
+        )
+        return False
+    return True
+
+
+def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]:
     """Turn a reolink_aio VOD_file into a JSON-safe dict.
 
     Splitting is why this is more involved than it looks. Recorders write long files -- half
@@ -91,14 +156,23 @@ def serialize_file(file: Any) -> dict[str, Any]:
 
     So both are recorded: the file's own start, which identifies the recording, and this
     window's offset into it, which is where playback should begin.
+
+    `playback_is_utc` is which zone the recorder states PlaybackTime in, measured by
+    `playback_time_is_utc` over a whole search rather than decided per row. It defaults to
+    the library's own assumption, which is right far more often than not.
     """
     start = file.start_time
     end = file.end_time
 
-    # PlaybackTime is the *file's* start in UTC and survives splitting, so it is the only
-    # reliable anchor for where this window sits inside the recording.
+    # PlaybackTime is the *file's* start and survives splitting, so it is the only reliable
+    # anchor for where this window sits inside the recording. reolink_aio hands it over
+    # labelled UTC; where that label is wrong it is the recorder's own time already and
+    # converting it would move the request the whole UTC offset away from the recording.
     playback_time = file.playback_time
-    file_start = playback_time.astimezone(start.tzinfo)
+    if playback_is_utc:
+        file_start = playback_time.astimezone(start.tzinfo)
+    else:
+        file_start = playback_time.replace(tzinfo=start.tzinfo)
     offset = max(0.0, (start - file_start).total_seconds())
 
     return {
@@ -110,6 +184,10 @@ def serialize_file(file: Any) -> dict[str, Any]:
         # Identifies the recording itself, which is what playback needs.
         "file_start_id": file_start.strftime("%Y%m%d%H%M%S"),
         "playback_id": playback_time.strftime("%Y%m%d%H%M%S"),
+        # Which zone the recorder was measured to state PlaybackTime in, so a diagnostics
+        # report says how `file_start_id` was arrived at rather than leaving it to be
+        # inferred from the two timestamps.
+        "playback_is_utc": playback_is_utc,
         # Seconds from the start of the recording to the start of this window.
         "offset": offset,
         "name": file.file_name,
@@ -232,7 +310,11 @@ async def async_search_day(
         split_time=split_time,
     )
 
-    serialised = [serialize_file(file) for file in vod_files]
+    # Measured over the whole result set, before anything is serialised: telling the two
+    # PlaybackTime conventions apart needs the rows that share a recording, and a single
+    # row cannot say which convention produced it.
+    playback_is_utc = playback_time_is_utc(vod_files)
+    serialised = [serialize_file(file, playback_is_utc=playback_is_utc) for file in vod_files]
 
     # What Home Assistant saw, folded in before anything is judged or discarded.
     #

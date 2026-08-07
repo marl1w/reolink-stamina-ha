@@ -11,6 +11,7 @@ from custom_components.reolink_stamina.vod import (
     async_search_day,
     build_events,
     is_continuous_day,
+    playback_time_is_utc,
     serialize_file,
     trigger_names,
 )
@@ -543,6 +544,145 @@ def test_the_first_window_has_no_offset() -> None:
         "type": "sub",
     }
     assert serialize_file(_FakeVod(data, tz))["offset"] == 0.0
+
+
+# ----------------------------------------- which zone the recorder states PlaybackTime in
+
+
+# The recorder's own time, whatever reolink_aio labels the timestamp as.
+_EASTERN = dt.timezone(dt.timedelta(hours=-4))
+
+
+def _rows(
+    tz: dt.tzinfo, playback: dt.datetime, *windows: tuple[dt.datetime, dt.datetime]
+) -> list[_FakeVod]:
+    """Rows of one recording: their own StartTime, the recording's PlaybackTime copied.
+
+    `playback` is given as the wall clock the recorder puts in the field, which is all a
+    recorder sends -- reolink_aio is what labels it UTC.
+    """
+    return [
+        _FakeVod(
+            {
+                "StartTime": _reolink_time(start),
+                "EndTime": _reolink_time(end),
+                "PlaybackTime": _reolink_time(playback),
+                "name": "20260806162829",
+                "size": 1024,
+                "type": "sub",
+            },
+            tz,
+        )
+        for start, end in windows
+    ]
+
+
+def test_a_recorder_stating_playback_time_in_utc_is_measured_as_such() -> None:
+    """The recorders this was written against, and the library's own assumption."""
+    tz = dt.timezone(dt.timedelta(hours=2))
+    files = _rows(
+        tz,
+        dt.datetime(2026, 8, 4, 6, 30),
+        (dt.datetime(2026, 8, 4, 8, 30), dt.datetime(2026, 8, 4, 8, 35)),
+        (dt.datetime(2026, 8, 4, 8, 35), dt.datetime(2026, 8, 4, 8, 40)),
+    )
+    assert playback_time_is_utc(files) is True
+
+
+def test_a_recorder_stating_playback_time_in_its_own_time_is_measured_as_such() -> None:
+    """Issue #1: an RLN12W states it locally, and converting it again 404s every clip.
+
+    The first row of a recording begins where the recording does, so its StartTime and the
+    PlaybackTime it carries are the same instant. Identical wall clocks therefore mean no
+    conversion is wanted -- reading them four hours apart is the bug.
+    """
+    files = _rows(
+        _EASTERN,
+        dt.datetime(2026, 8, 6, 16, 28, 29),
+        (dt.datetime(2026, 8, 6, 16, 28, 29), dt.datetime(2026, 8, 6, 16, 33, 29)),
+        (dt.datetime(2026, 8, 6, 16, 33, 29), dt.datetime(2026, 8, 6, 16, 38, 29)),
+    )
+    assert playback_time_is_utc(files) is False
+
+
+def test_a_locally_stated_playback_time_is_not_converted_again() -> None:
+    """What the recorder is asked for: the recording's own start, and the seek into it."""
+    files = _rows(
+        _EASTERN,
+        dt.datetime(2026, 8, 6, 16, 28, 29),
+        (dt.datetime(2026, 8, 6, 16, 48, 29), dt.datetime(2026, 8, 6, 16, 53, 29)),
+    )
+    data = serialize_file(files[0], playback_is_utc=False)
+
+    # Addressed at the recording's real start, not four hours before it.
+    assert data["file_start_id"] == "20260806162829"
+    assert data["playback_id"] == "20260806162829"
+    # Twenty minutes in, which the conversion used to swallow into the clamp.
+    assert data["offset"] == 1200.0
+    assert data["playback_is_utc"] is False
+
+
+def test_a_recording_clipped_to_the_searched_day_does_not_decide_it() -> None:
+    """A StartTime the search window truncated is not the file's start, so it cannot vote.
+
+    Searching one day can return a recording that began the evening before, and matching
+    neither convention has to mean 'no evidence' rather than tipping the measurement.
+    """
+    tz = dt.timezone(dt.timedelta(hours=2))
+    files = _rows(
+        tz,
+        dt.datetime(2026, 8, 3, 23, 50),
+        (dt.datetime(2026, 8, 4, 0, 0), dt.datetime(2026, 8, 4, 0, 5)),
+    ) + _rows(
+        tz,
+        dt.datetime(2026, 8, 4, 6, 30),
+        (dt.datetime(2026, 8, 4, 8, 30), dt.datetime(2026, 8, 4, 8, 35)),
+    )
+    assert playback_time_is_utc(files) is True
+
+
+def test_a_recorder_keeping_utc_falls_back_to_the_library_assumption() -> None:
+    """With no offset the two conventions are the same answer, so neither can be measured."""
+    files = _rows(
+        dt.UTC,
+        dt.datetime(2026, 8, 4, 8, 30),
+        (dt.datetime(2026, 8, 4, 8, 30), dt.datetime(2026, 8, 4, 8, 35)),
+    )
+    assert playback_time_is_utc(files) is True
+
+
+def test_nothing_to_measure_falls_back_to_the_library_assumption() -> None:
+    """An empty day, and a recorder reporting no time settings at all."""
+    assert playback_time_is_utc([]) is True
+    assert playback_time_is_utc([object()]) is True
+
+
+async def test_search_day_measures_the_convention_once_for_the_whole_result(hass) -> None:
+    """The measurement needs the rows that share a recording, so it cannot be per row.
+
+    End to end: a locally-stating recorder must come out of the search addressed at the
+    recording's real start, on every row including the split ones.
+    """
+    from unittest.mock import patch as mock_patch
+
+    files = _rows(
+        _EASTERN,
+        dt.datetime(2026, 8, 6, 16, 28, 29),
+        (dt.datetime(2026, 8, 6, 16, 28, 29), dt.datetime(2026, 8, 6, 16, 33, 29)),
+        (dt.datetime(2026, 8, 6, 16, 33, 29), dt.datetime(2026, 8, 6, 16, 38, 29)),
+    )
+    api = FakeApi(files={"sub": files})
+
+    with mock_patch(
+        "custom_components.reolink_stamina.vod.async_get_host",
+        return_value=FakeHost(api),
+    ):
+        found, _ = await async_search_day(
+            hass, "entry", 0, "sub", dt.date(2026, 8, 6), 5, include_unlabelled=True
+        )
+
+    assert [row["file_start_id"] for row in found] == ["20260806162829"] * 2
+    assert [row["offset"] for row in found] == [0.0, 300.0]
 
 
 # ----------------------------------------------- what a row is: sensors before the NVR

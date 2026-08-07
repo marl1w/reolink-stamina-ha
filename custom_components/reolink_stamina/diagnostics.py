@@ -20,7 +20,9 @@ What is here is chosen to answer the questions that actually come up:
   recorded at and answers 404 — a clip that never plays, with nothing in the log tying it
   to a clock.
 
-Nothing here names a camera, a recording or a credential.
+No credential appears here, and no camera is named. Recording file names do, in the playback
+samples and nowhere else: whether a recorder names its recordings or returns a bare timestamp
+decides how a playback URL has to address them, so it is part of the evidence.
 """
 
 from __future__ import annotations
@@ -44,12 +46,13 @@ from .restream import SESSION_PREFIX, async_beta_enabled, async_get_manager
 def _clock(hass: HomeAssistant) -> dict[str, Any]:
     """Return Home Assistant's clock and each recorder's, so the two can be compared.
 
-    Playback is addressed by timestamp, and the recorder's `PlaybackTime` is read as UTC and
-    converted into local time to say which recording is wanted. Both halves of that have to
-    be right: if a recorder keeps a different timezone from Home Assistant, or reports its
-    own times in a zone this does not expect, the converted timestamp names a moment the
-    recorder has no recording for and it answers 404 — which reads as a clip that will not
-    play, with nothing in the log to connect it to a clock.
+    Playback is addressed by timestamp: the recorder's `PlaybackTime` is converted into its
+    own local time to say which recording is wanted. Both halves of that have to be right,
+    and only one of them is measured — which zone `PlaybackTime` arrives in is, but a
+    recorder whose clock simply disagrees with Home Assistant's is not something a search
+    result can reveal. Either way the converted timestamp names a moment the recorder has no
+    recording for and it answers 404 — which reads as a clip that will not play, with
+    nothing in the log to connect it to a clock.
 
     A report that shows the two offsets side by side turns that into a one-line diagnosis.
     """
@@ -68,7 +71,12 @@ def _clock(hass: HomeAssistant) -> dict[str, Any]:
             api = async_get_host(hass, device.entry_id).api
             tzinfo = api.timezone()
             device_time = api.time()
-            recorder["timezone"] = str(tzinfo) if tzinfo is not None else "not reported"
+            # Named for the moment being reported, not for the zone in the abstract. A
+            # recorder's tzinfo prints as its *standard* offset when asked without one --
+            # "UTC-05:00" for a device sitting on -04:00 in summer -- which reads as a
+            # missing DST adjustment and sent the first report of issue #1 after one.
+            zone = tzinfo.tzname(device_time) if tzinfo is not None else None
+            recorder["timezone"] = zone or "not reported"
             recorder["time"] = (
                 device_time.isoformat() if device_time is not None else "not reported"
             )
@@ -141,10 +149,13 @@ async def async_get_config_entry_diagnostics(
         },
         "clocks": _clock(hass),
         # The timestamps one recording was described by, which is what a playback URL is
-        # built from. `playback_id` is the recording's own start read as UTC, `file_start_id`
-        # is that same instant in local time and is what the recorder is asked for, and
-        # `start_id` is the window being shown. A `file_start_id` the recorder has nothing
-        # at is how a 404 happens, and these three side by side are what show it.
+        # built from. `playback_id` is the recording's own start as the recorder stated it,
+        # `file_start_id` is that same instant in the recorder's local time and is what the
+        # recorder is asked for, and `start_id` is the window being shown. A `file_start_id`
+        # the recorder has nothing at is how a 404 happens, and these three side by side are
+        # what show it. `playback_is_utc` is which zone `playback_id` was taken to be in,
+        # measured per search -- so a wrong `file_start_id` says whether the measurement or
+        # the arithmetic was at fault.
         "playback_samples": data.cache.sample_files() if data is not None else [],
         "temporary_space": await hass.async_add_executor_job(_temporary_space),
     }
