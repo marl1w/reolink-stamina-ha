@@ -60,7 +60,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .ffmpeg import async_ffmpeg_binary
-from .flv_proxy import async_playback_source
+from .flv_proxy import async_playback_source, scrub_credentials
 from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
 
 _LOGGER = logging.getLogger(__name__)
@@ -770,10 +770,16 @@ class _Stream:
 
         What gets classified. All of it, because the line that explains a failure is very
         often not among the first few — see `_without_hwaccel_probe` for how that went.
+
+        Scrubbed of credentials before anything else sees it: ffmpeg repeats the input
+        URL in its complaints, and on the NVR route that URL carries the recorder's
+        username and password.
         """
-        return _without_hwaccel_probe(
-            self._stderr.decode(errors="replace").strip(),
-            requested=_devices_requested(self.encoder),
+        return scrub_credentials(
+            _without_hwaccel_probe(
+                self._stderr.decode(errors="replace").strip(),
+                requested=_devices_requested(self.encoder),
+            )
         )
 
     @property

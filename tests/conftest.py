@@ -114,6 +114,8 @@ class FakeApi:
         return ["person", "vehicle"]
 
     async def get_vod_source(self, channel, filename, stream=None, request_type=None):
+        from reolink_aio.enums import VodRequestType
+
         self.vod_source_calls.append(
             {
                 "channel": channel,
@@ -122,6 +124,15 @@ class FakeApi:
                 "request_type": request_type,
             }
         )
+        if request_type == VodRequestType.FLV:
+            # Shaped like reolink_aio's FLV URL: seek pinned to zero, credentials in the
+            # query, the file named by `start`. Used whole, with only the seek replaced.
+            stream_type = 1 if stream == "sub" else 0
+            return (
+                "application/x-mpegURL",
+                f"http://nvr/flv?port=1935&app=bcs&stream=playback.bcs&channel={channel}"
+                f"&type={stream_type}&start={filename}&seek=0&user=admin&password=p",
+            )
         # Shaped like reolink_aio's PLAYBACK URL: only its base and token are used.
         return (
             "video/mp4",

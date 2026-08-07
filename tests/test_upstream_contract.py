@@ -130,6 +130,24 @@ def test_vod_request_types_we_use_still_exist() -> None:
     assert VodRequestType.DOWNLOAD.value == "Download"
     assert VodRequestType.PLAYBACK.value == "Playback"
     assert VodRequestType.NVR_DOWNLOAD.value == "NvrDownload"
+    # The route every NVR stream is built from: NVRs answer 404 to `cmd=Playback`.
+    assert VodRequestType.FLV.value == "FLV"
+
+
+def test_the_flv_vod_url_still_pins_seek_to_zero() -> None:
+    """The NVR playback route substitutes the library's pinned `seek=0`.
+
+    If the library stops writing `seek=0`, the substitution in
+    flv_proxy.async_playback_source has nothing to match and needs revisiting (it
+    appends instead, which only works while the endpoint tolerates it).
+    """
+    import inspect
+
+    from reolink_aio.api import Host
+
+    assert "seek=0" in inspect.getsource(Host.get_vod_source), (
+        "reolink_aio's FLV VOD URL no longer pins seek=0; update flv_proxy.async_playback_source"
+    )
 
 
 def test_playback_proxy_url_helper_still_exists() -> None:

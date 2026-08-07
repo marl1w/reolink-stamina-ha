@@ -1,6 +1,6 @@
 """Pass the recorder's playback stream through to the browser.
 
-The recorder answers `cmd=Playback` with FLV — a container, not something that needs
+The recorder answers playback requests with FLV — a container, not something that needs
 re-encoding. The browser can demux it itself through Media Source Extensions, which is
 exactly what the recorder's own web player does, so all that is needed here is a pipe.
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from base64 import urlsafe_b64decode
 import logging
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
@@ -32,6 +33,18 @@ _LOGGER = logging.getLogger(__name__)
 
 # The recorder's own stream selector: 1 is the sub stream, 0 the main one.
 PLAYBACK_STREAM_TYPE = {STREAM_SUB: 1, STREAM_MAIN: 0}
+
+# What must never be quoted back out of an error. The NVR playback route authenticates
+# with the recorder's own username and password in the query string, and ffmpeg repeats
+# the whole URL in its complaints — which end up in the log, the panel and diagnostics.
+# Tokens too: shorter-lived, but a live one is a live one.
+_CREDENTIALS = re.compile(r"\b(user|password|token)=[^&\s'\"]+")
+
+
+def scrub_credentials(text: str) -> str:
+    """Blank credential query parameters out of text bound for a log or a report."""
+    return _CREDENTIALS.sub(r"\1=***", text)
+
 
 # Generous: the recorder sends at roughly real time, so a long clip takes a long time.
 # The browser closing the connection is what normally ends it.
@@ -71,18 +84,44 @@ async def async_playback_source(
 ) -> str:
     """Build the recorder's playback URL, as its own web player builds it.
 
-    Every parameter matters. `start` is StartTime while `playbackTime` is the same instant
-    in UTC, and both are required; `type` selects the resolution numerically; `channel` and
-    `seek` are mandatory even at offset zero. Omitting any one of them makes the recorder
-    answer 404 or drop the connection.
+    Two device families, two endpoints, and they do not overlap.
 
-    reolink_aio's own playback URL omits four of them and derives `start` by
-    pattern-matching the file name, which never matches the synthetic names a recorder
-    returns, so a library-built URL cannot be used here.
+    An NVR serves playback from its `/flv` endpoint, where the recording is named by its
+    file name — for an NVR that is the synthetic name reolink_aio minted from
+    PlaybackTime, and the same string goes back — and `seek` is seconds into it. It does
+    not implement `cmd=Playback` at all: it answers 404 for every recording on every
+    channel however the request is phrased, which reads exactly like a wrong timestamp
+    and is not one. (Measured against an RLN16-410: every combination of local and UTC
+    for every time parameter 404s, while the `/flv` route plays and seeks.)
+
+    An IP camera is the reverse: `cmd=Playback` is its playback endpoint. There, every
+    parameter matters. `start` is StartTime while `playbackTime` is the same instant in
+    UTC, and both are required; `type` selects the resolution numerically; `channel` and
+    `seek` are mandatory even at offset zero. Omitting any one of them makes the camera
+    answer 404 or drop the connection — and reolink_aio's own PLAYBACK URL omits four of
+    them, so on this path only its base address and token can be borrowed.
+
+    A Home Hub takes the camera path: it answers `cmd=Playback` the way the cameras do,
+    which is also the route Home Assistant's own Reolink integration takes for hubs.
     """
     from reolink_aio.enums import VodRequestType
 
     api = async_get_host(hass, entry_id).api
+
+    if api.is_nvr and not api.is_hub:
+        # The library's FLV URL is complete — scheme, ports, stream type, credentials —
+        # except that it pins `seek=0`. Substituted as text rather than parsed and
+        # rebuilt: the library sends the password deliberately unencoded because these
+        # endpoints reject a percent-encoded one, and a round-trip through
+        # parse_qs/urlencode would encode it.
+        _mime, template = await api.get_vod_source(channel, filename, stream, VodRequestType.FLV)
+        offset = max(0, int(seek))
+        url, replaced = re.subn(r"(?<=[?&])seek=0(?=&|$)", f"seek={offset}", template, count=1)
+        if not replaced:
+            # The library stopped pinning it, so there is nothing to substitute and
+            # the parameter still has to be said.
+            url = f"{url}{'&' if '?' in url else '?'}seek={offset}"
+        return url
 
     # Borrow a library-built URL for its base address and freshly minted token, so
     # authentication and renewal stay the library's problem.
@@ -159,7 +198,11 @@ class ReolinkStaminaFlvView(HomeAssistantView):
         try:
             upstream = await session.get(source, timeout=STREAM_TIMEOUT)
         except Exception as err:
-            return web.Response(status=502, text=f"The device did not answer: {err}")
+            # Scrubbed because aiohttp's errors can quote the URL, and on the NVR route
+            # the URL carries the recorder's credentials.
+            return web.Response(
+                status=502, text=f"The device did not answer: {scrub_credentials(str(err))}"
+            )
 
         if upstream.status != 200:
             upstream.release()
