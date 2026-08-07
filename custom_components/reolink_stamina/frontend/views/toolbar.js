@@ -28,9 +28,28 @@ const STYLES = /* css */ `
   padding: 12px 16px;
   background: var(--rv-surface);
   border-bottom: 1px solid var(--rv-line);
+  transition: gap 260ms var(--rv-ease);
 }
 
 .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/*
+ * The wrappers that fold away, and the mechanism that folds them.
+ *
+ * A grid row animated between 1fr and 0fr, rather than a max-height guess: the row is
+ * exactly as tall as whatever is in it, so the fold lands on the real height whether the
+ * trigger chips sit on one line or wrap onto two. A display of none cannot be animated at
+ * all, which is why the toolbar used to snap in and out.
+ */
+.collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows 260ms var(--rv-ease),
+    opacity 180ms var(--rv-ease),
+    margin-top 260ms var(--rv-ease);
+}
+.collapse__clip { min-height: 0; overflow: hidden; }
 
 .date {
   display: flex;
@@ -168,7 +187,11 @@ const STYLES = /* css */ `
 
 @media (max-width: 700px) {
   .bar { padding: 10px 12px; }
-  .presets { order: 3; width: 100%; overflow-x: auto; }
+  .collapse--presets { order: 3; width: 100%; }
+  /* Scrolled sideways rather than wrapped, and without a bar of its own: a scrollbar that
+     appears across the toolbar of a panel with nothing else to scroll reads as a fault. */
+  .presets { overflow-x: auto; scrollbar-width: none; }
+  .presets::-webkit-scrollbar { display: none; }
 }
 
 /*
@@ -183,8 +206,18 @@ const STYLES = /* css */ `
  * rather than narrow, and that is exactly when a toolbar this tall costs the most.
  */
 @media (max-width: 900px) {
-  :host([collapsed]) .presets,
-  :host([collapsed]) .line--filters { display: none; }
+  :host([collapsed]) .collapse {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    /* A row of no height is still a row, and a chip in it is still tappable. */
+    pointer-events: none;
+  }
+  /* Both parents go on reserving their gap around a row that now has no height, which
+     would leave a band of empty toolbar exactly where the toolbar was folded away. */
+  :host([collapsed]) .bar { gap: 0; }
+}
+@media (max-width: 700px) {
+  :host([collapsed]) .collapse--presets { margin-top: -8px; }
 }
 `;
 
@@ -284,6 +317,11 @@ export class StaminaToolbar extends HTMLElement {
         })
       )
     );
+    const presetsWrap = el(
+      "div",
+      { class: "collapse collapse--presets" },
+      el("div", { class: "collapse__clip" }, this._presets)
+    );
 
     // --- freshness + actions
     this._fresh = el("div", { class: "fresh" });
@@ -317,7 +355,7 @@ export class StaminaToolbar extends HTMLElement {
       this._prev,
       dateAnchor,
       this._next,
-      this._presets,
+      presetsWrap,
       el("div", { class: "spacer" }),
       this._fresh,
       this._refresh,
@@ -329,10 +367,18 @@ export class StaminaToolbar extends HTMLElement {
     this._hiddenNote = el("div", { class: "hidden-note" });
     const line2 = el(
       "div",
-      { class: "line line--filters" },
-      this._filters,
-      el("div", { class: "spacer" }),
-      this._hiddenNote
+      { class: "collapse collapse--filters" },
+      el(
+        "div",
+        { class: "collapse__clip" },
+        el(
+          "div",
+          { class: "line line--filters" },
+          this._filters,
+          el("div", { class: "spacer" }),
+          this._hiddenNote
+        )
+      )
     );
 
     this.shadowRoot.append(el("div", { class: "bar" }, line1, line2));

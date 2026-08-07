@@ -10,6 +10,7 @@
  * * `playback/routes.js` — that ladder, and the memory of which rung worked where.
  * * `playback/clip-window.js` — trimming a 24/7 segment down to its detections.
  * * `playback/save.js` — writing the clip on screen out as an MP4.
+ * * `playback/zoom.js` — pinch, drag and double-tap to look closer at the picture.
  * * `playback/overlay.js` and `scrub-bar.js` — the two bits of chrome with behaviour.
  *
  * Three behaviours are deliberate and load-bearing:
@@ -37,6 +38,7 @@ import { OVERLAY_STYLES, Overlay } from "../playback/overlay.js";
 import { ROUTE_STREAM } from "../playback/routes.js";
 import { SAVE_STYLES, assembleClip, clipFileName, saveBlob, saveMenuNodes } from "../playback/save.js";
 import { PlaybackSource } from "../playback/source.js";
+import { ZOOM_STYLES, PinchZoom } from "../playback/zoom.js";
 import { SCRUB_STYLES, ScrubBar } from "./scrub-bar.js";
 
 /**
@@ -109,11 +111,48 @@ video { width: 100%; height: 100%; max-height: 100%; display: block; object-fit:
 .preroll-note .swatch[data-tone="motion"] { --marker-tone: var(--rv-tone-motion); }
 .preroll-note .swatch[data-tone="neutral"] { --marker-tone: var(--rv-tone-neutral); }
 
-.trim-btn { padding: 5px 10px; font-size: 0.78rem; white-space: nowrap; }
+.trim-btn { padding: 5px 10px; font-size: 0.78rem; white-space: nowrap; min-width: 0; }
 .trim-btn[hidden] { display: none; }
 
+/*
+ * One line of controls on a phone.
+ *
+ * The row was wrapping onto a second line, which costs the picture about fifty pixels of a
+ * screen that has none to spare. Everything that survives here is either a fixed-size button
+ * or a short label — the resolution reads "Low" rather than "Low resolution", the trim button
+ * keeps its length and drops its sentence — and the one item with no natural width, the
+ * detection note, goes: the markers it describes are still on the bar above it, still with
+ * their tooltips, and it is the only thing here that could push the row over on its own.
+ */
 @media (max-width: 620px) {
-  .times .sep, .head__sub { display: none; }
+  .head { gap: 6px; padding: 10px 6px 10px 12px; }
+  .head__sub { display: none; }
+  .controls { padding: 6px 8px 10px; gap: 6px; }
+  .buttons { flex-wrap: nowrap; gap: 2px; min-width: 0; }
+  .times .sep { display: none; }
+  .preroll-note { display: none; }
+  .icon-btn { width: 36px; height: 36px; }
+  .select { padding: 5px 6px; font-size: 0.78rem; }
+  .trim-btn { padding: 5px 7px; font-size: 0.75rem; }
+  .trim-btn__what { display: none; }
+
+  /* Nothing wraps here any more, so the row has to survive a screen narrower than the sum
+     of its parts. The buttons are the row's vocabulary and keep their size; the clock and
+     the trim button are the two items that still read once shortened, so they are the two
+     that give way — and the spacer between them goes first of all. */
+  .buttons > .icon-btn,
+  .buttons > .anchor,
+  .buttons > .select { flex: 0 0 auto; }
+  .times,
+  .trim-btn { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .times { gap: 4px; }
+}
+
+/* A phone held sideways is short rather than narrow, and the stage's floor is what stops
+   the header and the controls fitting alongside it. */
+@media (max-height: 520px) {
+  .stage { min-height: 120px; }
+  .head { padding: 8px 10px; }
 }
 `;
 
@@ -144,7 +183,10 @@ export class EventPlayer extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    adoptStyles(this.shadowRoot, SHARED + STYLES + OVERLAY_STYLES + SCRUB_STYLES + SAVE_STYLES);
+    adoptStyles(
+      this.shadowRoot,
+      SHARED + STYLES + OVERLAY_STYLES + SCRUB_STYLES + SAVE_STYLES + ZOOM_STYLES
+    );
     this._built = false;
     this._event = null;
     this._stream = null;
@@ -206,6 +248,7 @@ export class EventPlayer extends HTMLElement {
     document.removeEventListener("webkitfullscreenchange", this._onFullscreenChange);
     this.removeEventListener("keydown", this._onEscape);
     this._saving?.abort();
+    this._zoom?.detach();
     this._exitFullscreen();
     // Whatever the server was converting for us stops when we let go of the URL.
     this._source?.destroy();
@@ -233,6 +276,7 @@ export class EventPlayer extends HTMLElement {
 
     if (!event) {
       this._exitFullscreen();
+      this._zoom.reset();
       this._source.destroy();
       this._video.removeAttribute("src");
       this._video.load();
@@ -240,6 +284,8 @@ export class EventPlayer extends HTMLElement {
     }
 
     if (!sameEvent) {
+      // A zoom belongs to the picture it was made on, not to the player.
+      this._zoom.reset();
       // Only when the clip really changed. This method is called again on every store
       // update — a search patch landing, detection counts arriving — and closing the menu
       // there made it vanish seemingly at random while a clip was playing.
@@ -413,6 +459,9 @@ export class EventPlayer extends HTMLElement {
     this._streamChosenByUser = byUser;
     this._stream = stream;
     this._atClipEnd = false;
+    // The two resolutions are separate encodings and need not share an aspect ratio, so a
+    // zoom carried across them would land somewhere other than where it was left.
+    this._zoom.reset();
     // With the beta off, changing resolution must not also change route: the panel has
     // always simply reloaded whatever route was playing.
     this._source.reset({ event: this._event, stream, keepRoute: !this._adaptive });
@@ -477,6 +526,11 @@ export class EventPlayer extends HTMLElement {
 
     this._overlay = new Overlay({ onPlay: () => this._togglePlay() });
     this._stage = el("div", { class: "stage" }, this._video, this._overlay.element);
+    // The gesture is measured against the stage and moves the video inside it. Its reset
+    // pill goes in last, so it stays reachable while a message is on screen.
+    this._zoom = new PinchZoom({ container: this._stage, target: this._video });
+    this._stage.append(this._zoom.indicator);
+    this._zoom.attach();
 
     this._source = new PlaybackSource({
       video: this._video,
@@ -726,6 +780,8 @@ export class EventPlayer extends HTMLElement {
    * so unlike the whole-file route this replaced, there is no seekability to establish.
    */
   _onMetadata() {
+    // How far the picture may be panned depends on its shape, which is only knowable now.
+    this._zoom.refresh();
     this._onTime();
     this._renderChrome();
   }
@@ -935,13 +991,15 @@ export class EventPlayer extends HTMLElement {
 
     const whole = this._windowDuration();
     const event = Math.max(0, this._clip.end - this._clip.start);
+    // Two spans rather than one sentence: on a phone the wording is dropped and the length
+    // kept, because the length against the one on the clock is the whole point of the button.
     this._trimBtn.replaceChildren(
       icon(this._untrimmed ? "mdi:arrow-collapse-horizontal" : "mdi:arrow-expand-horizontal"),
       el("span", {
-        text: this._untrimmed
-          ? `Event only (${formatClock(event)})`
-          : `Full segment (${formatClock(whole)})`,
-      })
+        class: "trim-btn__what",
+        text: this._untrimmed ? "Event only" : "Full segment",
+      }),
+      el("span", { class: "tabular", text: formatClock(this._untrimmed ? event : whole) })
     );
     this._trimBtn.title = this._untrimmed
       ? "Trim back to the detections in this segment"
@@ -961,10 +1019,10 @@ export class EventPlayer extends HTMLElement {
 
     const wanted = streams.join("|");
     if (this._qualitySelect.dataset.built !== wanted) {
+      // "Low", not "Low resolution": the word is what tipped the control row onto a second
+      // line on a phone, and the select's own label already says what it picks.
       this._qualitySelect.replaceChildren(
-        ...streams.map((stream) =>
-          el("option", { value: stream, text: `${streamLabel(stream)} resolution` })
-        )
+        ...streams.map((stream) => el("option", { value: stream, text: streamLabel(stream) }))
       );
       this._qualitySelect.dataset.built = wanted;
     }

@@ -23,6 +23,19 @@ const STYLES = /* css */ `
 
 .list { padding: 8px 12px 40px; }
 
+/*
+ * No backdrop-filter here, deliberately.
+ *
+ * A blurred backdrop on a sticky element inside a scroller is about the most expensive
+ * thing that can be put in one: the backdrop behind it changes every single frame as rows
+ * pass underneath, so the blur is re-sampled and re-run every frame, on the GPU, for as
+ * long as the finger is moving. On a phone that is most of the frame budget.
+ *
+ * It was also buying almost nothing. The gradient below is opaque for most of its height,
+ * so the blur only ever applied to the fade at the bottom edge — a few pixels of softness
+ * for a per-frame cost across the whole scroll. The fade now runs further before it gives
+ * out, which covers the same rows for free.
+ */
 .day {
   position: sticky;
   top: 0;
@@ -31,8 +44,7 @@ const STYLES = /* css */ `
   align-items: center;
   gap: 10px;
   padding: 12px 8px 8px;
-  background: linear-gradient(to bottom, var(--rv-bg) 65%, transparent);
-  backdrop-filter: blur(6px);
+  background: linear-gradient(to bottom, var(--rv-bg) 82%, transparent);
 }
 .day__label { font-size: 0.86rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--rv-text-dim); }
 .day__count { font-size: 0.76rem; color: var(--rv-text-dim); }

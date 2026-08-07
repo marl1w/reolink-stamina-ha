@@ -79,6 +79,15 @@ else
   printf '  skipped (node not installed)\n'
 fi
 
+step "Folding toolbar"
+# A decision made from a stream of scroll positions, with the clock injected so a flick and
+# a drift can be told apart without a thumb or a browser.
+if command -v node >/dev/null 2>&1; then
+  if node tests/frontend/test_fold.mjs; then ok "fold"; else bad "fold"; fi
+else
+  printf '  skipped (node not installed)\n'
+fi
+
 step "Clip writer (FLV to MP4)"
 # Real files rather than fixtures: ffmpeg builds the FLV, the panel's own code remuxes it,
 # and ffprobe reports what came out. Nothing here needs an NVR.

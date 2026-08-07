@@ -8,6 +8,7 @@
 
 import { adoptStyles, el, frameDebounce, icon } from "./dom.js";
 import { SHARED } from "./theme.js";
+import { ToolbarFold } from "./fold.js";
 import { StaminaApi } from "./api.js";
 import { StaminaStore } from "./store.js";
 import "./views/device-picker.js";
@@ -19,11 +20,28 @@ const STYLES = /* css */ `
 :host {
   display: flex;
   flex-direction: column;
+  /* dvh rather than vh, which is what Home Assistant itself uses for a panel. On a phone
+     the two differ by the height of the browser's own chrome, and a panel that much taller
+     than the window is what put a scrollbar on a page with nothing to scroll. The vh line
+     stays as the fallback for engines that do not know dvh. */
   height: 100vh;
+  height: 100dvh;
   background: var(--rv-bg);
   overflow: hidden;
+  /* Nothing here scrolls the page, so a swipe that runs past the end of a list should not
+     rubber-band the whole panel away from under the status bar. */
+  overscroll-behavior: none;
 }
 
+/*
+ * No safe-area inset here, deliberately.
+ *
+ * The panel element sits in Home Assistant's own layout, and in the Companion app that
+ * layout already starts below the status bar — so a header that also held itself off it
+ * would be inset twice, which is exactly how it looked. The full-screen player below is
+ * the opposite case and does need its own: a fixed position measures from the viewport,
+ * so it escapes that offset and lands under the status bar on its own.
+ */
 .app-header {
   display: flex;
   align-items: center;
@@ -71,21 +89,16 @@ reolink-event-player { flex: 1 1 auto; min-width: 0; }
     min-width: 0;
     border-left: none;
     background: var(--rv-surface);
+    /* Covering the screen means covering the notch and the home indicator too. The player
+       is above even the panel's own header here, so nothing else is holding either off it,
+       and its chrome is fixed at both edges: the clip's title would sit under the clock and
+       the play button under the home indicator. */
+    padding: var(--rv-safe-top) var(--rv-safe-right) var(--rv-safe-bottom) var(--rv-safe-left);
     animation: rv-slide-up 220ms var(--rv-ease) both;
   }
   @keyframes rv-slide-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 }
 `;
-
-/**
- * How far the timeline has to move before the toolbar reacts to it.
- *
- * The first number leaves the toolbar alone at the top of the list, where a small nudge
- * should not take the filters with it. The second is slack against the pixel-by-pixel jitter
- * of a touch scroll, without which the toolbar folds and unfolds under a resting thumb.
- */
-const COLLAPSE_AFTER = 64;
-const COLLAPSE_SLACK = 14;
 
 class ReolinkStaminaPanel extends HTMLElement {
   constructor() {
@@ -181,10 +194,11 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._player = el("reolink-event-player");
     this._playerPane = el("div", { class: "pane-player", hidden: true }, this._player);
 
-    // Reading down the list folds the toolbar away; coming back up brings it back. Whether
+    // Reading down the list folds the toolbar away; a flick back up brings it back. Whether
     // that attribute means anything is the toolbar's CSS to decide — on a wide screen there
     // is room for both. Passive, so this can never hold up a scroll.
-    this._listScrollTop = 0;
+    this._fold = new ToolbarFold();
+    this._collapsed = false;
     this._list.addEventListener("scroll", () => this._onListScroll(), { passive: true });
 
     this._list.addEventListener("event-selected", (event) => {
@@ -224,19 +238,15 @@ class ReolinkStaminaPanel extends HTMLElement {
   /**
    * Give the list the screen while it is being read.
    *
-   * Direction rather than position, because the filters are wanted again the moment someone
-   * reaches for them — and reaching for them is a flick upwards, not a scroll all the way
-   * back to the top of a day with two hundred events in it.
+   * The decision itself is `fold.js`; all that happens here is handing it a position and
+   * putting the answer on the toolbar. Guarded against restating an answer that has not
+   * changed, because a scroll reports several times a frame and toggling the attribute is
+   * what drives the transition.
    */
   _onListScroll() {
-    const top = this._list.scrollTop;
-    const previous = this._listScrollTop;
-    let collapsed;
-    if (top <= COLLAPSE_AFTER) collapsed = false;
-    else if (top > previous + COLLAPSE_SLACK) collapsed = true;
-    else if (top < previous - COLLAPSE_SLACK) collapsed = false;
-    else return; // too small a movement to have meant anything
-    this._listScrollTop = top;
+    const collapsed = this._fold.update(this._list.scrollTop);
+    if (this._collapsed === collapsed) return;
+    this._collapsed = collapsed;
     this._toolbar.toggleAttribute("collapsed", collapsed);
   }
 

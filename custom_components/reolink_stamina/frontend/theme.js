@@ -35,6 +35,20 @@ export const TOKENS = /* css */ `
   --rv-tone-motion: #8b93a7;
   --rv-tone-neutral: #8b93a7;
 
+  /*
+   * Safe areas — the notch, the status bar and the home indicator.
+   *
+   * Home Assistant renders a custom panel with no chrome of its own around it, so nothing
+   * is holding these off the panel: whatever it draws at the very top of the screen sits
+   * under the status bar unless it says otherwise. The frontend defines these variables on
+   * <html> and the Companion app overrides them there, so its numbers are preferred over
+   * the browser's own env() — which is only the fallback for running outside the app.
+   */
+  --rv-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --rv-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --rv-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --rv-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+
   /* Shape and rhythm */
   --rv-radius: 14px;
   --rv-radius-sm: 10px;
