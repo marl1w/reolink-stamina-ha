@@ -43,8 +43,11 @@ from custom_components.reolink_stamina.restream import (
     _available_encoders,
     _classify_ffmpeg_error,
     _cpu_load,
+    _devices_requested,
     _diagnose_no_output,
     _HlsStream,
+    _without_hwaccel_probe,
+    async_choose_encoder,
     async_get_manager,
     async_hls_path,
     async_restream_path,
@@ -146,6 +149,20 @@ def test_hls_segments_are_fragmented_mp4(tmp_path: Path) -> None:
     assert "-force_key_frames" not in args
 
 
+def test_a_copied_stream_is_tagged_so_safari_will_take_it() -> None:
+    """`hev1` is what ffmpeg writes when the source carried no tag, and Safari refuses it.
+
+    The recorder's FLV never carries one, so without this the rung that exists to let a device
+    use its own decoder produces segments that device will not open — and the only way past it
+    is the re-encode this was supposed to avoid.
+    """
+    args = build_args("ffmpeg", _URL, mode=MODE_COPY, output_format=FORMAT_MP4)
+
+    assert args[args.index("-tag:v") + 1] == "hvc1"
+    # Re-encoding produces H.264, where the tag would mean nothing.
+    assert "-tag:v" not in build_args("ffmpeg", _URL, mode=MODE_ENCODE, output_format=FORMAT_MP4)
+
+
 def test_a_re_encoded_hls_stream_places_its_own_keyframes(tmp_path: Path) -> None:
     """Segments have to begin on a keyframe, and the recorder's interval is longer."""
     args = build_args(
@@ -171,6 +188,138 @@ def test_encoder_listing_reads_video_encoders_only() -> None:
  S..... srt                  SubRip subtitle
 """
     assert _available_encoders(listing) == {"h264_v4l2m2m", "libx264"}
+
+
+async def test_an_encoder_that_is_listed_but_cannot_run_is_not_chosen(
+    hass: HomeAssistant,
+) -> None:
+    """The listing says what ffmpeg was built with, which is not what the machine can do.
+
+    The case this exists for, seen in the field: a virtual machine with a graphics device that
+    has a render node and no media engine. Every hardware encoder is listed, `/dev/dri` is
+    there, and not one of them can encode a frame.
+    """
+    with (
+        patch(
+            "custom_components.reolink_stamina.restream._available_encoders",
+            return_value={"h264_qsv", "h264_vaapi", "libx264"},
+        ),
+        patch("custom_components.reolink_stamina.restream.Path.exists", return_value=True),
+        patch(
+            "custom_components.reolink_stamina.restream._async_encoder_works",
+            return_value=False,
+        ) as tested,
+        patch("asyncio.create_subprocess_exec", side_effect=_listing_process),
+    ):
+        chosen = await async_choose_encoder(hass, "ffmpeg")
+
+    assert chosen is SOFTWARE_ENCODER
+    # Each was tried rather than assumed, and each is remembered so it is not tried again.
+    assert tested.call_count == 2
+    assert async_get_manager(hass).failed_encoders == {"h264_qsv", "h264_vaapi"}
+
+
+async def test_a_working_hardware_encoder_is_chosen_and_the_rest_left_alone(
+    hass: HomeAssistant,
+) -> None:
+    """Testing stops at the first that works: the probe is startup cost, so it stays small."""
+    with (
+        patch(
+            "custom_components.reolink_stamina.restream._available_encoders",
+            return_value={"h264_qsv", "h264_vaapi", "libx264"},
+        ),
+        patch("custom_components.reolink_stamina.restream.Path.exists", return_value=True),
+        patch(
+            "custom_components.reolink_stamina.restream._async_encoder_works",
+            return_value=True,
+        ) as tested,
+        patch("asyncio.create_subprocess_exec", side_effect=_listing_process),
+    ):
+        chosen = await async_choose_encoder(hass, "ffmpeg")
+
+    assert chosen.name == "h264_qsv"
+    assert tested.call_count == 1
+    assert async_get_manager(hass).failed_encoders == set()
+
+
+async def _listing_process(*args: str, **kwargs: object) -> SimpleNamespace:
+    """Stand in for `ffmpeg -encoders`, whose output the test patches out anyway."""
+
+    async def communicate() -> tuple[bytes, bytes]:
+        return b"", b""
+
+    return SimpleNamespace(communicate=communicate, returncode=0)
+
+
+# ------------------------------------------------- what ffmpeg said, and what it meant
+
+
+# Verbatim from a Home Assistant OS installation whose graphics device could not be used:
+# three device types `-hwaccel auto` tried on the way past, none of them asked for, none of
+# them fatal, and between them longer than the extract that used to be classified.
+_HWACCEL_NOISE = (
+    "[VAAPI @ 0x7f3864eb8ac0] Failed to initialise VAAPI connection: -1 (unknown libva error).\n"
+    "Device creation failed: -5.\n"
+    "[VDPAU @ 0x7f3864eb8ac0] Cannot open the X11 display .\n"
+    "Device creation failed: -1313558101.\n"
+    "[Vulkan @ 0x7f3864eb8ac0] Instance creation failure: VK_ERROR_INCOMPATIBLE_DRIVER\n"
+    "Device creation failed: -40.\n"
+)
+
+
+def test_the_hardware_probe_is_not_read_as_a_failure() -> None:
+    """`-hwaccel auto` fails loudly, non-fatally, and first. It must not be read at all.
+
+    The bug this is here for: on a machine with no working acceleration these lines are the
+    only thing that ever fitted in the extract, so *every* re-encode that produced nothing was
+    diagnosed as a broken encoder — and each diagnosis retired one, until there were none.
+    """
+    kept = _without_hwaccel_probe(_HWACCEL_NOISE + "recorder is slow", requested=frozenset())
+
+    assert kept == "recorder is slow"
+    assert _classify_ffmpeg_error(kept) is None
+
+
+def test_the_device_the_encoder_asked_for_is_evidence_not_noise() -> None:
+    """VAAPI failing to open the device it was handed is the reason the clip did not play."""
+    said = (
+        "[VAAPI @ 0x7fc266b24d40] Failed to initialise VAAPI connection: -1 (unknown libva error)."
+        "\nDevice creation failed: -5.\n"
+        "Failed to set value '/dev/dri/renderD128' for option 'vaapi_device': I/O error\n"
+        "Error parsing global options: I/O error"
+    )
+
+    kept = _without_hwaccel_probe(said, requested=_devices_requested(_VAAPI))
+
+    assert kept == said
+    diagnosis = _classify_ffmpeg_error(kept)
+    assert diagnosis is not None
+    assert diagnosis.code == "encoder_unavailable"
+    assert diagnosis.encoder_at_fault is True
+
+
+def test_a_slow_clip_behind_the_probe_is_still_a_slow_clip() -> None:
+    """The whole point: the same noise, and a diagnosis that now depends on what follows it."""
+    stream = _stalled(stderr="")
+    stream.error_text = _without_hwaccel_probe(_HWACCEL_NOISE, requested=frozenset())
+
+    diagnosis = _diagnose_no_output(
+        stream, elapsed=30.0, load=3.1, opened=True, progress="0 of the 2 segments"
+    )
+
+    assert diagnosis.code == "machine_too_slow"
+    # And so the machine keeps whatever hardware encoder it had.
+    assert diagnosis.encoder_at_fault is False
+
+
+def test_the_encoders_own_complaint_survives_the_filter() -> None:
+    """Only the device probe goes. What the encoder itself said is the whole diagnosis."""
+    said = _HWACCEL_NOISE + "[h264_qsv @ 0x55d3] Error initializing an internal MFX session"
+
+    diagnosis = _classify_ffmpeg_error(_without_hwaccel_probe(said, requested=frozenset()))
+
+    assert diagnosis is not None
+    assert diagnosis.code == "encoder_unavailable"
 
 
 # ------------------------------------------------------------------------- the slot
@@ -381,6 +530,8 @@ def _stalled(*, encoder: Encoder = SOFTWARE_ENCODER, stderr: str = "", exited: b
     return SimpleNamespace(
         label="entry/0/main@0s hls",
         encoder=encoder,
+        # The real stream classifies all of what ffmpeg said and quotes only the head of it.
+        error_text=stderr,
         error_detail=stderr,
         process=SimpleNamespace(returncode=1 if exited else None, pid=1),
     )

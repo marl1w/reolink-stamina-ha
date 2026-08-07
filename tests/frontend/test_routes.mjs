@@ -58,9 +58,9 @@ test("the cheap rung comes first, and the ladder ends after the re-encode", () =
 });
 
 test("a refused codec skips repackaging, which would hand it the same codec", () => {
-  // Repackaging changes the container and leaves the bitstream alone, so it cannot help a
-  // decoder that has already refused this one — on any platform. Safari is the case that
-  // proves it: it demuxes H.265 quite happily and then stalls on it.
+  // Repackaging changes the container and leaves the bitstream alone, so on a browser with
+  // one way into a decoder it cannot help one that has already refused this bitstream.
+  // Under node the HLS probe fails, which is the shape of Chrome and Firefox.
   assert.equal(nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }), ROUTE_TRANSCODE);
 });
 
@@ -142,6 +142,38 @@ test("the memory cannot grow without bound, and never drops the hints", () => {
   // The oldest went first.
   assert.equal(memory["nvr1|0|main"], undefined);
   assert.equal(memory["nvr1|259|main"].route, ROUTE_REMUX);
+});
+
+// ------------------------------------------------- the same ladder, seen from Safari
+
+// `routes.js` asks the browser what it can play at import time, so a browser that answers
+// differently has to be a different import. The query string is what gets past node's module
+// cache; `document` has to exist before the import, not before the assertion.
+globalThis.document = {
+  createElement: () => ({
+    canPlayType: (type) => (type === "application/vnd.apple.mpegurl" ? "maybe" : ""),
+  }),
+};
+const safari = await import("../../custom_components/reolink_stamina/frontend/playback/routes.js?safari");
+delete globalThis.document;
+
+test("a browser with its own HLS pipeline repackages before it re-encodes", () => {
+  // The expensive mistake this is here to prevent. Safari stalls on H.265 through Media
+  // Source Extensions and plays it perfectly through native HLS, so a decode failure there
+  // says nothing about the second pipeline — and skipping to a re-encode sent every
+  // high-resolution clip through the costliest route on the machine, for no reason.
+  assert.equal(safari.NATIVE_HLS, true);
+  assert.equal(
+    safari.nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }),
+    ROUTE_REMUX
+  );
+});
+
+test("repackaging failing there still leads to the re-encode", () => {
+  // The rung below is unchanged: if the native pipeline will not take it either, the codec
+  // really is the problem and only re-encoding is left.
+  assert.equal(safari.nextRoute(ROUTE_REMUX, { adaptive: true }), ROUTE_TRANSCODE);
+  assert.equal(safari.nextRoute(ROUTE_TRANSCODE, { adaptive: true, decodeFailure: true }), null);
 });
 
 process.stdout.write(`\n  ${ran - failures}/${ran} route checks passed\n`);

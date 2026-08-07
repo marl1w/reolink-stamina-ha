@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 import logging
 import os
@@ -92,6 +93,11 @@ FIRST_OUTPUT_TIMEOUT: Final = 30.0
 _CHUNK: Final = 65536
 # Enough of ffmpeg's complaint to be useful in the panel and the log, and no more.
 _STDERR_LIMIT: Final = 4096
+# How much of it is quoted into a log line and the diagnostics download. Kept well short of
+# what is captured, because the whole of it is what gets *classified* and only the head of it
+# is worth reading — a distinction this did not use to draw, at the cost of every diagnosis
+# on a machine whose first few lines are always the same noise. See `error_text`.
+_DETAIL_LIMIT: Final = 600
 # How many failed conversions are remembered for the panel and the diagnostics download.
 # Enough to show a pattern — a hardware encoder failing its way down the list, a recorder
 # that is slow every time — without keeping a session's worth of noise.
@@ -210,46 +216,148 @@ def _available_encoders(output: str) -> set[str]:
     return found
 
 
+# How long a candidate gets to encode six frames of colour bars before it counts as broken.
+# A budget for a wedged driver, not for the work: anything that can do this at all does it in
+# well under a second.
+_ENCODER_TEST_TIMEOUT: Final = 20.0
+
+
+async def _async_encoder_works(binary: str, encoder: Encoder) -> bool:
+    """Whether this machine can actually encode with `encoder`, tested rather than assumed.
+
+    `ffmpeg -encoders` lists what the binary was *compiled* with, which on the builds Home
+    Assistant ships is very nearly every hardware encoder in existence. It says nothing about
+    whether the driver behind one is installed, whether the device is real, or whether a
+    virtual machine has been handed something it can only pretend with — and a render node
+    exists on machines whose graphics device is a paravirtualised framebuffer with no media
+    engine at all, which is exactly the case that used to get through this.
+
+    So the candidate is asked to encode something. A quarter of a second of colour at 640x360
+    into nothing costs nothing where it works, and where it does not it fails here — once, at
+    startup, in the debug log — rather than costing a viewer their clip.
+    """
+    args = [
+        binary,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        *encoder.input_args,
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=640x360:r=25:d=0.25",
+        # The same chain a real conversion builds, so an encoder that cannot take frames in
+        # this form fails the test for the reason it would fail the clip.
+        *(["-vf", ",".join(encoder.filters)] if encoder.filters else []),
+        "-c:v",
+        encoder.name,
+        *encoder.output_args,
+        "-f",
+        "null",
+        "-",
+    ]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+    except Exception:
+        _LOGGER.debug("Could not run the %s encoder test", encoder.name, exc_info=True)
+        return False
+
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=_ENCODER_TEST_TIMEOUT)
+    except TimeoutError:
+        # A driver that hangs is no more usable than one that refuses, and one left running
+        # holds the render node against everything else on the machine.
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        _LOGGER.debug("The %s encoder test did not finish", encoder.name)
+        return False
+
+    if process.returncode == 0:
+        return True
+    _LOGGER.debug(
+        "This machine cannot encode with %s: %s",
+        encoder.name,
+        stderr.decode(errors="replace").strip()[:_DETAIL_LIMIT] or f"exit {process.returncode}",
+    )
+    return False
+
+
 async def async_choose_encoder(hass: HomeAssistant, binary: str) -> Encoder:
     """Return the best H.264 encoder this machine can actually use.
 
     Probed once and remembered, and only ever asked for when something is about to be
     re-encoded. Anything that has failed in the field is skipped: a GPU that is present
     but not working must not cost every subsequent clip its playback.
+
+    Each candidate is listed, then tried. Listing alone was what this used to do, and on a
+    machine where the listing is right and the hardware is not it cost three clips — one per
+    hardware encoder — every time Home Assistant restarted, because the only way an encoder
+    got onto the broken list was a viewer discovering it. Trying costs a second, once.
     """
     manager = async_get_manager(hass)
-    if manager.encoder is not None:
-        return manager.encoder
+    # Held across the whole probe, not just the read of it: two clips opened together would
+    # otherwise both run the tests, and the loser's work is pure waste on the very machines
+    # least able to afford it.
+    async with manager.encoder_lock:
+        if manager.encoder is not None:
+            return manager.encoder
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            binary,
-            "-hide_banner",
-            "-encoders",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
-        available = _available_encoders(stdout.decode(errors="replace"))
-    except Exception:
-        _LOGGER.debug("Could not list ffmpeg encoders; using software", exc_info=True)
-        available = set()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                binary,
+                "-hide_banner",
+                "-encoders",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+            available = _available_encoders(stdout.decode(errors="replace"))
+        except Exception:
+            _LOGGER.debug("Could not list ffmpeg encoders; using software", exc_info=True)
+            available = set()
 
-    has_dri = await hass.async_add_executor_job(Path("/dev/dri/renderD128").exists)
+        has_dri = await hass.async_add_executor_job(Path("/dev/dri/renderD128").exists)
 
-    chosen = SOFTWARE_ENCODER
-    for candidate in _HARDWARE_ENCODERS:
-        if candidate.name not in available or candidate.name in manager.failed_encoders:
-            continue
-        if candidate.name in _NEEDS_DRI and not has_dri:
-            continue
-        chosen = candidate
-        break
+        chosen = SOFTWARE_ENCODER
+        for candidate in _HARDWARE_ENCODERS:
+            if candidate.name not in available or candidate.name in manager.failed_encoders:
+                continue
+            if candidate.name in _NEEDS_DRI and not has_dri:
+                continue
+            if not await _async_encoder_works(binary, candidate):
+                # Remembered exactly like a failure in the field, because it is the same fact
+                # arrived at more cheaply: this machine cannot use it, and nothing about that
+                # changes until it is restarted onto different hardware.
+                manager.failed_encoders.add(candidate.name)
+                continue
+            chosen = candidate
+            break
 
-    _LOGGER.info("Reolink Stamina will re-encode playback with %s", chosen.name)
-    manager.encoder = chosen
-    return chosen
+        if chosen.hardware:
+            _LOGGER.info("Reolink Stamina will re-encode playback with %s", chosen.name)
+        else:
+            # Worth a sentence rather than a name: this is the slow path, and on a machine
+            # with a graphics device that looks usable it is a surprise worth explaining.
+            _LOGGER.info(
+                "Reolink Stamina will re-encode playback in software (%s)%s",
+                chosen.name,
+                (
+                    f"; no hardware encoder on this machine could be used "
+                    f"({', '.join(sorted(manager.failed_encoders))})"
+                    if manager.failed_encoders
+                    else ""
+                ),
+            )
+        manager.encoder = chosen
+        return chosen
 
 
 def build_args(
@@ -288,7 +396,12 @@ def build_args(
         filters = [f"scale=-2:min(ih\\,{MAX_HEIGHT})", *encoder.filters]
         args += ["-vf", ",".join(filters), "-c:v", encoder.name, *encoder.output_args]
     else:
-        args += ["-c:v", "copy"]
+        # `hvc1` rather than whatever ffmpeg would have picked. Repackaging is the route that
+        # exists so a device can use its own decoder, and Safari — the device that most needs
+        # it — refuses HEVC in fragmented MP4 tagged `hev1`, which is what ffmpeg writes
+        # whenever the source carried no tag of its own to copy. The recorder's FLV never
+        # does. The tag is ignored for H.264, so it costs the common case nothing.
+        args += ["-c:v", "copy", "-tag:v", "hvc1"]
 
     args += ["-c:a", "aac", "-ac", "1"]
 
@@ -397,7 +510,15 @@ _FFMPEG_FAULTS: Final = (
     (
         re.compile(
             r"unknown encoder|cannot load|device creation failed|no device available|"
-            r"function not implemented|error initializing output stream",
+            r"function not implemented|error initializing output stream|"
+            # A device the command asked for by name and did not get. ffmpeg rejects these
+            # while parsing its own arguments, so it never reaches the recorder at all — and
+            # it says so in words that name no device, which is why they are matched here
+            # rather than left to the generic phrases above.
+            r"failed to set value .* for option '\w+_device'|error parsing global options|"
+            # What the QSV and V4L2 encoders say when the driver behind them is absent.
+            r"error initializing an internal mfx session|"
+            r"could not find a valid device|no such file or directory.*video",
             re.I,
         ),
         "encoder_unavailable",
@@ -430,6 +551,74 @@ def _classify_ffmpeg_error(detail: str) -> Diagnosis | None:
         if pattern.search(detail):
             return Diagnosis(code, message, encoder_at_fault)
     return None
+
+
+# The device types `-hwaccel auto` works through on its way past. It creates every one the
+# decoder could possibly use and prints an error for each it cannot, before the encoder has
+# said a word — and then, having found nothing, decodes in software and carries on perfectly
+# happily. None of it is a failure. All of it looks like one.
+#
+# It has to be dropped before anything is read from ffmpeg's output, because it arrives first
+# and `Device creation failed` is one of the phrases that condemns an encoder. Left in on a
+# machine with no working acceleration it was the *only* thing that ever got read: three or
+# four lines of it, on every run, filling the quoted extract entirely. Every re-encode that
+# produced nothing was therefore diagnosed as a broken encoder — a clip that was merely slow,
+# a recorder that stopped sending, a full disk — and each such diagnosis cost a hardware
+# encoder its place in the list for good.
+_PROBE_DEVICES: Final = frozenset(
+    {
+        "vaapi",
+        "vdpau",
+        "vulkan",
+        "cuda",
+        "qsv",
+        "opencl",
+        "drm",
+        "d3d11va",
+        "d3d12va",
+        "dxva2",
+        "videotoolbox",
+        "mediacodec",
+    }
+)
+# ffmpeg tags every line with the component that wrote it: `[VAAPI @ 0x7f38...] ...`.
+_PROBE_TAG: Final = re.compile(r"^\[([A-Za-z0-9_ ]+) @ 0x[0-9a-f]+\]")
+# What `hw_device_init_from_type` prints after the component has explained itself.
+_PROBE_RESULT: Final = re.compile(r"^Device creation failed: -?\d+\.?$", re.I)
+
+
+def _devices_requested(encoder: Encoder) -> frozenset[str]:
+    """Return the hardware devices this encoder asks for, e.g. `-vaapi_device` for VAAPI.
+
+    What separates noise from evidence. A device the command never mentioned failing to open
+    is `-hwaccel auto` shrugging; the one it did mention failing to open is the whole reason
+    the conversion is not happening.
+    """
+    return frozenset(
+        argument[1 : -len("_device")].lower()
+        for argument in encoder.input_args
+        if argument.startswith("-") and argument.endswith("_device")
+    )
+
+
+def _without_hwaccel_probe(detail: str, *, requested: frozenset[str]) -> str:
+    """Drop what `-hwaccel auto` said while failing to find a decoder to use."""
+    kept: list[str] = []
+    dropping = False
+    for line in detail.splitlines():
+        tag = _PROBE_TAG.match(line)
+        if tag is not None:
+            component = tag.group(1).strip().lower()
+            dropping = component in _PROBE_DEVICES and component not in requested
+            if dropping:
+                continue
+        elif dropping and _PROBE_RESULT.match(line.strip()):
+            # The verdict belonging to the line just dropped, which ffmpeg writes untagged.
+            continue
+        else:
+            dropping = False
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _cpu_seconds(pid: int) -> float | None:
@@ -470,7 +659,7 @@ def _diagnose_no_output(
     that never answered from one that answered and then dribbled. It is None on the MP4
     route, where there is no header to look for.
     """
-    if (known := _classify_ffmpeg_error(stream.error_detail)) is not None:
+    if (known := _classify_ffmpeg_error(stream.error_text)) is not None:
         return known
 
     if stream.process.returncode is not None:
@@ -559,9 +748,21 @@ class _Stream:
             _LOGGER.debug("Stopped reading ffmpeg's output for %s", self.label)
 
     @property
+    def error_text(self) -> str:
+        """Everything ffmpeg said about this conversion, with the hardware probe dropped.
+
+        What gets classified. All of it, because the line that explains a failure is very
+        often not among the first few — see `_without_hwaccel_probe` for how that went.
+        """
+        return _without_hwaccel_probe(
+            self._stderr.decode(errors="replace").strip(),
+            requested=_devices_requested(self.encoder),
+        )
+
+    @property
     def error_detail(self) -> str:
-        """What ffmpeg said, trimmed to something worth showing a user."""
-        return self._stderr.decode(errors="replace").strip()[:300]
+        """What ffmpeg said, trimmed to something worth quoting in a log line."""
+        return self.error_text[:_DETAIL_LIMIT]
 
     async def async_stop(self) -> None:
         """Kill ffmpeg and wait for it, so nothing is left pulling from the recorder."""
@@ -670,6 +871,9 @@ class RestreamManager:
         self.failures: deque[dict[str, Any]] = deque(maxlen=_FAILURE_HISTORY)
         self._current: _Stream | None = None
         self._lock = asyncio.Lock()
+        # Separate from the slot's lock, and held for much longer: choosing an encoder now
+        # means running each candidate, and the slot has to stay claimable while that happens.
+        self.encoder_lock = asyncio.Lock()
 
     async def async_claim(self, stream: _Stream) -> None:
         """Take the slot for `stream`, stopping whatever held it."""

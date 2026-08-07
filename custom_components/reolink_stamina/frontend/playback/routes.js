@@ -92,6 +92,16 @@ export const CONVERTED_FORMAT = (() => {
 })();
 
 /**
+ * Whether this browser plays HLS itself, rather than being handed one long MP4.
+ *
+ * The same answer as `CONVERTED_FORMAT`, named for the other thing it decides. A browser with
+ * its own HLS pipeline has two separate routes to a decoder — that one, and Media Source
+ * Extensions — and they do not support the same codecs. Which is why repackaging is worth
+ * trying there even for a codec that just failed.
+ */
+export const NATIVE_HLS = CONVERTED_FORMAT === "hls";
+
+/**
  * The next route to try after this one failed, or null when there is nothing left.
  *
  * With the beta off there is nothing to try: the recorder's own stream either plays or it
@@ -101,14 +111,24 @@ export const CONVERTED_FORMAT = (() => {
  * matters most here: repackaging fixes a container the browser could not *read*, and can do
  * nothing at all about a codec it could not *decode* — the bitstream comes out the other
  * side unchanged. So it is only worth trying when the decoder was not the thing that failed.
- * Safari is the case that proves it: it demuxes and claims H.265, then stalls on the H.265
- * these recorders produce, and repackaging that hands the same stream to the same decoder.
+ *
+ * Except where the container decides which decoder gets the stream, which is the whole of
+ * Safari. It was read the other way round for a while, and the cost was the worst case this
+ * integration has: Safari demuxes an H.265 recording through Media Source Extensions, claims
+ * it, then stalls — so every high-resolution clip skipped straight to a full software
+ * re-encode, the single most expensive thing here, on the browser least likely to need it.
+ *
+ * What that missed is that repackaging does not hand the same stream to the same decoder.
+ * Safari's native HLS pipeline is not its MSE one: it plays HEVC in fragmented MP4 with
+ * hardware decoding, which is exactly why segments are written as fragmented MP4 in the first
+ * place. So where the browser has that second pipeline, a decode failure is a reason to try
+ * repackaging, not a reason to skip it — the stalled decoder is the one being left behind.
  */
 export function nextRoute(current, { adaptive, decodeFailure = false } = {}) {
   if (!adaptive) return null;
   switch (current) {
     case ROUTE_STREAM:
-      return decodeFailure ? ROUTE_TRANSCODE : ROUTE_REMUX;
+      return decodeFailure && !NATIVE_HLS ? ROUTE_TRANSCODE : ROUTE_REMUX;
     case ROUTE_REMUX:
       return ROUTE_TRANSCODE;
     default:
