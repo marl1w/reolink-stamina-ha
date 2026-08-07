@@ -10,7 +10,10 @@ The rest is refusal: with the beta off, the views must behave as though they did
 
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,18 +28,27 @@ from custom_components.reolink_stamina.const import CONF_BETA_RESTREAM, DOMAIN
 from custom_components.reolink_stamina.restream import (
     FORMAT_HLS,
     FORMAT_MP4,
+    HLS_IDLE_TIMEOUT,
     HLS_INIT,
+    HLS_MAX_SESSION_SECONDS,
     HLS_PLAYLIST,
     MAX_HEIGHT,
     MODE_COPY,
     MODE_ENCODE,
+    SESSION_PREFIX,
     SOFTWARE_ENCODER,
+    Diagnosis,
     Encoder,
     RestreamManager,
     _available_encoders,
+    _classify_ffmpeg_error,
+    _cpu_load,
+    _diagnose_no_output,
+    _HlsStream,
     async_get_manager,
     async_hls_path,
     async_restream_path,
+    async_sweep_sessions,
     build_args,
 )
 
@@ -231,6 +243,297 @@ async def test_software_encoding_failing_is_not_blamed_on_the_encoder(
 
     assert manager.failed_encoders == set()
     assert manager.encoder is SOFTWARE_ENCODER
+
+
+# ------------------------------------------------------------------ session cleanup
+
+
+class _FakeProcess:
+    """A running ffmpeg that can be killed, and notices that it was."""
+
+    def __init__(self) -> None:
+        self.returncode = None
+        self.stderr = None
+        self.pid = 1
+        self.killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        # Suspends, which is where a cancellation aimed at the current task lands — and so
+        # is exactly the await that used to swallow the rest of the teardown.
+        await asyncio.sleep(0.01)
+        self.returncode = -9
+        return self.returncode
+
+
+async def test_a_session_nobody_is_reading_deletes_its_own_files(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """The ordinary end of a session: the panel was closed and nothing read a segment again.
+
+    The watchdog stops the session it belongs to, so stopping used to cancel the very task
+    it was running in — killing ffmpeg, then raising `CancelledError` at the next await and
+    never reaching the removal. Every abandoned session then left its directory behind in
+    the temporary filesystem, which on most installations is memory, until it filled and
+    every conversion after that failed for want of space.
+    """
+    directory = tmp_path / "session"
+    directory.mkdir()
+    (directory / "s00000.m4s").write_bytes(b"segment")
+    process = _FakeProcess()
+
+    with patch("custom_components.reolink_stamina.restream._HLS_SWEEP_INTERVAL", 0.01):
+        session = _HlsStream(hass, process, "label", SOFTWARE_ENCODER, "token", directory)
+        # Nobody has asked for a segment since well before the idle timeout.
+        session.last_read = time.monotonic() - HLS_IDLE_TIMEOUT - 1
+        await asyncio.sleep(0.3)
+
+    assert process.killed is True
+    assert not directory.exists()
+
+
+async def test_a_session_stopped_from_outside_still_stops_its_watchdog(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """The other half of the same decision: a watchdog cancelled by someone else must be.
+
+    Left running it would stop a session that has already gone, so this is not merely tidy.
+    """
+    directory = tmp_path / "session"
+    directory.mkdir()
+
+    session = _HlsStream(hass, _FakeProcess(), "label", SOFTWARE_ENCODER, "token", directory)
+    await async_get_manager(hass).async_release(session)
+
+    assert session._watchdog.cancelled() or session._watchdog.done()
+    assert not directory.exists()
+
+
+async def test_setup_reclaims_what_an_earlier_run_left_behind(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """Restarting Home Assistant does not empty the temporary filesystem, so this does.
+
+    Everything here was leaked by a version whose teardown skipped the removal, and no
+    restart gives the space back: depending on how the filesystem is mounted it survives
+    until the machine reboots, or indefinitely.
+    """
+    stale = tmp_path / f"{SESSION_PREFIX}old"
+    stale.mkdir()
+    (stale / "s00000.m4s").write_bytes(b"segment")
+    os.utime(stale, (time.time() - HLS_MAX_SESSION_SECONDS - 60,) * 2)
+
+    with patch(
+        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+    ):
+        removed = await async_sweep_sessions(hass)
+
+    assert removed == 1
+    assert not stale.exists()
+
+
+async def test_the_sweep_leaves_a_session_that_is_still_playing(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """This also runs on a reload, and a reload does not stop a session someone is watching.
+
+    Age is what separates the two: the watchdog stops any session at the maximum age, so
+    nothing legitimate is older, and a live session's directory is touched continuously as
+    segments are written and rotated out.
+    """
+    live = tmp_path / f"{SESSION_PREFIX}live"
+    live.mkdir()
+    (live / "s00000.m4s").write_bytes(b"segment")
+
+    with patch(
+        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+    ):
+        removed = await async_sweep_sessions(hass)
+
+    assert removed == 0
+    assert live.exists()
+
+
+async def test_the_sweep_touches_nothing_it_did_not_write(
+    hass: HomeAssistant, tmp_path: Path
+) -> None:
+    """It runs over a shared temporary directory, so the name is the whole guard."""
+    someone_else = tmp_path / "important_backup"
+    someone_else.mkdir()
+    os.utime(someone_else, (time.time() - HLS_MAX_SESSION_SECONDS - 60,) * 2)
+
+    with patch(
+        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+    ):
+        removed = await async_sweep_sessions(hass)
+
+    assert removed == 0
+    assert someone_else.exists()
+
+
+# ---------------------------------------------------------------------- diagnosis
+
+
+def _stalled(*, encoder: Encoder = SOFTWARE_ENCODER, stderr: str = "", exited: bool = False):
+    """Return a stream that produced nothing, standing in for a real one."""
+    return SimpleNamespace(
+        label="entry/0/main@0s hls",
+        encoder=encoder,
+        error_detail=stderr,
+        process=SimpleNamespace(returncode=1 if exited else None, pid=1),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stderr", "code"),
+    [
+        ("Connection refused", "device_unreachable"),
+        ("Server returned 401 Unauthorized", "device_rejected"),
+        ("av_interleaved_write_frame(): No space left on device", "no_space"),
+        ("Unknown encoder 'h264_qsv'", "encoder_unavailable"),
+        ("Invalid data found when processing input", "unreadable_stream"),
+        ("Connection reset by peer", "device_stopped"),
+    ],
+)
+def test_ffmpeg_is_quoted_back_as_a_cause_not_as_output(stderr: str, code: str) -> None:
+    """The panel gets a sentence about the recorder or the machine, not ffmpeg's wording."""
+    diagnosis = _classify_ffmpeg_error(stderr)
+
+    assert diagnosis is not None
+    assert diagnosis.code == code
+    # Whatever ffmpeg said, what comes out is a sentence someone can act on.
+    assert diagnosis.message.endswith(".")
+    assert stderr not in diagnosis.message
+
+
+def test_only_an_encoder_fault_is_blamed_on_the_encoder() -> None:
+    """The distinction the encoder blacklist depends on, asserted where it is decided.
+
+    Blaming every failure on the encoder is how one slow recorder permanently costs a
+    machine its working GPU, which is the bug this separation exists to prevent.
+    """
+    assert _classify_ffmpeg_error("Device creation failed").encoder_at_fault is True
+    assert _classify_ffmpeg_error("Connection timed out").encoder_at_fault is False
+    assert _classify_ffmpeg_error("") is None
+
+
+def test_a_converter_using_the_processor_blames_the_machine() -> None:
+    """Work is being done and it is not fast enough — which is the machine's problem."""
+    diagnosis = _diagnose_no_output(
+        _stalled(), elapsed=30.0, load=2.4, opened=True, progress="0 of the 2 segments"
+    )
+
+    assert diagnosis.code == "machine_too_slow"
+    assert "2.4 processor cores" in diagnosis.message
+    # Falling back from hardware to software would only make a slow machine slower.
+    assert diagnosis.encoder_at_fault is False
+
+
+def test_an_idle_converter_blames_the_recorder() -> None:
+    """Nothing is being computed, so nothing is arriving to compute."""
+    diagnosis = _diagnose_no_output(
+        _stalled(), elapsed=30.0, load=0.01, opened=True, progress="1 of the 2 segments"
+    )
+
+    assert diagnosis.code == "device_too_slow"
+    assert "recorder" in diagnosis.message
+
+
+def test_an_unmeasurable_load_says_less_rather_than_guessing() -> None:
+    """Where processor time cannot be read, the diagnosis stops short of naming a culprit."""
+    diagnosis = _diagnose_no_output(
+        _stalled(), elapsed=30.0, load=None, opened=True, progress="0 of the 2 segments"
+    )
+
+    assert diagnosis.code == "too_slow"
+    assert "machine" not in diagnosis.message
+
+
+def test_a_recorder_that_never_sent_a_header_is_named_as_such() -> None:
+    """The header is written as soon as ffmpeg knows the codec, so its absence is the tell."""
+    diagnosis = _diagnose_no_output(
+        _stalled(), elapsed=30.0, load=0.0, opened=False, progress="no segments"
+    )
+
+    assert diagnosis.code == "device_sent_nothing"
+
+
+def test_a_hardware_encoder_dying_silently_is_still_the_encoder(hass: HomeAssistant) -> None:
+    """The fallback that makes the next attempt work has to survive the new classification.
+
+    A hardware encoder that exits immediately and says nothing recognisable is much the
+    likeliest cause, and is the one case worth never retrying.
+    """
+    diagnosis = _diagnose_no_output(
+        _stalled(encoder=_VAAPI, exited=True), elapsed=0.4, load=None, opened=False, progress="none"
+    )
+
+    assert diagnosis.code == "stopped_early"
+    assert diagnosis.encoder_at_fault is True
+
+
+def test_software_dying_silently_is_not_the_encoder() -> None:
+    """libx264 always exists, so its failure is about the input, not about the encoder."""
+    diagnosis = _diagnose_no_output(
+        _stalled(exited=True), elapsed=0.4, load=None, opened=False, progress="none"
+    )
+
+    assert diagnosis.encoder_at_fault is False
+
+
+def test_load_is_not_invented_from_a_missing_reading() -> None:
+    """Processor time is unreadable off Linux, and a wrong culprit is worse than none."""
+    assert _cpu_load(None, 4.0, 10.0) is None
+    assert _cpu_load(1.0, None, 10.0) is None
+    assert _cpu_load(1.0, 4.0, 0.0) is None
+    assert _cpu_load(1.0, 4.0, 10.0) == pytest.approx(0.3)
+
+
+async def test_a_failure_is_recorded_for_the_panel_to_read(hass: HomeAssistant) -> None:
+    """The 502 body reaches nobody, so the reason has to be fetchable afterwards."""
+    manager = RestreamManager(hass)
+    stream = _stalled(encoder=_VAAPI, stderr="Device creation failed")
+
+    broken = Diagnosis("encoder_unavailable", "GPU broke.", True)
+
+    manager.note_failure(stream, broken, mode="encode")
+
+    assert len(manager.failures) == 1
+    recorded = manager.failures[-1]
+    assert recorded["code"] == "encoder_unavailable"
+    assert recorded["encoder"] == _VAAPI.name
+    # ffmpeg's own words are kept for the diagnostics download, not for the panel.
+    assert recorded["ffmpeg"] == "Device creation failed"
+    # And the diagnosis named the encoder, so it is not chosen again.
+    assert _VAAPI.name in manager.failed_encoders
+
+
+async def test_a_slow_machine_does_not_cost_the_gpu(hass: HomeAssistant) -> None:
+    """The bug this whole separation exists for: one slow clip disabling working hardware."""
+    manager = RestreamManager(hass)
+    manager.encoder = _VAAPI
+
+    manager.note_failure(
+        _stalled(encoder=_VAAPI),
+        Diagnosis("machine_too_slow", "Too slow.", False),
+        mode="encode",
+    )
+
+    assert manager.failed_encoders == set()
+    assert manager.encoder is _VAAPI
+
+
+async def test_only_the_last_few_failures_are_kept(hass: HomeAssistant) -> None:
+    """Enough to show a pattern, without a session's worth of noise."""
+    manager = RestreamManager(hass)
+    for index in range(25):
+        slow = Diagnosis("too_slow", f"Attempt {index}.", False)
+        manager.note_failure(_stalled(), slow, mode="copy")
+
+    assert len(manager.failures) == 10
+    assert manager.failures[-1]["message"] == "Attempt 24."
 
 
 # --------------------------------------------------------------------------- views

@@ -46,6 +46,7 @@ from .restream import (
     MODE_ENCODE,
     RESTREAM_FORMATS,
     FfmpegUnavailableError,
+    async_get_manager,
     async_hls_path,
     async_restream_path,
     async_start_hls,
@@ -154,6 +155,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_stream_url)
     websocket_api.async_register_command(hass, ws_detections)
     websocket_api.async_register_command(hass, ws_clip_url)
+    websocket_api.async_register_command(hass, ws_playback_failure)
 
 
 # ------------------------------------------------------------------------ devices
@@ -823,3 +825,24 @@ def ws_clip_url(
         return
 
     connection.send_result(msg["id"], {"path": path, "mime": "video/mp4"})
+
+
+# --------------------------------------------------------------- why playback failed
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/playback_failure"})
+@callback
+def ws_playback_failure(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return why the most recent conversion produced nothing.
+
+    Asked by the panel once its ladder is exhausted, because it has no other way to find
+    out: a converted route is a URL handed to a `<video>` element, and a 502 reaches the
+    browser as a numeric `MediaError` with the explanation thrown away. The whole history
+    goes out too, so a person filing a bug can paste something worth reading.
+    """
+    failures = list(async_get_manager(hass).failures)
+    connection.send_result(
+        msg["id"], {"failure": failures[-1] if failures else None, "history": failures}
+    )

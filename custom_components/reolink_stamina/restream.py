@@ -40,8 +40,10 @@ from __future__ import annotations
 
 import asyncio
 from base64 import urlsafe_b64decode, urlsafe_b64encode
+from collections import deque
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import re
 import secrets
@@ -53,6 +55,7 @@ from typing import Any, Final
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .ffmpeg import async_ffmpeg_binary
@@ -89,6 +92,10 @@ FIRST_OUTPUT_TIMEOUT: Final = 30.0
 _CHUNK: Final = 65536
 # Enough of ffmpeg's complaint to be useful in the panel and the log, and no more.
 _STDERR_LIMIT: Final = 4096
+# How many failed conversions are remembered for the panel and the diagnostics download.
+# Enough to show a pattern — a hardware encoder failing its way down the list, a recorder
+# that is slow every time — without keeping a session's worth of noise.
+_FAILURE_HISTORY: Final = 10
 
 HLS_SEGMENT_SECONDS: Final = 2
 # Apple's own guidance is to have a few segments of content before starting; two is the
@@ -102,6 +109,9 @@ HLS_IDLE_TIMEOUT: Final = 60.0
 # A ceiling however diligently it is being read, so a forgotten tab cannot stream for ever.
 HLS_MAX_SESSION_SECONDS: Final = 3600.0
 _HLS_SWEEP_INTERVAL: Final = 10.0
+# What every session directory is named after, so the sweep at setup can recognise one and
+# nothing else in the temporary filesystem is ever a candidate for removal.
+SESSION_PREFIX: Final = "reolink_stamina_"
 # The names ffmpeg writes, and nothing else: this is what stops a session token being used
 # to read the rest of the filesystem.
 _HLS_FILE = re.compile(r"^[A-Za-z0-9_-]+\.(m3u8|mp4|m4s)$")
@@ -263,7 +273,10 @@ def build_args(
     H.265 itself, and falls back to software silently where it cannot. The filters run in
     system memory either way, so one chain serves every encoder.
     """
-    args = [binary, "-hide_banner", "-loglevel", "error", "-nostdin"]
+    # `warning` rather than `error`: the lines that explain a conversion which starts and
+    # then falls behind are warnings, not errors, and they are the difference between a
+    # diagnosis and a shrug. What is kept of them is capped at `_STDERR_LIMIT` regardless.
+    args = [binary, "-hide_banner", "-loglevel", "warning", "-nostdin"]
 
     if mode == MODE_ENCODE:
         args += ["-hwaccel", "auto", *encoder.input_args]
@@ -321,17 +334,215 @@ def build_args(
     return args
 
 
+# --------------------------------------------------------------------- why one failed
+
+# How much processor a converter has to be using before it counts as doing work rather than
+# waiting to be sent something, and how little before it counts as idle. Between the two,
+# the evidence does not say which side is the bottleneck and this declines to guess.
+_BUSY_LOAD: Final = 0.5
+_IDLE_LOAD: Final = 0.1
+
+
+@dataclass(frozen=True, slots=True)
+class Diagnosis:
+    """Why a conversion produced too little to play, in terms the viewer can act on.
+
+    This exists because the obvious place to put an explanation — the body of the 502 —
+    is read by nobody. Both converted routes hand a URL to a `<video>` element and let the
+    browser fetch it, so all the panel ever sees is a numeric `MediaError`. The sentence
+    has to travel back over the websocket instead, which is what `code` and `message` are
+    for; the rest goes to the log and to diagnostics.
+    """
+
+    code: str
+    message: str
+    # Whether the encoder is to blame, and so worth never choosing again. A machine that is
+    # merely too slow is not: falling back from hardware to software would only make it
+    # slower, and today any 502 at all disables a working GPU for good.
+    encoder_at_fault: bool = False
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the shape the panel and the diagnostics download are given."""
+        return {"code": self.code, "message": self.message}
+
+
+# Matched against ffmpeg's own words, in order, and only for failures whose cause is not
+# ambiguous. Where it is ambiguous, the numbers in `_diagnose_no_output` decide instead.
+_FFMPEG_FAULTS: Final = (
+    (
+        re.compile(r"no space left|disk full", re.I),
+        "no_space",
+        "Home Assistant has no temporary space left to write the converted video into. "
+        "Restarting Home Assistant clears it, and this is worth reporting as a bug.",
+        False,
+    ),
+    (
+        re.compile(r"401 unauthorized|403 forbidden|login failed|authentication", re.I),
+        "device_rejected",
+        "The recorder refused the request for this recording. Its password may have "
+        "changed since Home Assistant last connected to it.",
+        False,
+    ),
+    (
+        re.compile(
+            r"connection refused|connection timed out|no route to host|"
+            r"name or service not known|network is unreachable",
+            re.I,
+        ),
+        "device_unreachable",
+        "Home Assistant could not reach the recorder to read this recording, even though "
+        "it answered when the clip list was built.",
+        False,
+    ),
+    (
+        re.compile(
+            r"unknown encoder|cannot load|device creation failed|no device available|"
+            r"function not implemented|error initializing output stream",
+            re.I,
+        ),
+        "encoder_unavailable",
+        "This machine's hardware video encoder could not be used. Playing the clip again "
+        "will re-encode in software instead, which is slower but always works.",
+        True,
+    ),
+    (
+        re.compile(r"invalid data found|could not find codec|decoder.*not found", re.I),
+        "unreadable_stream",
+        "The recorder sent something Home Assistant could not read as video. The other "
+        "resolution often works where this one does not.",
+        False,
+    ),
+    (
+        re.compile(r"connection reset|end of file|broken pipe|i/o error", re.I),
+        "device_stopped",
+        "The recorder stopped sending this recording part-way through. Recorders do this "
+        "when they are busy serving several streams at once.",
+        False,
+    ),
+)
+
+
+def _classify_ffmpeg_error(detail: str) -> Diagnosis | None:
+    """Turn what ffmpeg said into a sentence, when it said something recognisable."""
+    if not detail:
+        return None
+    for pattern, code, message, encoder_at_fault in _FFMPEG_FAULTS:
+        if pattern.search(detail):
+            return Diagnosis(code, message, encoder_at_fault)
+    return None
+
+
+def _cpu_seconds(pid: int) -> float | None:
+    """Processor time this process has used, or None where that cannot be read.
+
+    Linux only, which is every installation Home Assistant supports for the add-on and
+    container builds alike. Anywhere else this declines to answer, and the diagnosis simply
+    stops short of naming which side is slow rather than guessing wrongly.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # The command is parenthesised and may itself contain spaces and brackets, so the
+        # fields are counted from the last ')': utime and stime are the 12th and 13th.
+        fields = stat[stat.rindex(")") + 1 :].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cpu_load(before: float | None, after: float | None, elapsed: float) -> float | None:
+    """Processor cores the converter was using, or None where it could not be measured."""
+    if before is None or after is None or elapsed <= 0:
+        return None
+    return max(0.0, (after - before) / elapsed)
+
+
+def _diagnose_no_output(
+    stream: _Stream,
+    *,
+    elapsed: float,
+    load: float | None,
+    opened: bool | None,
+    progress: str,
+) -> Diagnosis:
+    """Say why a stream produced too little to play, as precisely as the evidence allows.
+
+    `opened` is whether ffmpeg got far enough to write a header — which separates a recorder
+    that never answered from one that answered and then dribbled. It is None on the MP4
+    route, where there is no header to look for.
+    """
+    if (known := _classify_ffmpeg_error(stream.error_detail)) is not None:
+        return known
+
+    if stream.process.returncode is not None:
+        # Gone, without saying anything recognisable. A hardware encoder that dies this
+        # early is much the likeliest cause, and is the one thing here worth not retrying.
+        hardware = stream.encoder.hardware
+        blamed = (
+            f", using this machine's {stream.encoder.name} hardware encoder. Playing the "
+            "clip again will use software encoding instead."
+            if hardware
+            else ". The recorder most likely closed the connection."
+        )
+        return Diagnosis(
+            "stopped_early",
+            f"Home Assistant's video converter stopped after {elapsed:.0f} seconds "
+            f"without producing anything{blamed}",
+            hardware,
+        )
+
+    if opened is False:
+        return Diagnosis(
+            "device_sent_nothing",
+            f"The recorder accepted the request but sent no video within {elapsed:.0f} "
+            "seconds. This usually means it is busy serving other streams — try again, or "
+            "try the other resolution.",
+        )
+
+    # Still running, still behind. Which side is holding things up is answerable rather
+    # than guessable: a converter using a core is doing work, and one sitting idle is
+    # waiting to be sent something.
+    if load is not None and load >= _BUSY_LOAD:
+        return Diagnosis(
+            "machine_too_slow",
+            f"This Home Assistant machine cannot convert this recording fast enough to "
+            f"play it: {progress} in {elapsed:.0f} seconds, with the converter using "
+            f"{load:.1f} processor cores ({stream.encoder.name}). The lower resolution "
+            "stream is far cheaper to convert.",
+        )
+    if load is not None and load <= _IDLE_LOAD:
+        return Diagnosis(
+            "device_too_slow",
+            f"The recorder is sending this recording too slowly to play: {progress} in "
+            f"{elapsed:.0f} seconds, while Home Assistant sat idle waiting for it. "
+            "Recorders do this when several streams are being read at once.",
+        )
+    return Diagnosis(
+        "too_slow",
+        f"This recording could not be prepared in time: {progress} in {elapsed:.0f} "
+        "seconds. Trying the other resolution usually helps.",
+    )
+
+
 # ------------------------------------------------------------------------- sessions
 
 
 class _Stream:
     """A running ffmpeg, and what is needed to stop it or explain why it stopped."""
 
-    def __init__(self, process: asyncio.subprocess.Process, label: str, encoder: Encoder) -> None:
+    def __init__(
+        self,
+        process: asyncio.subprocess.Process,
+        label: str,
+        encoder: Encoder,
+        mode: str = MODE_COPY,
+    ) -> None:
         """Start draining stderr immediately, so a full pipe cannot stall ffmpeg."""
         self.process = process
         self.label = label
         self.encoder = encoder
+        # Carried so a failure can be reported against the rung that produced it: the same
+        # message means different things for a remux and for a re-encode.
+        self.mode = mode
         self._stderr = bytearray()
         self._drain = asyncio.create_task(self._async_read_stderr())
 
@@ -383,9 +594,10 @@ class _HlsStream(_Stream):
         encoder: Encoder,
         token: str,
         directory: Path,
+        mode: str = MODE_COPY,
     ) -> None:
         """Start the idle watchdog along with the stream."""
-        super().__init__(process, label, encoder)
+        super().__init__(process, label, encoder, mode)
         self.hass = hass
         self.token = token
         self.directory = directory
@@ -415,7 +627,19 @@ class _HlsStream(_Stream):
 
     async def async_stop(self) -> None:
         """Stop ffmpeg, then delete everything it wrote."""
-        self._watchdog.cancel()
+        # Never cancel the task this is running in. The watchdog stops its own session when
+        # nobody is reading it — the ordinary way a session ends, since the ordinary way to
+        # stop watching is to close the panel — and cancelling itself here delivered a
+        # `CancelledError` at the first await below, which is inside `super().async_stop()`.
+        # ffmpeg died, because it is killed before that await; the directory was never
+        # removed, because that line was never reached. Session directories therefore
+        # accumulated in the temporary filesystem, which on most installations is memory,
+        # until it filled and every subsequent conversion failed with no space left.
+        #
+        # A watchdog that got here by deciding to stop is already on its way out, so there
+        # is nothing to cancel; one cancelled from anywhere else still needs cancelling.
+        if self._watchdog is not asyncio.current_task():
+            self._watchdog.cancel()
         await super().async_stop()
         directory = self.directory
         try:
@@ -440,6 +664,10 @@ class RestreamManager:
         self.hass = hass
         self.encoder: Encoder | None = None
         self.failed_encoders: set[str] = set()
+        # The last few conversions that produced nothing, newest last. Kept because the
+        # people who hit this cannot reproduce it on request and the maintainer cannot
+        # reproduce it at all: this is what the panel shows and what diagnostics exports.
+        self.failures: deque[dict[str, Any]] = deque(maxlen=_FAILURE_HISTORY)
         self._current: _Stream | None = None
         self._lock = asyncio.Lock()
 
@@ -474,6 +702,34 @@ class RestreamManager:
         if isinstance(current, _HlsStream) and current.token == token:
             return current
         return None
+
+    def note_failure(self, stream: _Stream, diagnosis: Diagnosis, *, mode: str) -> None:
+        """Record why a conversion produced nothing, and act on it if it names the encoder.
+
+        The one place that decides what a failure means, so the two views cannot drift: the
+        panel is told, the log is written, and only a diagnosis that actually implicates the
+        encoder disables it. That last part matters — blaming it for every failure is how a
+        slow recorder ends up permanently costing a working GPU.
+        """
+        self.failures.append(
+            {
+                **diagnosis.as_dict(),
+                "label": stream.label,
+                "mode": mode,
+                "encoder": stream.encoder.name if mode == MODE_ENCODE else "copy",
+                "ffmpeg": stream.error_detail or "",
+                "at": dt_util.utcnow().isoformat(),
+            }
+        )
+        _LOGGER.warning(
+            "Restreaming %s produced nothing (%s): %s [ffmpeg said: %s]",
+            stream.label,
+            diagnosis.code,
+            diagnosis.message,
+            stream.error_detail or "nothing",
+        )
+        if diagnosis.encoder_at_fault:
+            self.note_encoder_failure(stream.encoder)
 
     def note_encoder_failure(self, encoder: Encoder) -> None:
         """Remember a hardware encoder that produced nothing, and stop choosing it."""
@@ -510,6 +766,57 @@ async def async_shutdown(hass: HomeAssistant) -> None:
     manager = hass.data.get(_MANAGER_KEY)
     if manager is not None:
         await manager.async_stop()
+
+
+def _sweep_sessions() -> int:
+    """Delete session directories belonging to runs that are over, and count them.
+
+    Bounded by age rather than by ownership, because this also runs on a reload and a
+    reload does not stop a session that is playing. Nothing legitimate can be older than
+    `HLS_MAX_SESSION_SECONDS` — the watchdog stops a session at that age however diligently
+    it is being read — and a live session's directory is touched continuously as segments
+    are written and rotated out, so its modification time is always recent.
+    """
+    root = Path(tempfile.gettempdir())
+    cutoff = time.time() - HLS_MAX_SESSION_SECONDS
+    try:
+        candidates = list(root.glob(f"{SESSION_PREFIX}*"))
+    except OSError:
+        return 0
+
+    removed = 0
+    for directory in candidates:
+        try:
+            if not directory.is_dir() or directory.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+async def async_sweep_sessions(hass: HomeAssistant) -> int:
+    """Reclaim what earlier runs left behind, and say how much was found.
+
+    Each session removes its own directory as it ends, so in a healthy installation this
+    finds nothing. It exists because that teardown was once skipped whenever the idle
+    watchdog was the one stopping the session — which is to say whenever a viewer simply
+    closed the panel, the ordinary case — and the directories left over from it are not
+    reclaimed by restarting Home Assistant. Depending on how the temporary filesystem is
+    mounted they survive until the machine reboots, or indefinitely.
+
+    Swept at setup rather than on a timer: what accumulated did so under a version that is
+    no longer running, and one pass gets it back.
+    """
+    removed = await hass.async_add_executor_job(_sweep_sessions)
+    if removed:
+        _LOGGER.info(
+            "Reolink Stamina removed %s playback session director%s left behind by an earlier run",
+            removed,
+            "y" if removed == 1 else "ies",
+        )
+    return removed
 
 
 # ------------------------------------------------------------------------- starting
@@ -597,7 +904,7 @@ async def async_start_hls(
     token = secrets.token_urlsafe(24)
     label = f"{entry_id}/{channel}/{stream}@{seek}s hls"
     directory = Path(
-        await hass.async_add_executor_job(lambda: tempfile.mkdtemp(prefix="reolink_stamina_"))
+        await hass.async_add_executor_job(lambda: tempfile.mkdtemp(prefix=SESSION_PREFIX))
     )
 
     try:
@@ -613,7 +920,7 @@ async def async_start_hls(
         await hass.async_add_executor_job(lambda: shutil.rmtree(directory, ignore_errors=True))
         raise
 
-    session = _HlsStream(hass, process, label, encoder, token, directory)
+    session = _HlsStream(hass, process, label, encoder, token, directory, mode)
     await async_get_manager(hass).async_claim(session)
     return token
 
@@ -681,11 +988,13 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
             _LOGGER.debug("Could not start ffmpeg", exc_info=True)
             return web.Response(status=502, text=f"Could not start the conversion: {err}")
 
-        active = _Stream(process, label, encoder)
+        active = _Stream(process, label, encoder, mode)
         await manager.async_claim(active)
 
         # Wait for the first bytes before answering, so a conversion that fails outright is
         # an error the panel can read rather than an empty video and a silent log line.
+        started = time.monotonic()
+        cpu_before = await hass.async_add_executor_job(_cpu_seconds, process.pid)
         try:
             first = await asyncio.wait_for(
                 process.stdout.read(_CHUNK), timeout=FIRST_OUTPUT_TIMEOUT
@@ -695,18 +1004,23 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
             first = b""
 
         if not first:
-            detail = active.error_detail
-            evicted = not manager.holds(active)
-            await manager.async_release(active)
-            if mode == MODE_ENCODE and not evicted:
-                # A hardware encoder that cannot run is worth never choosing again; the
-                # panel retries, and the retry uses software.
-                manager.note_encoder_failure(encoder)
-            _LOGGER.warning("Restreaming %s produced nothing: %s", label, detail or "no output")
-            return web.Response(
-                status=502,
-                text=f"Could not convert this recording: {detail or 'ffmpeg produced no output'}",
+            elapsed = time.monotonic() - started
+            cpu_after = await hass.async_add_executor_job(_cpu_seconds, process.pid)
+            problem = _diagnose_no_output(
+                active,
+                elapsed=elapsed,
+                load=_cpu_load(cpu_before, cpu_after, elapsed),
+                # There is no header to look for on a pipe, so the recorder answering and
+                # the recorder never answering are not separable here.
+                opened=None,
+                progress="no video at all",
             )
+            # An evicted stream produced nothing because it was killed, which is not
+            # evidence about anything and must not be recorded as though it were.
+            if manager.holds(active):
+                manager.note_failure(active, problem, mode=mode)
+            await manager.async_release(active)
+            return web.Response(status=502, text=problem.message)
 
         response = web.StreamResponse(
             status=200,
@@ -763,17 +1077,15 @@ class ReolinkStaminaHlsView(HomeAssistantView):
 
         path = session.directory / filename
         if filename == HLS_PLAYLIST:
-            if not await _async_wait_for_playlist(hass, session):
-                detail = session.error_detail
-                _LOGGER.warning("HLS session %s produced no playlist: %s", session.label, detail)
-                evicted = not manager.holds(session)
+            problem = await _async_wait_for_playlist(hass, session)
+            if problem is not None:
+                # A stream that was evicted mid-startup produced nothing because it was
+                # killed, which says nothing about the recorder, the machine or the encoder
+                # and must not be recorded as though it did.
+                if manager.holds(session):
+                    manager.note_failure(session, problem, mode=session.mode)
                 await manager.async_release(session)
-                if not evicted:
-                    manager.note_encoder_failure(session.encoder)
-                return web.Response(
-                    status=502,
-                    text=f"Could not convert this recording: {detail or 'no output'}",
-                )
+                return web.Response(status=502, text=problem.message)
             body = await hass.async_add_executor_job(path.read_bytes)
             return web.Response(
                 body=body,
@@ -787,26 +1099,55 @@ class ReolinkStaminaHlsView(HomeAssistantView):
         return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
 
-async def _async_wait_for_playlist(hass: HomeAssistant, session: _HlsStream) -> bool:
+async def _async_wait_for_playlist(hass: HomeAssistant, session: _HlsStream) -> Diagnosis | None:
     """Wait until the playlist names enough segments to start playing.
 
     ffmpeg writes the playlist only once a segment is complete, and a player handed a
     playlist with a single segment in it can stall waiting for the next one.
+
+    Returns None once there is enough to play, and otherwise why there never was. Note that
+    the budget here is `FIRST_OUTPUT_TIMEOUT` and not the four seconds of content being
+    waited for: a recorder that has to seek before it can send anything is expected, and
+    only something well past that is worth calling a failure.
     """
     path = session.directory / HLS_PLAYLIST
-    deadline = time.monotonic() + FIRST_OUTPUT_TIMEOUT
+    init = session.directory / HLS_INIT
+    started = time.monotonic()
+    deadline = started + FIRST_OUTPUT_TIMEOUT
+    cpu_before = await hass.async_add_executor_job(_cpu_seconds, session.process.pid)
 
-    def _segments() -> int:
+    def _state() -> tuple[int, bool]:
+        """How many segments are listed, and whether ffmpeg wrote a header at all.
+
+        The header is the tell that separates a recorder which never answered from one
+        that answered and is dribbling: ffmpeg writes it as soon as it knows the codec,
+        long before the first segment is complete.
+        """
         try:
-            return path.read_text(errors="replace").count("#EXTINF")
+            segments = path.read_text(errors="replace").count("#EXTINF")
         except OSError:
-            return 0
+            segments = 0
+        return segments, init.is_file()
 
-    while time.monotonic() < deadline:
-        if await hass.async_add_executor_job(_segments) >= HLS_MIN_SEGMENTS:
-            return True
-        if session.process.returncode is not None:
-            # ffmpeg gave up; no amount of waiting will produce more.
-            return await hass.async_add_executor_job(_segments) > 0
+    while True:
+        segments, opened = await hass.async_add_executor_job(_state)
+        if segments >= HLS_MIN_SEGMENTS:
+            return None
+        exited = session.process.returncode is not None
+        # Something is better than nothing from a converter that has stopped: there will be
+        # no more, and one segment still plays.
+        if exited and segments > 0:
+            return None
+        if exited or time.monotonic() >= deadline:
+            break
         await asyncio.sleep(0.25)
-    return False
+
+    elapsed = time.monotonic() - started
+    cpu_after = await hass.async_add_executor_job(_cpu_seconds, session.process.pid)
+    return _diagnose_no_output(
+        session,
+        elapsed=elapsed,
+        load=_cpu_load(cpu_before, cpu_after, elapsed),
+        opened=opened,
+        progress=f"{segments} of the {HLS_MIN_SEGMENTS} segments needed to start",
+    )

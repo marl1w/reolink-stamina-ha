@@ -39,6 +39,16 @@ import { SAVE_STYLES, assembleClip, clipFileName, saveBlob, saveMenuNodes } from
 import { PlaybackSource } from "../playback/source.js";
 import { SCRUB_STYLES, ScrubBar } from "./scrub-bar.js";
 
+/**
+ * How old the server's diagnosis may be and still be about the clip that just failed.
+ *
+ * The backend keeps the last failure however long ago it happened, and explaining this
+ * clip with the previous one's reason would be worse than saying nothing. Generous enough
+ * to cover a conversion that spent its whole thirty-second budget before giving up, plus
+ * the ladder's own timeouts on top.
+ */
+const FAILURE_MAX_AGE_MS = 90_000;
+
 const STYLES = /* css */ `
 :host { display: flex; flex-direction: column; height: 100%; background: var(--rv-surface); min-height: 0; }
 
@@ -140,6 +150,15 @@ export class EventPlayer extends HTMLElement {
     this._stream = null;
     /** The resolution the user last picked in the player, when they have picked one. */
     this._chosenStream = null;
+    /**
+     * Whether that choice was the user's own, rather than one the player made for them.
+     *
+     * The difference decides whether a resolution that fails may be swapped out silently.
+     * Demoting the player's own guess is helpful; demoting a choice the user made by hand
+     * reads as the player arguing with them, and since the choice is remembered they pick
+     * it again and watch it happen again.
+     */
+    this._streamChosenByUser = false;
     /** Exact detection moments inside the current clip, from the recorder. */
     this._detections = [];
     this._lead = 0;
@@ -232,6 +251,13 @@ export class EventPlayer extends HTMLElement {
       this._clip = null;
       this._untrimmed = false;
       this._atClipEnd = false;
+      // Back to the start, now, rather than when the new clip first reports a time. That
+      // report waits on the recorder answering and — on a converted route — on ffmpeg
+      // producing something, so the bar and the clock would otherwise sit on the previous
+      // clip's position for several seconds while a different clip was being opened.
+      this._scrub.reset();
+      this._current.textContent = formatClock(0);
+      this._total.textContent = formatClock(0);
       this._source.reset({ event, stream: this._stream });
       this._openAtEvent(event);
     }
@@ -380,10 +406,11 @@ export class EventPlayer extends HTMLElement {
    * and the low one is usually the H.264 that needs no conversion at all — so a clip
    * routed through ffmpeg in high resolution should not stay routed through it in low.
    */
-  _switchStream(stream, { announce = "Switching resolution…" } = {}) {
+  _switchStream(stream, { announce = "Switching resolution…", byUser = true } = {}) {
     if (!stream || stream === this._stream) return;
     const position = this._source.displayTime;
     this._chosenStream = stream;
+    this._streamChosenByUser = byUser;
     this._stream = stream;
     this._atClipEnd = false;
     // With the beta off, changing resolution must not also change route: the panel has
@@ -556,15 +583,60 @@ export class EventPlayer extends HTMLElement {
    * can decode it. Better than the whole-file fallback this replaced, which was minutes long,
    * unseekable, and in the very codec that had just failed.
    */
-  _offerDownloadInstead(detail, lead = null) {
+  async _offerDownloadInstead(detail, lead = null) {
     if (!this._event) return;
+    // The ladder gives up without knowing why: on a converted route the failure happened
+    // on the server and arrived here as a numeric MediaError with the reason discarded.
+    // Ask what the server made of it, and prefer its sentence — "this machine cannot
+    // convert this fast enough" is worth saying, and nothing here could have worked it out.
+    const diagnosed = lead ? null : await this._recentPlaybackFailure();
+    if (!this._event) return; // navigated away while asking
     const other = this._availableStreams(this._event).find((stream) => stream !== this._stream);
-    const opening = lead || `This clip cannot be played in this browser${detail ? ` (${detail})` : ""}.`;
+    const opening =
+      diagnosed?.message ||
+      lead ||
+      `This clip cannot be played in this browser${detail ? ` (${detail})` : ""}.`;
     this._overlay.show(
       "mdi:download-circle-outline",
       `${opening} Download it and it will play on your device${other ? `, or try ${streamLabel(other).toLowerCase()} resolution` : ""}.`,
       { action: { label: "Download this clip", onClick: () => this._saveClip(this._stream) } }
     );
+  }
+
+  /**
+   * The resolution the user asked for could not be played — so say why, and offer the one
+   * that can rather than substituting it behind their back.
+   *
+   * The reason comes from the server where there is one, because on a converted route this
+   * is almost never "the browser refused it": it is a machine that could not re-encode a
+   * full-sensor stream in time, or a recorder that would not send it fast enough. Neither
+   * is guessable here, and both are worth saying — "switching to low resolution…" told the
+   * user nothing about why high resolution keeps not working for them.
+   */
+  async _offerLowerResolution() {
+    const diagnosed = await this._recentPlaybackFailure();
+    if (!this._event) return;
+    const reason =
+      diagnosed?.message ||
+      "High resolution could not be played here: it is H.265 at full sensor size, which this browser cannot decode and Home Assistant could not convert in time.";
+    this._overlay.show(
+      "mdi:quality-high",
+      `${reason} Low resolution is H.264 and plays with no conversion at all.`,
+      {
+        action: {
+          label: `Switch to ${streamLabel("sub").toLowerCase()} resolution`,
+          onClick: () => this._switchStream("sub", { byUser: false }),
+        },
+      }
+    );
+  }
+
+  /** The server's diagnosis, but only while it is still plausibly about this clip. */
+  async _recentPlaybackFailure() {
+    const failure = await this._api.playbackFailure();
+    if (!failure?.message || !failure.at) return null;
+    const age = Date.now() - Date.parse(failure.at);
+    return Number.isFinite(age) && age >= 0 && age <= FAILURE_MAX_AGE_MS ? failure : null;
   }
 
   // ------------------------------------------------------------------ playback
@@ -720,8 +792,16 @@ export class EventPlayer extends HTMLElement {
 
     const streams = this._availableStreams(this._event);
     if (decodeFailure && this._stream !== "sub" && streams.includes("sub")) {
-      this._chosenStream = null;
+      // A resolution the player chose itself may be swapped out for one that works. A
+      // resolution the user chose by hand may not: doing it silently is what makes the
+      // player look like it is flipping between the two of its own accord, and the choice
+      // being remembered means the next clip does it all over again.
+      if (this._streamChosenByUser) {
+        this._offerLowerResolution();
+        return;
+      }
       this._switchStream("sub", {
+        byUser: false,
         announce:
           "High resolution could not be decoded — it is H.265 at full sensor size. Switching to low resolution…",
       });

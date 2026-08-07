@@ -118,4 +118,24 @@ export class StaminaApi {
     const url = result.sign === false ? result.path : await this.signPath(result.path);
     return { ...result, url };
   }
+
+  /**
+   * Why the last server-side conversion produced nothing, if the backend classified one.
+   *
+   * A converted route is a URL handed to the video element, so a 502 from it arrives here
+   * as a numeric `MediaError` with the server's explanation discarded. This asks for the
+   * explanation separately, and is the only way the panel can say anything more useful
+   * than "this clip cannot be played".
+   */
+  async playbackFailure() {
+    try {
+      const result = await this.hass.callWS({ type: `${DOMAIN}/playback_failure` });
+      return result?.failure || null;
+    } catch (err) {
+      // Diagnostic only: never let this turn a failed clip into a broken panel.
+      // eslint-disable-next-line no-console
+      console.debug("Reolink Stamina: could not read the playback failure", err);
+      return null;
+    }
+  }
 }

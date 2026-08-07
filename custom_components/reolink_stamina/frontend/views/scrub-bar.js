@@ -144,6 +144,26 @@ export class ScrubBar {
     }
   }
 
+  /**
+   * Put the bar back to the start, with nothing played, buffered or marked.
+   *
+   * Called the moment the clip changes rather than waiting for the new one to report a
+   * time. That report is the first `timeupdate`, which on any route that has to open a
+   * stream server-side is several seconds away — and until it arrives the bar would go on
+   * showing how far through the *previous* clip the viewer had got, on a clip that is not
+   * playing yet. `update` then moves it to wherever playback actually begins.
+   */
+  reset() {
+    this._duration = 0;
+    this._played.style.width = "0%";
+    this._knob.style.left = "0%";
+    // Zeroed here rather than left to `update`, which deliberately leaves the buffer alone
+    // when there is nothing to report — so it would otherwise keep the width the previous
+    // clip left it at, for as long as the new one has told us nothing.
+    this._buffer.style.width = "0%";
+    this._markers.replaceChildren();
+  }
+
   /** Marks as `{ratio, tone, exact, title}`, already placed along the bar. */
   setMarkers(marks) {
     this._markers.replaceChildren(

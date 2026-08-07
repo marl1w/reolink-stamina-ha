@@ -49,6 +49,18 @@ const DECODE_STALL_MS = 4000;
  * segments before a playlist is worth handing to a player.
  */
 const DECODE_CEILING_MS = 25000;
+/**
+ * The same, for a route Home Assistant is converting.
+ *
+ * Longer than the others on purpose, and longer than the server's own `FIRST_OUTPUT_TIMEOUT`
+ * of thirty seconds. A converted route has a server-side startup cost the passthrough route
+ * does not: the recorder is asked to seek, ffmpeg opens the input, and on a re-encode four
+ * seconds of video have to be produced before there is a playlist worth handing over. Giving
+ * up before the server has — which is what a twenty-five second ceiling did — abandons
+ * conversions that were seconds from working, and on high resolution that is most of them.
+ * The visible symptom was a player that dropped back to low resolution for no stated reason.
+ */
+const CONVERTED_CEILING_MS = 40000;
 
 export class PlaybackSource {
   /**
@@ -459,7 +471,8 @@ export class PlaybackSource {
 
     if (hasData && this._dataSince === null) this._dataSince = Date.now();
     const stalled = this._dataSince !== null && Date.now() - this._dataSince > DECODE_STALL_MS;
-    const silent = Date.now() - this._probeStartedAt > DECODE_CEILING_MS;
+    const ceiling = CONVERTED_ROUTES.has(this._srcRoute) ? CONVERTED_CEILING_MS : DECODE_CEILING_MS;
+    const silent = Date.now() - this._probeStartedAt > ceiling;
     if (!stalled && !silent) return;
 
     this._clearDecodeProbe();

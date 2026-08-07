@@ -78,6 +78,7 @@ from .restream import (
     ReolinkStaminaHlsView,
     ReolinkStaminaRestreamView,
     async_shutdown as async_shutdown_restreams,
+    async_sweep_sessions,
 )
 from .websocket_api import async_register as async_register_websocket_api
 
@@ -183,6 +184,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN] = StaminaData(cache=cache, options=options)
     await _async_start_syncers(hass, entry)
+
+    # Unconditional rather than gated on the beta being on: what was left behind was left
+    # behind by whatever the option said at the time, and turning the beta off does not
+    # give the space back.
+    await async_sweep_sessions(hass)
 
     if not hass.data.get(_WS_REGISTERED):
         async_register_websocket_api(hass)
