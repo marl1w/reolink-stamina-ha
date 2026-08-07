@@ -11,6 +11,7 @@ import { SHARED } from "./theme.js";
 import { ToolbarFold } from "./fold.js";
 import { StaminaApi } from "./api.js";
 import { StaminaStore } from "./store.js";
+import { forgetRoutesFromEarlierRelease } from "./playback/routes.js";
 import "./views/device-picker.js";
 import "./views/toolbar.js";
 import "./views/event-list.js";
@@ -144,6 +145,12 @@ class ReolinkStaminaPanel extends HTMLElement {
 
   set panel(panel) {
     this._panel = panel;
+
+    // The integration's own version, handed over with the panel registration. Anything this
+    // browser learned about how a recording reaches it was learned from a different build's
+    // conversions, so an update starts that question again rather than carrying an answer a
+    // release may have just fixed. Cheap, and idempotent: this setter can run more than once.
+    forgetRoutesFromEarlierRelease(panel?.config?.version);
   }
 
   async _start() {

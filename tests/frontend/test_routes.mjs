@@ -20,10 +20,13 @@ import {
   ROUTE_STREAM,
   ROUTE_TRANSCODE,
   convertedFormat,
+  forgetRoutesFromEarlierRelease,
   nextRoute,
+  readRouteMemory,
   recalledRoute,
   rememberRoute,
   routeMemoryKeys,
+  writeRouteMemory,
 } from "../../custom_components/reolink_stamina/frontend/playback/routes.js";
 
 let failures = 0;
@@ -149,6 +152,70 @@ test("the memory cannot grow without bound, and never drops the hints", () => {
   // The oldest went first.
   assert.equal(memory["nvr1|0|main"], undefined);
   assert.equal(memory["nvr1|259|main"].route, ROUTE_REMUX);
+});
+
+// --------------------------------------------------------- the memory, across releases
+
+// `routes.js` reads `localStorage` off the global at call time, so a stand-in is enough —
+// and it has to be removed again, because the rest of this file relies on there being none.
+function withStorage(fn, initial = {}) {
+  const data = { ...initial };
+  globalThis.localStorage = {
+    getItem: (key) => (key in data ? data[key] : null),
+    setItem: (key, value) => {
+      data[key] = String(value);
+    },
+    removeItem: (key) => {
+      delete data[key];
+    },
+  };
+  try {
+    fn(data);
+  } finally {
+    delete globalThis.localStorage;
+  }
+}
+
+const RELEASE_KEY = "reolink_stamina.routes.release";
+
+test("an update throws away what an earlier release learned", () => {
+  // The route that works is as much about this integration's conversions as about the
+  // recording, and a release that fixes one cannot reach into a browser that has already
+  // written it off — that browser would skip the fixed rung for the next ninety days.
+  withStorage((data) => {
+    const keys = routeMemoryKeys(EVENT, "main");
+    writeRouteMemory(rememberRoute({}, keys, ROUTE_TRANSCODE, NOW));
+
+    assert.equal(forgetRoutesFromEarlierRelease("1.2.7"), true);
+    assert.equal(recalledRoute(readRouteMemory(), keys, NOW), null);
+    assert.equal(data[RELEASE_KEY], "1.2.7");
+  });
+});
+
+test("opening the panel again on the same release keeps what it just learned", () => {
+  // The panel sets this on every load, and a memory cleared on every load is no memory: the
+  // ladder would be walked afresh for every camera, every time.
+  withStorage(() => {
+    forgetRoutesFromEarlierRelease("1.2.7");
+    const keys = routeMemoryKeys(EVENT, "main");
+    writeRouteMemory(rememberRoute({}, keys, ROUTE_TRANSCODE, NOW));
+
+    assert.equal(forgetRoutesFromEarlierRelease("1.2.7"), false);
+    assert.equal(recalledRoute(readRouteMemory(), keys, NOW), ROUTE_TRANSCODE);
+  });
+});
+
+test("a version that never arrived is not a new release", () => {
+  // The version comes from the panel registration. If it is ever missing, forgetting
+  // everything on every single load is far worse than remembering it a release too long.
+  withStorage((data) => {
+    const keys = routeMemoryKeys(EVENT, "main");
+    writeRouteMemory(rememberRoute({}, keys, ROUTE_REMUX, NOW));
+
+    assert.equal(forgetRoutesFromEarlierRelease(undefined), false);
+    assert.equal(recalledRoute(readRouteMemory(), keys, NOW), ROUTE_REMUX);
+    assert.equal(RELEASE_KEY in data, false);
+  });
 });
 
 // ------------------------------------------------- the same ladder, seen from Safari

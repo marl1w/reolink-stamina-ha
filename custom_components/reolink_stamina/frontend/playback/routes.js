@@ -190,6 +190,8 @@ export function nextRoute(current, { adaptive, decodeFailure = false } = {}) {
 // dimensions, which Safari fills in from a track header it never manages to decode. Those
 // entries pinned a black window in place, so they are abandoned rather than trusted.
 const ROUTE_MEMORY_KEY = "reolink_stamina.routes.v2";
+// Which release of the integration wrote what is currently in that key.
+const ROUTE_RELEASE_KEY = "reolink_stamina.routes.release";
 const ROUTE_MEMORY_TTL = 90 * 24 * 3600 * 1000;
 const ROUTE_MEMORY_MAX = 200;
 const HINT_PREFIX = "*|";
@@ -216,6 +218,38 @@ export function writeRouteMemory(memory) {
     localStorage.setItem(ROUTE_MEMORY_KEY, JSON.stringify(memory));
   } catch {
     // Private browsing or a full quota: the ladder is simply walked again next time.
+  }
+}
+
+/**
+ * Forget everything remembered under an earlier release, and note the one running now.
+ *
+ * Which codec a recording carries is a setting on the recorder, which is why remembering the
+ * answer is worth anything at all. But which route *works* is not only about the recording:
+ * it is equally about this integration's own conversions, and those change with every
+ * release. A build that fixes repackaging cannot undo a browser's memory of repackaging
+ * failing — that browser skips the rung that now works and keeps paying for the re-encode
+ * below it, for the rest of the ninety days the entry lives. "Still converting after the
+ * update" is the shape of every one of those.
+ *
+ * So an update is treated as invalidating the ladder rather than any single entry: the panel
+ * cannot tell which of its answers a given release changed, and the whole memory is worth
+ * less than one wrong answer that outlives its fix. What it costs is one walk down the ladder
+ * per camera afterwards — exactly what a browser that has never played anything pays — and
+ * it is paid once instead of being carried for a quarter.
+ *
+ * Called for its effect on storage, once, before anything reads the memory back.
+ */
+export function forgetRoutesFromEarlierRelease(release) {
+  if (!release) return false;
+  try {
+    if (localStorage.getItem(ROUTE_RELEASE_KEY) === release) return false;
+    localStorage.removeItem(ROUTE_MEMORY_KEY);
+    localStorage.setItem(ROUTE_RELEASE_KEY, release);
+    return true;
+  } catch {
+    // Private browsing or a full quota: there was nothing durable to forget.
+    return false;
   }
 }
 
