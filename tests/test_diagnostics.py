@@ -9,6 +9,7 @@ raw ffmpeg output.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -79,6 +80,46 @@ async def test_diagnostics_carry_the_classified_failures(
     assert failure["message"] == "The GPU failed."
     assert failure["ffmpeg"] == "Device creation failed"
     assert report["adaptive_playback"]["disabled_encoders"] == ["h264_qsv"]
+
+
+async def test_diagnostics_put_both_clocks_side_by_side(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Playback is addressed by timestamp, so a disagreeing clock is a 404 and nothing else.
+
+    Reported for both ends rather than one: knowing only Home Assistant's timezone says
+    nothing, and the whole diagnosis is the difference between the two.
+    """
+    report = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert "home_assistant_timezone" in report["clocks"]
+    assert "home_assistant_utc_offset" in report["clocks"]
+    # One entry per recorder, whether or not it would answer — an unreachable recorder is
+    # itself worth seeing, and must not cost the rest of the report.
+    assert isinstance(report["clocks"]["recorders"], list)
+
+
+async def test_diagnostics_survive_a_recorder_that_will_not_answer(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A report that raises is a report nobody can attach to the issue they are filing."""
+    with patch(
+        "custom_components.reolink_stamina.diagnostics.async_get_host",
+        side_effect=RuntimeError("gone"),
+    ):
+        report = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert report["clocks"]["recorders"]
+    assert "gone" in report["clocks"]["recorders"][0]["error"]
+
+
+async def test_diagnostics_show_what_a_playback_url_is_built_from(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The three timestamps whose disagreement is the 404, rather than the URL after the fact."""
+    report = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert isinstance(report["playback_samples"], list)
 
 
 async def test_diagnostics_name_no_recording(hass: HomeAssistant, entry: MockConfigEntry) -> None:

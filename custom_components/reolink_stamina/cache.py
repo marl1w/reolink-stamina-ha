@@ -275,6 +275,21 @@ class VodCache:
         return self._days.get(day_key(entry_id, channel, stream, date, include_unlabelled))
 
     @callback
+    def sample_files(self, limit: int = 3) -> list[dict[str, Any]]:
+        """Return a few cached recordings, for diagnostics rather than for the panel.
+
+        Whatever happens to be cached, from whichever camera-days are held: this exists to
+        show the timestamps a recording was described by, and any recording will do.
+        """
+        samples: list[dict[str, Any]] = []
+        for key, record in self._days.items():
+            for file in record.files:
+                samples.append({"key": key, **file})
+                if len(samples) >= limit:
+                    return samples
+        return samples
+
+    @callback
     def peek_calendar(
         self, entry_id: str, channel: int, year: int, month: int
     ) -> CalendarRecord | None:
