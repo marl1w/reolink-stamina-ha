@@ -19,13 +19,14 @@
 
 import { canDemux, decodedFrames, isHevcCodec, loadDemuxer } from "./demuxer.js";
 import {
-  CONVERTED_FORMAT,
   CONVERTED_ROUTES,
   HEVC_SUPPORTED,
   ROUTE_LABELS,
   ROUTE_STREAM,
   ROUTE_TRANSCODE,
+  convertedFormat,
   nextRoute,
+  refuseHls,
   readRouteMemory,
   recalledRoute,
   rememberRoute,
@@ -62,6 +63,9 @@ const DECODE_CEILING_MS = 25000;
  */
 const CONVERTED_CEILING_MS = 40000;
 
+/** What the element reports when it could not open the source at all. */
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
 export class PlaybackSource {
   /**
    * `isAdaptive` is asked rather than passed, because the option can change under an open
@@ -82,6 +86,8 @@ export class PlaybackSource {
     this._route = ROUTE_STREAM;
     /** The route that set the element's current src, so it can be torn down correctly. */
     this._srcRoute = null;
+    /** The container the current src arrived in, where the server chose one. */
+    this._srcFormat = null;
     /** Seconds into the recording that the current stream starts at. */
     this._timeOffset = 0;
     /** Set once this clip has proved the browser cannot decode its codec. */
@@ -278,15 +284,16 @@ export class PlaybackSource {
    */
   async _openConverted(file, seek) {
     const event = this._event;
+    const format = convertedFormat();
     try {
       const { url } = await this._api.streamUrl({
         ...this._streamArgs(file, seek),
         route: this._route,
-        format: CONVERTED_FORMAT,
+        format,
       });
       if (this._event?.id !== event.id) return; // switched away while opening
 
-      this._begin(this._route, seek);
+      this._begin(this._route, seek, format);
       this._video.src = url;
       this._video.load();
       this._armDecodeProbe();
@@ -303,9 +310,10 @@ export class PlaybackSource {
   }
 
   /** Common bookkeeping for a route that has just been handed a URL. */
-  _begin(route, seek) {
+  _begin(route, seek, format = null) {
     this._timeOffset = Math.max(0, Math.floor(seek));
     this._srcRoute = route;
+    this._srcFormat = format;
   }
 
   _attemptPlay(attempt) {
@@ -372,6 +380,10 @@ export class PlaybackSource {
   handleError() {
     if (!this._video.getAttribute("src")) return { handled: true, decodeFailure: false };
 
+    // Before anything is read into the failure: a browser that asked for a playlist and then
+    // would not open one has said nothing about the recording at all.
+    if (this._retryWithoutHls()) return { handled: true, decodeFailure: false };
+
     // A decode failure means the bytes arrived fine and the codec is the problem, so
     // repackaging would change nothing: what has to change is the codec.
     const mediaError = this._video.error;
@@ -385,6 +397,33 @@ export class PlaybackSource {
       decodeFailure
     );
     return { handled: moved, decodeFailure };
+  }
+
+  /**
+   * Reopen the current route as MP4, where the browser refused the playlist itself.
+   *
+   * The container a conversion arrives in is chosen from what the browser says it can play,
+   * and `canPlayType` answers "maybe" — a promise, not a guarantee. When it turns out to be
+   * wrong the element reports that it could not open the source *at all*, which is a
+   * different thing from every other failure here: nothing was demuxed, no decoder was asked,
+   * and the recording has not been read. Falling over to the next rung would only carry the
+   * same unopenable playlist down with it, so the same rung is retried in the other container
+   * instead, and the ladder proper starts again from what that says.
+   *
+   * Only where Media Source Extensions exist, because that is what makes MP4 an alternative.
+   * A browser with native HLS and no MSE is an iPhone, where the playlist is the only thing
+   * that ever works and retrying would take away the one route it has.
+   */
+  _retryWithoutHls() {
+    if (this._srcFormat !== "hls") return false;
+    if (this._video.error?.code !== MEDIA_ERR_SRC_NOT_SUPPORTED) return false;
+    if (!globalThis.MediaSource) return false;
+
+    refuseHls();
+    // eslint-disable-next-line no-console
+    console.debug("Reolink Stamina: this browser claimed HLS and would not open one; using MP4");
+    this.open({ seek: this.displayTime, quiet: true });
+    return true;
   }
 
   /**
@@ -519,6 +558,7 @@ export class PlaybackSource {
       }
     }
 
+    this._srcFormat = null;
     if (this._srcRoute !== null) {
       this._srcRoute = null;
       this._video.removeAttribute("src");

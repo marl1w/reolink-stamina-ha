@@ -113,6 +113,21 @@ def test_a_remux_re_encodes_nothing() -> None:
     assert "frag_keyframe+empty_moov+default_base_moof" in args
 
 
+def test_audio_timestamps_are_made_monotonic_whichever_rung_this_is() -> None:
+    """A seek part-way into a recording arrives with audio timestamps that step backwards.
+
+    The AAC encoder says so — "Queue input is backward in time" — and then encodes them
+    anyway, against a clock the video no longer shares. It applies to both rungs, because
+    audio is converted on both, and it must not shift where the audio starts: on the copied
+    rung the video keeps the recorder's own timestamps and nothing would realign them.
+    """
+    for mode in (MODE_COPY, MODE_ENCODE):
+        args = build_args("ffmpeg", _URL, mode=mode, output_format=FORMAT_MP4)
+
+        assert args[args.index("-af") + 1] == "aresample=async=1"
+        assert args.index("-af") < args.index("-c:a")
+
+
 def test_a_re_encode_scales_down_but_never_up() -> None:
     """A full-sensor stream cannot be re-encoded in real time; it is capped, not resized."""
     args = build_args("ffmpeg", _URL, mode=MODE_ENCODE, output_format=FORMAT_MP4)

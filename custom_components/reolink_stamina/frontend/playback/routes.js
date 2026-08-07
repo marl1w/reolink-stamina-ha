@@ -54,9 +54,11 @@ export const ROUTE_LABELS = {
 /**
  * Whether this browser can decode H.265/HEVC.
  *
- * Reolink devices commonly encode the main stream as HEVC and the sub stream as H.264.
- * Safari plays HEVC; Chrome and Firefox generally do not. Getting this wrong looks like
- * "the device is broken" when the bytes arrived perfectly well.
+ * Reolink devices commonly encode the main stream as HEVC and the sub stream as H.264 —
+ * commonly, not always: some models and firmware serve HEVC on both, which is why nothing
+ * here decides by resolution and every route is chosen from what the stream turns out to
+ * contain. Safari plays HEVC; Chrome and Firefox generally do not. Getting this wrong looks
+ * like "the device is broken" when the bytes arrived perfectly well.
  */
 export const HEVC_SUPPORTED = (() => {
   try {
@@ -81,7 +83,7 @@ export const HEVC_SUPPORTED = (() => {
  *
  * Everywhere else, one chunked fragmented-MP4 response, which needs no session at all.
  */
-export const CONVERTED_FORMAT = (() => {
+const PROBED_FORMAT = (() => {
   try {
     const probe = document.createElement("video");
     if (probe.canPlayType("application/vnd.apple.mpegurl") !== "") return "hls";
@@ -92,14 +94,41 @@ export const CONVERTED_FORMAT = (() => {
 })();
 
 /**
+ * Set once a browser that claimed HLS has refused to open one.
+ *
+ * `canPlayType` answers "maybe", and a browser that overstates it takes the entire ladder
+ * down with it: both conversions are handed a playlist nothing here can read, every rung
+ * fails for a reason that has nothing to do with the recording, and the player ends up
+ * blaming the codec. One refusal is enough to stop believing the claim.
+ *
+ * Deliberately not remembered across page loads. A playlist can also fail to open because
+ * the session behind it went away, and one wasted attempt per page load is a far cheaper
+ * mistake than pinning a browser that genuinely does play HLS — every iPhone — onto a
+ * container it has no way to use.
+ */
+let hlsRefused = false;
+
+/** Stop asking this browser for HLS, having just watched it refuse one. */
+export function refuseHls() {
+  hlsRefused = true;
+}
+
+/** Which container a server-converted stream should arrive in, as things currently stand. */
+export function convertedFormat() {
+  return hlsRefused ? "mp4" : PROBED_FORMAT;
+}
+
+/**
  * Whether this browser plays HLS itself, rather than being handed one long MP4.
  *
- * The same answer as `CONVERTED_FORMAT`, named for the other thing it decides. A browser with
+ * The same answer as `convertedFormat`, named for the other thing it decides. A browser with
  * its own HLS pipeline has two separate routes to a decoder — that one, and Media Source
  * Extensions — and they do not support the same codecs. Which is why repackaging is worth
  * trying there even for a codec that just failed.
  */
-export const NATIVE_HLS = CONVERTED_FORMAT === "hls";
+export function nativeHls() {
+  return convertedFormat() === "hls";
+}
 
 /**
  * The next route to try after this one failed, or null when there is nothing left.
@@ -128,7 +157,7 @@ export function nextRoute(current, { adaptive, decodeFailure = false } = {}) {
   if (!adaptive) return null;
   switch (current) {
     case ROUTE_STREAM:
-      return decodeFailure && !NATIVE_HLS ? ROUTE_TRANSCODE : ROUTE_REMUX;
+      return decodeFailure && !nativeHls() ? ROUTE_TRANSCODE : ROUTE_REMUX;
     case ROUTE_REMUX:
       return ROUTE_TRANSCODE;
     default:

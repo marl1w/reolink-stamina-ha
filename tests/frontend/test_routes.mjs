@@ -19,6 +19,7 @@ import {
   ROUTE_REMUX,
   ROUTE_STREAM,
   ROUTE_TRANSCODE,
+  convertedFormat,
   nextRoute,
   recalledRoute,
   rememberRoute,
@@ -68,6 +69,12 @@ test("a container this browser could not read is exactly what repackaging is for
   // An iPhone has no Media Source Extensions, so nothing demuxed the recording and its own
   // decoder was never asked. Re-encoding there would be pure waste.
   assert.equal(nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: false }), ROUTE_REMUX);
+});
+
+test("a browser that says nothing about HLS is handed MP4", () => {
+  // Under node the probe throws and is caught, which is the shape of Chrome and Firefox:
+  // no native HLS pipeline, so the conversion has to arrive as one long fragmented MP4.
+  assert.equal(convertedFormat(), "mp4");
 });
 
 test("every route can name itself, the cheap one included", () => {
@@ -162,7 +169,8 @@ test("a browser with its own HLS pipeline repackages before it re-encodes", () =
   // Source Extensions and plays it perfectly through native HLS, so a decode failure there
   // says nothing about the second pipeline — and skipping to a re-encode sent every
   // high-resolution clip through the costliest route on the machine, for no reason.
-  assert.equal(safari.NATIVE_HLS, true);
+  assert.equal(safari.nativeHls(), true);
+  assert.equal(safari.convertedFormat(), "hls");
   assert.equal(
     safari.nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }),
     ROUTE_REMUX
@@ -174,6 +182,22 @@ test("repackaging failing there still leads to the re-encode", () => {
   // really is the problem and only re-encoding is left.
   assert.equal(safari.nextRoute(ROUTE_REMUX, { adaptive: true }), ROUTE_TRANSCODE);
   assert.equal(safari.nextRoute(ROUTE_TRANSCODE, { adaptive: true, decodeFailure: true }), null);
+});
+
+// Last, because it is the one thing here that changes the module rather than asking it.
+test("a browser that claimed HLS and refused one is not asked for another", () => {
+  // `canPlayType` says "maybe", and a browser that overstates it fails every rung for a
+  // reason that has nothing to do with the recording. Once refused, the conversion arrives
+  // as MP4 — and the ladder goes back to treating a refused codec as the end of the line,
+  // because the second pipeline that made repackaging worth trying was the claim itself.
+  safari.refuseHls();
+
+  assert.equal(safari.convertedFormat(), "mp4");
+  assert.equal(safari.nativeHls(), false);
+  assert.equal(
+    safari.nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }),
+    ROUTE_TRANSCODE
+  );
 });
 
 process.stdout.write(`\n  ${ran - failures}/${ran} route checks passed\n`);

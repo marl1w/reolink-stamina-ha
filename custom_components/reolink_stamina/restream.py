@@ -375,7 +375,8 @@ def build_args(
 
     Audio is converted whichever mode this is: Reolink recorders variously serve AAC,
     ADPCM and G.711, and only the first of those can go into MP4 at all. It is one mono
-    channel, so it costs nothing next to the video.
+    channel, so it costs nothing next to the video — and being converted, it is also the
+    track that has to be told what to do with the recorder's timestamps at a seek.
 
     `-hwaccel auto` covers the expensive half of a re-encode on hardware that can decode
     H.265 itself, and falls back to software silently where it cannot. The filters run in
@@ -403,7 +404,13 @@ def build_args(
         # does. The tag is ignored for H.264, so it costs the common case nothing.
         args += ["-c:v", "copy", "-tag:v", "hvc1"]
 
-    args += ["-c:a", "aac", "-ac", "1"]
+    # `aresample=async=1` on top of that, for the audio alone. A recording opened part-way
+    # through arrives with timestamps that step backwards over the first few packets, and the
+    # AAC encoder says so — "Queue input is backward in time" — and then encodes them anyway,
+    # against a clock that no longer matches the video's. Padding or trimming the gap instead
+    # keeps one monotonic audio timeline without touching where it starts, which is what keeps
+    # it in step with a video track that is being copied rather than re-encoded.
+    args += ["-af", "aresample=async=1", "-c:a", "aac", "-ac", "1"]
 
     if output_format == FORMAT_HLS:
         if directory is None:

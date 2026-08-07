@@ -47,7 +47,7 @@ Rows say what fired and how often ("Person (2)"), the scrub bar marks each detec
 Worth knowing:
 
 - **Reach is about 30 days**, bounded by the Reolink search API and your HDD. Beyond that even stamina cannot help: the footage is gone.
-- **Playback uses the low-resolution stream** where available. High resolution is H.265 at full sensor size — slow to open, undecodable in most browsers — so it is offered for downloads, not for watching. [Adaptive playback (beta)](#beta-options) makes it watchable, and adds a resolution picker to the player.
+- **Playback uses the low-resolution stream** where available. High resolution is H.265 at full sensor size — slow to open, undecodable in most browsers — so it is offered for downloads, not for watching. [Adaptive playback (beta)](#beta-options) makes it watchable, and adds a resolution picker to the player. Some models and firmware serve H.265 on the low-resolution stream too, and there the beta is what (hopefully) makes *any* resolution play in Chrome or Firefox.
 - **The player says how a clip reached you.** A badge reads *Direct play* when the footage came straight off the recorder with nothing in between, and names the conversion when [adaptive playback](#beta-options) had to step in.
 - **High-resolution downloads won't open in QuickTime or Preview.** The file is valid and VLC and browsers play it, but the H.265 these recorders produce stalls Apple's decoder however it is packaged. Convert once if you need to: `ffmpeg -i clip.mp4 -c:v libx264 -crf 20 -c:a copy out.mp4`.
 - **Downloads take about as long as the clip** — no fast-forward on the recorder's treadmill.
@@ -152,6 +152,7 @@ logger:
 | No sidebar item | Integration not added, or you're a non-admin and *Restrict to administrators* is on |
 | "No Reolink NVR found" | No NVR in the Reolink integration, or it's a standalone camera / Home Hub — switch on the beta for those |
 | Black window, or "this browser cannot decode this recording" | The stream is H.265 and this is Chrome or Firefox. Switch on *Adaptive playback* |
+| Low resolution needs converting too, not just high | Some models and firmware encode H.265 on both streams. Nothing is wrong: the ladder chooses by what the stream contains, not by which resolution it is, so it will convert whichever one needs it |
 | Black window in Safari at high resolution | Same cause, despite Safari claiming H.265 support: Apple's decoder stalls on what these recorders produce. With *Adaptive playback* on it re-encodes instead, after a few seconds of finding out |
 | Nothing plays in the iPhone app | Same option: iOS cannot read the recorder's stream at all, and needs the repackaged one |
 | One camera is black on the phone while the others play | Its stream needs more than repackaging. With the beta on it lands on the re-encode rung by itself and stays there; the log says what ffmpeg made of it under `custom_components.reolink_stamina` at debug |
