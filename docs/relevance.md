@@ -2,8 +2,6 @@
 
 [← back to the README](../README.md)
 
-![Relevance](../img/relevance.png)
-
 ![Relevance in the timeline](../img/relevance.png)
 
 > **Beta.** It works end to end — it collects, it learns, and it marks. What it has not had yet is months of real households, which is what the numbers behind it need in order to be right. Reports are the point.
@@ -25,6 +23,19 @@ Beside each bar is the figure and the count it came from: *seen 122×* is a fact
 That detail view **works from the first day**, before anything can be marked. It is the honest answer to "is this doing anything?" — you can watch what it is collecting long before it has enough to have an opinion.
 
 **An *Unusual* chip** in the filter row narrows the list to just those rows. While a camera is still learning it reads *Learning…* and is not clickable, which is true and better than a filter that can only return nothing.
+
+**On the player's scrub bar**, a detection keeps the colour of what was detected and turns its dot red when the model marked it — two facts, two marks, neither displacing the other.
+
+## Counting your own signals
+
+Point it at entities you already have and it counts them alongside the time and the duration, so *"a person on the drive while nobody is in"* becomes its own thing rather than just a person on the drive.
+
+*Reolink Stamina → **Configure*** — one list per recorder, on the last page. One Home Assistant often covers more than one property, and whether anybody is home at the first says nothing about the second.
+
+- **Nothing is assumed and nothing is pre-selected.** The model never interprets a signal; it counts the state as it finds it. So "is anyone home" works exactly as well as a named person, and which one suits your house is not this integration's business to guess.
+- **Skippable.** Time of day and duration are most of the value on their own.
+- **Only entities with states you could read aloud** are offered — presence, a door, an alarm mode, a calendar. A continuous number never repeats a value, so it could never be rare; those need bucketing before they can be counted, and that is not built yet.
+- **A signal added later is not a hole.** Events from before it existed record it as unknown, which is a value in its own right rather than a gap that would shift every count.
 
 ## What it keeps
 
@@ -50,7 +61,7 @@ That is all there is to configure. There is nothing to tune and nothing to train
 
 ## How long before it says anything
 
-A camera needs roughly **a fortnight of history and a few hundred detections** before it can be compared against itself. Both, not either: a camera can have months behind it and still see too little to compare anything against, and that is reported as its own state rather than as silence.
+A camera needs roughly **a week of history and a few hundred detections** before it can be compared against itself. Both, not either: a camera can have months behind it and still see too little to compare anything against, and that is reported as its own state rather than as silence. A week rather than a fortnight because what the days are for is having seen each day of the week once — a Saturday does not look like a Tuesday.
 
 Your import shortens the wait by however much Home Assistant had already recorded — often ten days, more if you have set a longer retention.
 
@@ -67,5 +78,5 @@ Worth saying plainly, because the obvious expectations are the wrong ones.
 
 1. **The record.** ✅ The journal, and the one-off import of what Home Assistant already held.
 2. **Scoring and the mark.** ✅ The rate model, the mark on the row, the sentence saying why, the detail view and the filter chip.
-3. **Your own signals.** Point it at entities you already have — is anyone home, is the alarm armed — so "a person on the drive while nobody is in" can be counted as its own thing. Nothing is assumed and nothing is pre-selected; whichever entities suit your house are yours to choose.
+3. **Your own signals.** ✅ Pick entities per recorder and they are counted alongside everything else. Numeric sensors still need bucketing before they can be offered.
 4. **What the picture says.** Optional and behind its own switch: the coarse shape and position of what moved, so an unfamiliar vehicle at the gate can be told from a familiar one. This is the only part that will need ffmpeg.

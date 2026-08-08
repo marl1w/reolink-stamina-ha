@@ -17,6 +17,7 @@ confidently report that nothing ever happens on a camera that has been offline f
 
 from __future__ import annotations
 
+import json
 import logging
 
 from homeassistant.core import (
@@ -60,13 +61,26 @@ class TransitionWatcher:
     """Subscribes to every detection sensor and hands what they do to the journal."""
 
     def __init__(
-        self, hass: HomeAssistant, journal: Journal, *, include_all_devices: bool = False
+        self,
+        hass: HomeAssistant,
+        journal: Journal,
+        *,
+        include_all_devices: bool = False,
+        signals: dict[str, list[str]] | None = None,
     ) -> None:
-        """Prepare a watcher, without subscribing."""
+        """Prepare a watcher, without subscribing.
+
+        `signals` maps a recorder's config entry to the entities whose state should be
+        recorded alongside its detections.
+        """
         self._hass = hass
         self._journal = journal
         self._include_all_devices = include_all_devices
+        self._signals = signals or {}
         self._entities: dict[str, tuple[str, str]] = {}
+        # Which signals belong to which camera, worked out once at start rather than per
+        # transition: a busy recorder fires several a second.
+        self._watching: dict[str, list[str]] = {}
         self._unsubscribe: CALLBACK_TYPE | None = None
 
     @property
@@ -86,6 +100,15 @@ class TransitionWatcher:
         self._entities = async_detection_map(
             self._hass, include_all_devices=self._include_all_devices
         )
+        self._watching = {
+            camera_key(entry_id, camera.channel): list(entities)
+            for entry_id, entities in self._signals.items()
+            for device in async_discover_devices(
+                self._hass, include_all_devices=self._include_all_devices
+            )
+            if device.entry_id == entry_id
+            for camera in device.cameras
+        }
         if not self._entities:
             _LOGGER.debug("No Reolink detection sensors found; the journal has nothing to watch")
             return
@@ -102,6 +125,27 @@ class TransitionWatcher:
             self._unsubscribe()
             self._unsubscribe = None
         self._entities = {}
+
+    @callback
+    def _snapshot(self, camera: str) -> str | None:
+        """Return the configured signals' states right now, as JSON.
+
+        Raw states, never bucketed. What a value *means* is a question for whoever reads it
+        back, so a bucketing can be reconsidered against months of history rather than
+        deciding, once and permanently, what was worth writing down.
+
+        An entity that has gone missing is recorded as `unknown` rather than skipped: a
+        signal that is absent for half the history is still a fact about that half, and a
+        hole would silently shift every count that mentions it.
+        """
+        entities = self._watching.get(camera)
+        if not entities:
+            return None
+        found = {}
+        for entity_id in entities:
+            state = self._hass.states.get(entity_id)
+            found[entity_id] = state.state if state is not None else "unknown"
+        return json.dumps(found, separators=(",", ":"))
 
     @callback
     def _async_state_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -129,6 +173,7 @@ class TransitionWatcher:
                 entity_id=new_state.entity_id,
                 kind=kind,
                 state=new_state.state,
+                context=self._snapshot(camera),
                 # `last_changed`, not `last_updated`: the moment the state became this, which
                 # is the moment the camera saw something. `last_updated` moves on every
                 # attribute refresh and would scatter one detection across several instants.

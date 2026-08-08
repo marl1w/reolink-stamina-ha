@@ -17,9 +17,12 @@ PYTHON  ?= python3
 PY      := $(VENV)/bin/python
 
 # Overridable on the command line: `make preview PORT=9000 SEED=7`
-PORT    ?= 8123
-SEED    ?= 1
-DAYS    ?= 60
+PORT     ?= 8123
+SEED     ?= 1
+# Which states the cameras are in: new, mixed (default) or mature. DAYS overrides it with one
+# figure for every camera, and is empty by default so it cannot silently beat SCENARIO.
+SCENARIO ?= mixed
+DAYS     ?=
 JOURNAL ?=
 ARGS    ?=
 
@@ -44,8 +47,8 @@ help: ## List the targets
 	@printf '$(BOLD)Reolink Stamina$(OFF)\n\n'
 	@grep -hE '^[a-z][a-z-]*:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "} {printf "  $(BOLD)%-16s$(OFF) %s\n", $$1, $$2}'
-	@printf '\n$(DIM)Variables: PORT=%s SEED=%s DAYS=%s JOURNAL=<path> ARGS=<extra>$(OFF)\n\n' \
-	  "$(PORT)" "$(SEED)" "$(DAYS)"
+	@printf '\n$(DIM)Variables: PORT=%s SEED=%s SCENARIO=%s (new|mixed|mature) DAYS= JOURNAL= ARGS=$(OFF)\n\n' \
+	  "$(PORT)" "$(SEED)" "$(SCENARIO)"
 
 # --------------------------------------------------------------------- setup
 
@@ -88,7 +91,8 @@ frontend: ## The panel's own checks: modules parse, and the pure-logic suites
 # ------------------------------------------------------------------ running
 
 preview: venv-check ## Serve the real panel with sample data in a browser
-	@$(PY) scripts/preview.py --port $(PORT) --seed $(SEED) --days $(DAYS) $(ARGS)
+	@$(PY) scripts/preview.py --port $(PORT) --seed $(SEED) --scenario $(SCENARIO) \
+	  $(if $(DAYS),--days $(DAYS)) $(ARGS)
 
 replay: venv-check ## Re-score a journal offline: make replay JOURNAL=path/to.db
 	@test -n "$(JOURNAL)" || { \

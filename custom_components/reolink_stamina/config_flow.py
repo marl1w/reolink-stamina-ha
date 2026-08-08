@@ -30,6 +30,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
     CONF_REQUIRE_ADMIN,
     CONF_SPLIT_MINUTES,
@@ -57,6 +58,7 @@ from .const import (
     DEFAULT_VERIFY_TLS,
     DOMAIN,
     PANEL_TITLE,
+    RELEVANCE_SIGNAL_DOMAINS,
     STREAM_MAIN,
     STREAM_SUB,
     SUBENTRY_TYPE_SYNC,
@@ -129,123 +131,177 @@ class ReolinkStaminaConfigFlow(ConfigFlow, domain=DOMAIN):
 class ReolinkStaminaOptionsFlow(OptionsFlow):
     """Adjust how the panel searches and presents recordings."""
 
+    def __init__(self) -> None:
+        """Hold the first step's answers while the second one is asked."""
+        self._pending: dict[str, Any] = {}
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Manage the options."""
+        """Ask what is switched on, in one short page.
+
+        Twelve fields on one form meant scrolling past six numbers to reach the switch you
+        came for. Three pages instead: what is on, how the player behaves, and anything a
+        switched-on feature needs — so the page you want is the one you land on.
+        """
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            self._pending = {**self.config_entry.options, **user_input}
+            return await self.async_step_player()
 
         options = self.config_entry.options
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_BROWSE_STREAM,
-                    default=options.get(CONF_BROWSE_STREAM, DEFAULT_BROWSE_STREAM),
-                ): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(
-                                value=STREAM_SUB, label="Low resolution (faster)"
-                            ),
-                            selector.SelectOptionDict(value=STREAM_MAIN, label="High resolution"),
-                        ],
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                        translation_key=CONF_BROWSE_STREAM,
-                    )
-                ),
-                vol.Required(
-                    CONF_SPLIT_MINUTES,
-                    default=options.get(CONF_SPLIT_MINUTES, DEFAULT_SPLIT_MINUTES),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=60,
-                        step=1,
-                        unit_of_measurement="min",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Required(
-                    CONF_PRE_ROLL,
-                    default=options.get(CONF_PRE_ROLL, DEFAULT_PRE_ROLL),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=60,
-                        step=1,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Required(
-                    CONF_EVENT_LEAD,
-                    default=options.get(CONF_EVENT_LEAD, DEFAULT_EVENT_LEAD),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=300,
-                        step=5,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Required(
-                    CONF_CLIP_LEAD,
-                    default=options.get(CONF_CLIP_LEAD, DEFAULT_CLIP_LEAD),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=300,
-                        step=5,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Required(
-                    CONF_CLIP_TAIL,
-                    default=options.get(CONF_CLIP_TAIL, DEFAULT_CLIP_TAIL),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=300,
-                        step=5,
-                        unit_of_measurement="s",
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                vol.Required(
-                    CONF_HIDE_TIMER,
-                    default=options.get(CONF_HIDE_TIMER, DEFAULT_HIDE_TIMER),
-                ): selector.BooleanSelector(),
-                vol.Required(
-                    CONF_REQUIRE_ADMIN,
-                    default=options.get(CONF_REQUIRE_ADMIN, DEFAULT_REQUIRE_ADMIN),
-                ): selector.BooleanSelector(),
-                # Off unless the recorder has a certificate that can actually be verified.
-                vol.Required(
-                    CONF_VERIFY_TLS,
-                    default=options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS),
-                ): selector.BooleanSelector(),
-                # Betas last, because with both off nothing above them behaves differently.
-                vol.Required(
-                    CONF_BETA_RESTREAM,
-                    default=options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM),
-                ): selector.BooleanSelector(),
-                vol.Required(
-                    CONF_BETA_ALL_DEVICES,
-                    default=options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES),
-                ): selector.BooleanSelector(),
-                # Last of the three, because it is the only one that starts keeping a record
-                # of anything. Switching it on is the consent for that; switching it off
-                # stops the recording but leaves what was collected, which removing the
-                # integration deletes.
-                vol.Required(
-                    CONF_BETA_RELEVANCE,
-                    default=options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE),
-                ): selector.BooleanSelector(),
-            }
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_HIDE_TIMER,
+                        default=options.get(CONF_HIDE_TIMER, DEFAULT_HIDE_TIMER),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_REQUIRE_ADMIN,
+                        default=options.get(CONF_REQUIRE_ADMIN, DEFAULT_REQUIRE_ADMIN),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_VERIFY_TLS,
+                        default=options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS),
+                    ): selector.BooleanSelector(),
+                    # Betas last: with all three off, nothing above them behaves differently.
+                    vol.Required(
+                        CONF_BETA_RESTREAM,
+                        default=options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_BETA_ALL_DEVICES,
+                        default=options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_BETA_RELEVANCE,
+                        default=options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE),
+                    ): selector.BooleanSelector(),
+                }
+            ),
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+    async def async_step_player(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask how recordings are searched, cut and played."""
+        if user_input is not None:
+            self._pending = {**self._pending, **user_input}
+            if self._pending.get(CONF_BETA_RELEVANCE):
+                return await self.async_step_signals()
+            return self.async_create_entry(data=self._pending)
+
+        options = self._pending
+
+        def seconds(high: int, step: int) -> selector.NumberSelector:
+            """Return a seconds box, since five of these differ only by their bounds."""
+            return selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=high,
+                    step=step,
+                    unit_of_measurement="s",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="player",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_BROWSE_STREAM,
+                        default=options.get(CONF_BROWSE_STREAM, DEFAULT_BROWSE_STREAM),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(
+                                    value=STREAM_SUB, label="Low resolution (faster)"
+                                ),
+                                selector.SelectOptionDict(
+                                    value=STREAM_MAIN, label="High resolution"
+                                ),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            translation_key=CONF_BROWSE_STREAM,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SPLIT_MINUTES,
+                        default=options.get(CONF_SPLIT_MINUTES, DEFAULT_SPLIT_MINUTES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=60,
+                            step=1,
+                            unit_of_measurement="min",
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EVENT_LEAD,
+                        default=options.get(CONF_EVENT_LEAD, DEFAULT_EVENT_LEAD),
+                    ): seconds(300, 5),
+                    vol.Required(
+                        CONF_CLIP_LEAD,
+                        default=options.get(CONF_CLIP_LEAD, DEFAULT_CLIP_LEAD),
+                    ): seconds(300, 5),
+                    vol.Required(
+                        CONF_CLIP_TAIL,
+                        default=options.get(CONF_CLIP_TAIL, DEFAULT_CLIP_TAIL),
+                    ): seconds(300, 5),
+                    vol.Required(
+                        CONF_PRE_ROLL,
+                        default=options.get(CONF_PRE_ROLL, DEFAULT_PRE_ROLL),
+                    ): seconds(60, 1),
+                }
+            ),
+        )
+
+    async def async_step_signals(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose what else to count alongside each recorder's detections.
+
+        One picker per recorder, because one Home Assistant often serves more than one
+        property: whether anybody is home at the first says nothing about the second.
+
+        Skippable, and it opens empty. Relevance works on time and duration alone — those are
+        most of its value — so gating the feature behind a page of configuration would mean
+        most people never got past it. And nothing is pre-selected: the model never interprets
+        a signal, it counts the state as it finds it, so "is anyone home" serves exactly as
+        well as a named person and which one suits a household is not this integration's
+        business to assume.
+        """
+        devices = async_discover_devices(
+            self.hass, include_all_devices=bool(self._pending.get(CONF_BETA_ALL_DEVICES))
+        )
+        # Keyed by name rather than by entry id, because the key is what Home Assistant shows
+        # as the field's label and an entry id reads as a barcode.
+        by_name = {device.name: device.entry_id for device in devices}
+        current = dict(self._pending.get(CONF_RELEVANCE_SIGNALS) or {})
+
+        if user_input is not None:
+            chosen = {
+                entry_id: list(user_input.get(name) or [])
+                for name, entry_id in by_name.items()
+                if user_input.get(name)
+            }
+            return self.async_create_entry(data={**self._pending, CONF_RELEVANCE_SIGNALS: chosen})
+
+        if not by_name:
+            return self.async_create_entry(data=self._pending)
+
+        return self.async_show_form(
+            step_id="signals",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(name, default=current.get(entry_id, [])): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=list(RELEVANCE_SIGNAL_DOMAINS), multiple=True
+                        )
+                    )
+                    for name, entry_id in by_name.items()
+                }
+            ),
+        )
 
 
 class CloudSyncSubentryFlow(ConfigSubentryFlow):

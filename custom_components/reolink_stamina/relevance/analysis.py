@@ -118,6 +118,7 @@ class Analysis:
         until: float,
         camera: str | None = None,
         names: dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
     ) -> list[tuple[Event, Score]]:
         """Score the events in a window, oldest first.
 
@@ -135,6 +136,11 @@ class Analysis:
         previous: Event | None = None
         for event in self._events:
             if since <= event.started_at < until and (camera is None or event.camera == camera):
-                found.append((event, score(event, self._model, previous=previous, names=names)))
+                found.append(
+                    (
+                        event,
+                        score(event, self._model, previous=previous, names=names, labels=labels),
+                    )
+                )
             previous = event
         return found

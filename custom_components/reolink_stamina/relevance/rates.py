@@ -165,6 +165,10 @@ class Profile:
     solar: CircularRate = field(default_factory=CircularRate)
     duration: Categorical = field(default_factory=Categorical)
     predecessor: Categorical = field(default_factory=Categorical)
+    # One distribution per configured signal, keyed by entity id. Added rather than
+    # conditioned on: three booleans used as conditions would cut six months of history into
+    # three weeks per bucket, while three more terms in a sum cost nothing in sample size.
+    signals: dict[str, Categorical] = field(default_factory=dict)
     weight: float = 0.0
     events: int = 0
     first_seen: float | None = None
@@ -265,6 +269,8 @@ def build(events: list[Event], *, now: float) -> Model:
                 profile.solar.add(event.solar_offset % 1440, weight)
             profile.duration.add(bucket, weight)
             profile.predecessor.add(label, weight)
+            for entity_id, value in event.context:
+                profile.signals.setdefault(entity_id, Categorical()).add(value, weight)
             profile.weight += weight
             profile.events += 1
             if profile.first_seen is None:

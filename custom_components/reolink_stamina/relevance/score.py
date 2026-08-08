@@ -56,6 +56,9 @@ class Term:
     contribution: float
     # How many times this has been seen before. A fact for the sentence, not an estimate.
     seen: int
+    # The signal's own name, where it has one — a chosen entity is called whatever Home
+    # Assistant calls it, while "clock" and "duration" are named by the panel.
+    subject: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,8 +122,15 @@ def _span(days: float) -> str:
     return f"{max(1, round(days))} days"
 
 
-def _terms(event: Event, previous: Event | None, model: Model, names: dict[str, str]) -> list[Term]:
+def _terms(
+    event: Event,
+    previous: Event | None,
+    model: Model,
+    names: dict[str, str],
+    labels: dict[str, str] | None = None,
+) -> list[Term]:
     """Return every signal's contribution to how unusual this event is."""
+    labels = labels or {}
     specific, broader, overall = model.blended(event.camera, event.kind)
 
     def blend(pick) -> float:
@@ -189,6 +199,36 @@ def _terms(event: Event, previous: Event | None, model: Model, names: dict[str, 
         )
     )
 
+    # Whatever else the user asked to be counted. Absent is a value in its own right rather
+    # than a gap: a signal added six months in was genuinely unknown before that, and
+    # silently skipping those events would shift every count that mentions it.
+    seen = dict(event.context)
+    for entity_id in sorted(set(specific.signals) | set(seen)):
+        value = seen.get(entity_id, "unknown")
+        distribution = specific.signals.get(entity_id)
+        categories = max(len(distribution.weights) if distribution else 0, 2)
+        terms.append(
+            Term(
+                name="signal",
+                subject=labels.get(entity_id, entity_id),
+                label=value,
+                contribution=_surprisal(
+                    # Bound as defaults, not captured: a lambda built in a loop that reads
+                    # the loop variable sees whatever it holds when the lambda finally runs,
+                    # which here is the last signal for every one of them.
+                    blend(
+                        lambda p, key=entity_id, was=value, many=categories: (
+                            p.signals[key].probability(was, categories=many)
+                            if key in p.signals
+                            else 1.0 / many
+                        )
+                    ),
+                    categories,
+                ),
+                seen=distribution.count(value) if distribution else 0,
+            )
+        )
+
     return terms
 
 
@@ -207,6 +247,7 @@ def score(
     *,
     previous: Event | None,
     names: dict[str, str] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> Score:
     """Return how unusual this event is, and the sentence that says why.
 
@@ -218,7 +259,7 @@ def score(
     mistake anyone can make quietly.
     """
     names = names or {}
-    terms = _terms(event, previous, model, names)
+    terms = _terms(event, previous, model, names, labels)
     summed = sum(term.contribution for term in terms)
     threshold = model.thresholds.get(event.camera)
     return Score(
@@ -275,6 +316,10 @@ def _phrase(term: Term) -> str:
     if term.name == "predecessor":
         # Already a phrase in both of its forms: "nothing fired first", "after Gate".
         return term.label
+    if term.name == "signal" and term.subject:
+        # A chosen signal has a name of its own, and the state alone is meaningless in a
+        # sentence: "with armed_away" says nothing about what was armed.
+        return f"with {term.subject} {term.label}"
     return f"with {term.label}"
 
 

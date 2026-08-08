@@ -23,7 +23,7 @@ Rows say what fired and how often ("Person (2)"), the scrub bar marks each detec
 
 ## Options
 
-*Reolink Stamina → **Configure***.
+*Reolink Stamina → **Configure***, over three pages: what is switched on, the player, and anything a switched-on feature needs.
 
 | Option | Default | What it is for |
 | --- | --- | --- |

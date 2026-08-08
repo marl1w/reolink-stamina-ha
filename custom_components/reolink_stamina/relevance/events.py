@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import datetime as dt
+import json
 import logging
 
 from homeassistant.const import STATE_ON, SUN_EVENT_SUNSET
@@ -56,6 +57,9 @@ class Event:
     # daylight in June and night in December.
     solar_offset: int | None
     is_weekend: bool
+    # The configured signals as they stood when this began, or None where none are set up.
+    # Raw states: what a value means is a question for whoever reads it back.
+    context: tuple[tuple[str, str], ...] = ()
 
 
 def _wrap(minutes: float) -> int:
@@ -98,6 +102,24 @@ class SolarClock:
         return _wrap((moment - sunset).total_seconds() / 60.0)
 
 
+def _signals(raw: str | None) -> tuple[tuple[str, str], ...]:
+    """Turn a stored snapshot back into pairs, sorted so two events compare equal.
+
+    A tuple rather than a dict because an Event is frozen and hashed, and JSON that cannot be
+    read is treated as no signals at all: a corrupt row should cost its own context and
+    nothing else.
+    """
+    if not raw:
+        return ()
+    try:
+        found = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(found, dict):
+        return ()
+    return tuple(sorted((str(key), str(value)) for key, value in found.items()))
+
+
 def _detecting(transition: Transition) -> bool:
     """Whether this state means the camera is seeing something.
 
@@ -110,21 +132,25 @@ def _detecting(transition: Transition) -> bool:
 
 def _runs(
     transitions: list[Transition], *, window: float, longest: float
-) -> Iterator[tuple[float, float | None]]:
-    """Yield the start and end of each merged run of detection."""
+) -> Iterator[tuple[float, float | None, str | None]]:
+    """Yield the start, end and opening context of each merged run of detection."""
     start: float | None = None
     end: float | None = None
+    context: str | None = None
     active: set[str] = set()
 
     for row in transitions:
         if _detecting(row):
             if start is not None and end is not None and row.at - end > window:
                 # Quiet for longer than the window, so the previous run really did finish.
-                yield start, end
+                yield start, end, context
                 start = None
             if start is None:
                 start = row.at
                 end = None
+                # The signals as they were when it *began*, not when it cleared: what was
+                # true at the start is what the event happened against.
+                context = row.context
             active.add(row.entity_id)
         else:
             active.discard(row.entity_id)
@@ -133,11 +159,11 @@ def _runs(
                 end = row.at
 
         if start is not None and row.at - start >= longest:
-            yield start, end if end is not None else row.at
-            start, end, active = None, None, set()
+            yield start, end if end is not None else row.at, context
+            start, end, context, active = None, None, None, set()
 
     if start is not None:
-        yield start, end
+        yield start, end, context
 
 
 def derive(
@@ -162,7 +188,7 @@ def derive(
     events: list[Event] = []
     for (camera, kind), rows in grouped.items():
         rows.sort(key=lambda item: item.at)
-        for started_at, ended_at in _runs(rows, window=window, longest=longest):
+        for started_at, ended_at, context in _runs(rows, window=window, longest=longest):
             local = dt_util.as_local(dt_util.utc_from_timestamp(started_at))
             events.append(
                 Event(
@@ -174,6 +200,7 @@ def derive(
                     minute_of_day=local.hour * 60 + local.minute,
                     solar_offset=clock.offset(local),
                     is_weekend=local.weekday() >= 5,
+                    context=_signals(context),
                 )
             )
 

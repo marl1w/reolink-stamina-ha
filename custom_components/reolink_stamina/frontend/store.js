@@ -424,10 +424,16 @@ export class StaminaStore extends EventTarget {
     const start = Date.parse(event.start);
     const end = Date.parse(event.end || event.start);
     if (Number.isNaN(start)) return [];
+    // The same slack the panel's own detection lookup uses, and for the same reason: a
+    // recorder tags a segment for a detection that fired just *before* the segment began,
+    // because that is what made it start recording. Matching on the segment's own bounds
+    // therefore found nothing on exactly the rows that carry a detection, and the sheet
+    // opened empty on a camera with hundreds of them.
+    const LOOKBACK = 30_000;
     return known.detections
       .filter((item) => {
         const at = Date.parse(item.at);
-        return at >= start && at <= (Number.isNaN(end) ? start : end);
+        return at >= start - LOOKBACK && at <= (Number.isNaN(end) ? start : end);
       })
       .sort((a, b) => b.score - a.score);
   }
@@ -491,6 +497,9 @@ export class StaminaStore extends EventTarget {
           found.set(this.relevanceKey(camera.entry_id, camera.channel), {
             state: answer.state,
             coverage: answer.coverage || { days: 0, events: 0 },
+            // What it is still short of, from the backend, so the panel never has to
+            // guess at a limit or word it vaguely.
+            needs: answer.needs || null,
             detections: answer.events || [],
           });
         } catch (err) {

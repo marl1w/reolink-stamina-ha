@@ -42,7 +42,11 @@ class RelevanceRuntime:
 
 
 async def async_start(
-    hass: HomeAssistant, entry: ConfigEntry, *, include_all_devices: bool = False
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    *,
+    include_all_devices: bool = False,
+    signals: dict[str, list[str]] | None = None,
 ) -> RelevanceRuntime:
     """Open the journal and begin recording.
 
@@ -56,7 +60,9 @@ async def async_start(
     """
     journal = Journal(hass)
     await journal.async_open()
-    watcher = TransitionWatcher(hass, journal, include_all_devices=include_all_devices)
+    watcher = TransitionWatcher(
+        hass, journal, include_all_devices=include_all_devices, signals=signals
+    )
     analysis = Analysis(hass, journal)
     runtime = RelevanceRuntime(journal=journal, watcher=watcher, analysis=analysis)
 

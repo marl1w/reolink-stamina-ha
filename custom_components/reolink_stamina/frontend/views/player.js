@@ -1094,16 +1094,30 @@ export class EventPlayer extends HTMLElement {
         .filter((d) => (d.end_offset ?? d.offset) > clipStart && d.offset < clipEnd)
         .map((d) => ({ ...d, offset: Math.max(d.offset, clipStart) }));
       if (marks.length > 0) {
+        // When the model marked something inside this recording, the moments it marked, as
+        // offsets into the same clip — so a cluster can say whether it is one of them.
+        const started = Date.parse(this._event.start);
+        const odd = (this._store?.eventRelevance(this._event) || [])
+          .filter((item) => item.unusual)
+          .map((item) => (Date.parse(item.at) - started) / 1000);
+
         this._scrub.setMarkers(
           clusterDetections(marks, duration).map((cluster) => {
             // Coloured by the most significant thing that fired here, which is the same
             // rule the row's leading icon uses: a car arriving is a vehicle, not motion.
             const meta = triggerMeta(sortTriggers(cluster.kinds)[0]);
+            // Within a few seconds is the same detection: the recorder's offsets and Home
+            // Assistant's timestamps agree to about that, and no two clusters are that close.
+            const unusual = odd.some((at) => Math.abs(at - cluster.offset) <= 5);
             return {
               ratio: (cluster.offset - clipStart) / duration,
               tone: meta.tone,
               exact: true,
-              title: `${cluster.kinds.map((kind) => triggerMeta(kind).label).join(", ")} detected ${Math.round(cluster.offset)}s into the recording`,
+              unusual,
+              title:
+                `${cluster.kinds.map((kind) => triggerMeta(kind).label).join(", ")} detected ` +
+                `${Math.round(cluster.offset)}s into the recording` +
+                (unusual ? " — unusual for this camera" : ""),
             };
           })
         );

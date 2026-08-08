@@ -216,6 +216,29 @@ JOURNAL_BACKFILL_CHUNK_HOURS: Final = 24
 JOURNAL_META_BACKFILLED: Final = "backfilled_at"
 JOURNAL_META_SCHEMA: Final = "schema_version"
 
+# Entities whose state is snapshotted onto every detection, as {reolink_entry_id: [entity]}.
+# Scoped per recorder rather than per installation: one Home Assistant often serves more than
+# one property, and "is anyone home" at one of them says nothing about the other.
+CONF_RELEVANCE_SIGNALS: Final = "relevance_signals"
+
+# What the picker offers. Every one of these has a state a person could read out loud, which
+# is what makes it countable — a continuous `sensor` never repeats a value, so it could never
+# be rare, and it needs bucketing before it can be offered at all.
+RELEVANCE_SIGNAL_DOMAINS: Final = (
+    "person",
+    "device_tracker",
+    "binary_sensor",
+    "alarm_control_panel",
+    "input_boolean",
+    "input_select",
+    "sun",
+    "calendar",
+)
+
+# A signal with more distinct values than this is noise wearing a signal's clothes: with six
+# months of history behind it, forty categories hold a handful of events each.
+RELEVANCE_SIGNAL_MAX_VALUES: Final = 12
+
 JOURNAL_SOURCE_LIVE: Final = "live"
 JOURNAL_SOURCE_BACKFILL: Final = "backfill"
 
@@ -282,5 +305,11 @@ SCORE_QUANTILE: Final = 0.99
 
 # Nothing is scored until a camera has this much behind it. Before that the panel says it is
 # still collecting, which is true and better than being wrong.
-SCORE_MIN_DAYS: Final = 14.0
+#
+# Seven days rather than fourteen, and the reason is a real installation rather than a guess:
+# a camera there had 493 detections after ten days — two and a half times the count it needed
+# — and was still being held back by the calendar alone. What the days are actually for is
+# having seen each day of the week once, because a household's Saturday does not look like
+# its Tuesday. That is one week, not two.
+SCORE_MIN_DAYS: Final = 7.0
 SCORE_MIN_EVENTS: Final = 200

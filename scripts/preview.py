@@ -55,6 +55,32 @@ ENTRY = "01PREVIEWNVR"
 # Long enough that every row can seek somewhere inside it without running off the end.
 CLIP_SECONDS = 360
 
+# A recorder writes 24/7 footage in segments and tags each one with whatever fired inside it,
+# so one row routinely carries several detections. The preview gave every detection a row of
+# its own, which meant the multi-detection case — the one the detail sheet pages through —
+# never appeared at all.
+SEGMENT_MINUTES = 5
+
+# Signals, as a household would actually configure them: whether anybody is in, and whether
+# the alarm is set. Invented alongside the detections rather than bolted on, so the preview
+# can show what a signal does to a score instead of only proving the picker renders.
+SIGNALS = {
+    "binary_sensor.someone_home": "Someone home",
+    "alarm_control_panel.house": "Alarm",
+}
+
+# How many days of history each camera gets.
+#
+# The default deliberately puts the three cameras in three different states, because that is
+# what a real installation looks like and because a preview that only renders the finished
+# state hides every bug that lives in the others. "new" is what everybody sees on the day
+# they switch it on.
+SCENARIOS = {
+    "new": {0: 3, 1: 2, 2: 1},
+    "mixed": {0: 60, 1: 12, 2: 3},
+    "mature": {0: 90, 1: 80, 2: 70},
+}
+
 # One recorder, three cameras, each with its own habits — because the whole point of the
 # feature is that "normal" is a property of a camera, not of the household.
 CAMERAS = [
@@ -179,7 +205,7 @@ def _clip() -> Path | None:
     return target
 
 
-def _detections(days: int, seed: int) -> list[tuple[int, float, str, float]]:
+def _detections(days: dict[int, int], seed: int) -> list[tuple[int, float, str, float]]:
     """Invent a household's worth of detections: (channel, when, kind, seconds)."""
     rng = random.Random(seed)
     now = datetime.now().astimezone()
@@ -188,10 +214,12 @@ def _detections(days: int, seed: int) -> list[tuple[int, float, str, float]]:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     found: list[tuple[int, float, str, float]] = []
 
-    for day in range(days, -1, -1):
+    for day in range(max(days.values()), -1, -1):
         base = midnight - timedelta(days=day)
         weekend = base.weekday() >= 5
         for channel, routines in ROUTINES.items():
+            if day > days.get(channel, 0):
+                continue
             for hour, spread, kind, odds, seconds in routines:
                 if rng.randint(1, 10) > odds:
                     continue
@@ -206,11 +234,36 @@ def _detections(days: int, seed: int) -> list[tuple[int, float, str, float]]:
 
     # And the thing the feature exists for: somebody on the drive in the small hours, two
     # nights ago, staying a while and arriving without passing the gate first.
-    prowler = (midnight - timedelta(days=2) + timedelta(hours=2, minutes=41)).timestamp()
-    found.append((0, prowler, "person", 192.0))
+    # An arrival is not one detection. A car pulls in and somebody gets out of it, so the
+    # vehicle and the person land in the same recording segment and the row reads "Person
+    # (2)". Without this the preview produced one detection per segment and the detail
+    # sheet's paging — the whole reason it has a footer — was never once reachable.
+    for channel, at, kind, _seconds in list(found):
+        if kind != "vehicle" or rng.random() > 0.65:
+            continue
+        found.append((channel, at + rng.uniform(25, 110), "person", max(4.0, rng.gauss(30, 10))))
+
+    if days.get(0, 0) >= 2:
+        prowler = (midnight - timedelta(days=2) + timedelta(hours=2, minutes=41)).timestamp()
+        found.append((0, prowler, "person", 192.0))
 
     found.sort(key=lambda item: item[1])
     return found
+
+
+def _context(local: datetime) -> tuple[tuple[str, str], ...]:
+    """Return what the household's signals were doing at that moment.
+
+    Out at work on a weekday, in otherwise, and the alarm set whenever the house is empty —
+    which is what makes "a person on the drive while nobody is in" rare rather than routine,
+    and therefore something the scoring can be seen to react to.
+    """
+    weekday = local.weekday() < 5
+    out = weekday and 9 <= local.hour < 17
+    return (
+        ("binary_sensor.someone_home", "off" if out else "on"),
+        ("alarm_control_panel.house", "armed_away" if out else "disarmed"),
+    )
 
 
 def _model(detections):
@@ -230,6 +283,7 @@ def _model(detections):
                 # would put a number in the breakdown that means nothing.
                 solar_offset=None,
                 is_weekend=local.weekday() >= 5,
+                context=_context(local),
             )
         )
     model = build(events, now=datetime.now(UTC).timestamp())
@@ -238,37 +292,52 @@ def _model(detections):
 
 
 def _rows(detections, *, playable: bool) -> dict[str, list[dict]]:
-    """Turn detections into the event rows the panel lists, keyed by `entry|channel|date`."""
+    """Group detections into recording segments, the way a 24/7 recorder writes them.
+
+    One row per detection was wrong in a way that mattered: a recorder writes fixed-length
+    segments and tags each with everything that fired inside it, so a busy evening is one row
+    reading "Person (2)", not two rows. The detail sheet pages through exactly that case, and
+    with a row per detection it never arose — so the paging was never once looked at.
+    """
     names = {camera["channel"]: camera["name"] for camera in CAMERAS}
-    buckets: dict[str, list[dict]] = {}
+    span = SEGMENT_MINUTES * 60
+    segments: dict[tuple[int, int], list[tuple[float, str, float]]] = {}
 
     for channel, at, kind, seconds in detections:
-        start = datetime.fromtimestamp(at, UTC) - timedelta(seconds=8)
-        end = start + timedelta(seconds=seconds + 16)
-        date = datetime.fromtimestamp(at).astimezone().date().isoformat()
-        key = f"{ENTRY}|{channel}|{date}"
-        stamp = start.strftime("%Y%m%d%H%M%S")
-        buckets.setdefault(key, []).append(
+        # The segment this detection lands in, on a fixed grid, exactly as a recorder cuts it.
+        segments.setdefault((channel, int(at // span)), []).append((at, kind, seconds))
+
+    buckets: dict[str, list[dict]] = {}
+    for (channel, index), inside in sorted(segments.items()):
+        start = datetime.fromtimestamp(index * span, UTC)
+        end = start + timedelta(seconds=span)
+        date = datetime.fromtimestamp(index * span).astimezone().date().isoformat()
+        counts: dict[str, int] = {}
+        for _, kind, _ in inside:
+            counts[kind] = counts.get(kind, 0) + 1
+        longest = max(seconds for _, _, seconds in inside)
+
+        buckets.setdefault(f"{ENTRY}|{channel}|{date}", []).append(
             {
-                "id": f"{ENTRY}:{channel}:{stamp}",
+                "id": f"{ENTRY}:{channel}:{start.strftime('%Y%m%d%H%M%S')}",
                 "entry_id": ENTRY,
                 "device": "Preview NVR",
                 "channel": channel,
                 "camera": names[channel],
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                "duration": round((end - start).total_seconds()),
-                "triggers": [kind],
-                "kinds": [kind],
-                "counts": {kind: 1},
-                "size": int(seconds * 180_000),
+                "duration": span,
+                "triggers": sorted(counts),
+                "kinds": sorted(counts),
+                "counts": counts,
+                "size": int(longest * 180_000),
                 "size_is_exact": True,
                 "streams": ["sub"],
                 "files": ["sub"],
                 # True once ffmpeg has made the stand-in clip; without one the player has
                 # nothing to open and the row says so, exactly as an unplayable row would.
                 "playable": playable,
-                "continuous": False,
+                "continuous": True,
                 "alternate_streams": ["main"],
                 "pre_roll": 5,
             }
@@ -279,7 +348,7 @@ def _rows(detections, *, playable: bool) -> dict[str, list[dict]]:
     return buckets
 
 
-def build_fixtures(days: int, seed: int) -> dict:
+def build_fixtures(days: dict[int, int], seed: int) -> dict:
     """Everything the harness needs to answer the panel's commands."""
     detections = _detections(days, seed)
     events, model = _model(detections)
@@ -310,7 +379,7 @@ def build_fixtures(days: int, seed: int) -> dict:
 
     previous = None
     for event in events:
-        result = score(event, model, previous=previous, names=names)
+        result = score(event, model, previous=previous, names=names, labels=SIGNALS)
         previous = event
         relevance[event.camera]["events"].append(
             {
@@ -324,6 +393,7 @@ def build_fixtures(days: int, seed: int) -> dict:
                 "terms": [
                     {
                         "name": term.name,
+                        "subject": term.subject,
                         "label": term.label,
                         "contribution": round(term.contribution, 2),
                         "seen": term.seen,
@@ -367,7 +437,8 @@ def build_fixtures(days: int, seed: int) -> dict:
         "summary": {
             "detections": len(events),
             "marked": marked,
-            "days": days,
+            "days": max(days.values()),
+            "scenario": None,
             "icons": len(icons),
             "clip": str(clip) if clip else None,
         },
@@ -743,7 +814,15 @@ def main() -> int:
     """Generate a household, then serve the panel against it."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--port", type=int, default=8123)
-    parser.add_argument("--days", type=int, default=60, help="how much history to invent")
+    parser.add_argument(
+        "--scenario",
+        choices=sorted(SCENARIOS),
+        default="mixed",
+        help="how much history each camera has: new, mixed (default) or mature",
+    )
+    parser.add_argument(
+        "--days", type=int, help="give every camera the same number of days, overriding --scenario"
+    )
     parser.add_argument("--seed", type=int, default=1, help="change for a different household")
     parser.add_argument("--no-open", action="store_true", help="do not open a browser")
     args = parser.parse_args()
@@ -751,13 +830,19 @@ def main() -> int:
     if not FRONTEND.is_dir():
         parser.error(f"no frontend at {FRONTEND}")
 
-    fixtures = build_fixtures(args.days, args.seed)
+    days = (
+        dict.fromkeys((camera["channel"] for camera in CAMERAS), args.days)
+        if args.days is not None
+        else SCENARIOS[args.scenario]
+    )
+    fixtures = build_fixtures(days, args.seed)
+    fixtures["summary"]["scenario"] = args.scenario if args.days is None else f"{args.days} days"
     summary = fixtures["summary"]
     url = f"http://127.0.0.1:{args.port}/"
 
     print(f"\n  Reolink Stamina preview — {url}")
-    print(f"  {summary['detections']} detections over {summary['days']} days, ", end="")
-    print(f"{summary['marked']} marked unusual")
+    print(f"  scenario: {summary['scenario']}   ·   {summary['detections']} detections", end="")
+    print(f"   ·   {summary['marked']} marked unusual")
     for camera in CAMERAS:
         known = fixtures["relevance"][camera_key(camera["channel"])]
         print(

@@ -40,6 +40,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
     CONF_REQUIRE_ADMIN,
     CONF_SPLIT_MINUTES,
@@ -125,6 +126,8 @@ class StaminaOptions:
     # Off, and while it is off no journal exists and nothing about the household is written
     # down. Switching it on is the consent, which is why there is no quieter way to start it.
     beta_relevance: bool = DEFAULT_BETA_RELEVANCE
+    # Per recorder: {reolink_entry_id: [entity_id, ...]}. Empty until somebody picks some.
+    relevance_signals: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> StaminaOptions:
@@ -146,6 +149,7 @@ class StaminaOptions:
             beta_restream=bool(options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM)),
             beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
             beta_relevance=bool(options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE)),
+            relevance_signals=dict(options.get(CONF_RELEVANCE_SIGNALS) or {}),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -164,6 +168,7 @@ class StaminaOptions:
             "beta_restream": self.beta_restream,
             "beta_all_devices": self.beta_all_devices,
             "beta_relevance": self.beta_relevance,
+            "relevance_signals": self.relevance_signals,
         }
 
 
@@ -210,7 +215,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if options.beta_relevance:
         data.relevance = await async_start_relevance(
-            hass, entry, include_all_devices=options.beta_all_devices
+            hass,
+            entry,
+            include_all_devices=options.beta_all_devices,
+            signals=options.relevance_signals,
         )
 
     # Unconditional rather than gated on the beta being on: what was left behind was left

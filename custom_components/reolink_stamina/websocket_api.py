@@ -35,6 +35,7 @@ from .detections import async_detections_in_window
 from .flv_proxy import async_flv_path
 from .fragments import FragmentsUnsupportedError, async_fragment_path
 from .relevance.journal import camera_key
+from .relevance.score import SCORE_MIN_DAYS, SCORE_MIN_EVENTS
 from .reolink_registry import (
     DeviceUnavailableError,
     ReolinkIncompatibleError,
@@ -841,8 +842,19 @@ def ws_relevance(
     camera = camera_key(msg["entry_id"], msg["channel"])
     names = _camera_names(hass, data.options.beta_all_devices)
 
+    # What Home Assistant calls each chosen entity, so a term reads "Someone home — off"
+    # rather than an entity id. The scorer is handed them; it knows nothing about entities.
+    labels = {
+        entity_id: (state.name if (state := hass.states.get(entity_id)) else entity_id)
+        for entities in (data.options.relevance_signals or {}).values()
+        for entity_id in entities
+    }
     scored = analysis.window(
-        since=start.timestamp(), until=end.timestamp(), camera=camera, names=names
+        since=start.timestamp(),
+        until=end.timestamp(),
+        camera=camera,
+        names=names,
+        labels=labels,
     )
     connection.send_result(
         msg["id"],
@@ -852,6 +864,9 @@ def ws_relevance(
             # has months of days behind it and still too little to compare against.
             "state": analysis.state(camera),
             "coverage": analysis.coverage(camera),
+            # Sent rather than hardcoded in the panel, so it can say which requirement is
+            # actually outstanding instead of listing both and being wrong about one.
+            "needs": {"days": SCORE_MIN_DAYS, "events": SCORE_MIN_EVENTS},
             "events": [
                 {
                     "at": dt_util.utc_from_timestamp(event.started_at).isoformat(),
@@ -864,6 +879,7 @@ def ws_relevance(
                     "terms": [
                         {
                             "name": term.name,
+                            "subject": term.subject,
                             "label": term.label,
                             "contribution": round(term.contribution, 2),
                             "seen": term.seen,

@@ -300,3 +300,101 @@ def test_nothing_firing_first_is_a_term_of_its_own():
 
     assert any(term.name == "predecessor" for term in result.terms)
     assert result.total >= score(_event(_NOW, 60, "person"), model, previous=None).total - 1e-9
+
+
+# ------------------------------------------------------------------- signals
+
+
+def _with_signal(started_at: float, minute: int, kind: str, home: str) -> Event:
+    """One event, carrying whether anybody was in."""
+    return Event(
+        camera=_CAMERA,
+        kind=kind,
+        started_at=started_at,
+        ended_at=started_at + 8.0,
+        duration=8.0,
+        minute_of_day=minute,
+        solar_offset=None,
+        is_weekend=False,
+        context=(("binary_sensor.someone_home", home),),
+    )
+
+
+def _signalled_history(days: int = 180) -> list[Event]:
+    """Return a household that is in when the cameras see people, as households are."""
+    events: list[Event] = []
+    for day in range(days):
+        base = _NOW - (days - day) * _DAY
+        events.append(_with_signal(base + 18 * 3600, 18 * 60, "person", "on"))
+        events.append(_with_signal(base + 18 * 3600 + 600, 18 * 60 + 10, "person", "on"))
+        events.append(_with_signal(base + 3600, 60, "animal", "on"))
+    events.sort(key=lambda item: item.started_at)
+    return events
+
+
+def test_a_signal_seen_for_the_first_time_stands_out():
+    """Somebody on the drive while the house is empty is not the same event.
+
+    Which is the entire point of letting a household point this at its own entities.
+    """
+    events = _signalled_history()
+    model = build(events, now=_NOW)
+    calibrate(model, events)
+
+    usual = score(_with_signal(_NOW, 18 * 60, "person", "on"), model, previous=None)
+    away = score(_with_signal(_NOW, 18 * 60, "person", "off"), model, previous=None)
+
+    assert away.total > usual.total
+    assert _term(away, "signal") > _term(usual, "signal")
+
+
+def test_a_signal_names_itself_in_the_sentence():
+    """A state on its own says nothing: "with armed_away" does not say what was armed."""
+    events = _signalled_history()
+    model = build(events, now=_NOW)
+    calibrate(model, events)
+
+    result = score(
+        _with_signal(_NOW, 60, "person", "off"),
+        model,
+        previous=None,
+        names={_CAMERA: "Drive"},
+        labels={"binary_sensor.someone_home": "Someone home"},
+    )
+
+    assert any(term.subject == "Someone home" for term in result.terms)
+    assert "Someone home" in result.reason
+
+
+def test_history_from_before_a_signal_existed_is_not_a_hole():
+    """History from before a signal existed is a value, not a hole.
+
+    A signal added six months in was genuinely unknown until then, and dropping those events
+    would shift every count that mentions it.
+    """
+    events = _signalled_history(days=60)
+    # The older half predates the signal entirely. `Event` is slotted, so it is rebuilt
+    # rather than copied through a `__dict__` it does not have.
+    events = [
+        item
+        if item.started_at > _NOW - 30 * _DAY
+        else Event(
+            camera=item.camera,
+            kind=item.kind,
+            started_at=item.started_at,
+            ended_at=item.ended_at,
+            duration=item.duration,
+            minute_of_day=item.minute_of_day,
+            solar_offset=item.solar_offset,
+            is_weekend=item.is_weekend,
+            context=(),
+        )
+        for item in events
+    ]
+    model = build(events, now=_NOW)
+    calibrate(model, events)
+
+    result = score(_with_signal(_NOW, 18 * 60, "person", "on"), model, previous=None)
+
+    assert any(term.name == "signal" for term in result.terms)
+    assert math.isfinite(result.total)

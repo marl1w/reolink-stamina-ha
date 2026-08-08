@@ -297,12 +297,34 @@ async def test_a_recorder_that_already_syncs_is_not_offered_twice(hass: HomeAssi
 
 
 async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
-    """The options the panel's behaviour depends on."""
+    """The options the panel's behaviour depends on, gathered over the pages they live on.
+
+    Three pages rather than one form of twelve fields: what is switched on, how the player
+    behaves, and — only when it is switched on — what Relevance should count alongside a
+    detection. Walking them here is the only place the chaining is exercised.
+    """
     entry = await _setup(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == "form"
+    assert result["step_id"] == "init"
 
+    # Page one: what is on. Relevance stays off, so the third page must not be asked for.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "hide_timer": False,
+            "require_admin": False,
+            "verify_tls": False,
+            "beta_restream": False,
+            "beta_all_devices": False,
+            "beta_relevance": False,
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "player"
+
+    # Page two: the player. With no beta on, this is the last of them.
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -312,8 +334,6 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
             "event_lead": 20,
             "clip_lead": 10,
             "clip_tail": 25,
-            "hide_timer": False,
-            "require_admin": False,
         },
     )
     await hass.async_block_till_done()
@@ -326,6 +346,47 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     assert entry.options["event_lead"] == 20
     assert entry.options["clip_lead"] == 10
     assert entry.options["clip_tail"] == 25
+
+
+async def test_switching_relevance_on_asks_about_signals(hass: HomeAssistant) -> None:
+    """The third page appears only for the feature that needs it."""
+    _loaded_reolink(hass)
+    entry = await _setup(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "hide_timer": True,
+            "require_admin": True,
+            "verify_tls": False,
+            "beta_restream": False,
+            "beta_all_devices": False,
+            "beta_relevance": True,
+        },
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "browse_stream": "sub",
+            "split_minutes": 5,
+            "pre_roll": 5,
+            "event_lead": 30,
+            "clip_lead": 15,
+            "clip_tail": 15,
+        },
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "signals"
+
+    # Skippable, and it opens empty: the feature is worth having on time alone.
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert entry.options["beta_relevance"] is True
+    assert entry.options["relevance_signals"] == {}
 
 
 async def test_panel_modules_are_served_under_a_content_scoped_path(

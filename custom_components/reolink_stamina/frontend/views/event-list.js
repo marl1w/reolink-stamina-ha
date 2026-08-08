@@ -207,6 +207,20 @@ const STYLES = /* css */ `
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
+/*
+ * A segment holds whatever fired inside it, so a busy evening is one row with three
+ * detections in it. Stacked, they were a long scroll with no sense of how many there were
+ * or which one you were on; paged, the count is stated and each one gets the whole sheet.
+ */
+.sheet__foot {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--rv-line);
+}
+.sheet__foot[hidden] { display: none; }
+.sheet__count { font-size: 0.78rem; color: var(--rv-text-dim); font-variant-numeric: tabular-nums; }
+.sheet__pager { display: flex; gap: 8px; }
 
 .sheet__head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
@@ -402,6 +416,7 @@ const STYLES = /* css */ `
 
 @media (max-width: 620px) {
   .sheet__head { padding: 16px 16px 0; }
+  .sheet__foot { padding: 10px 16px 14px; }
   .verdict, .section { padding-left: 16px; padding-right: 16px; }
   .note { padding-left: 16px; padding-right: 16px; }
   .term { grid-template-columns: minmax(0, 1fr) 92px; row-gap: 6px; }
@@ -493,8 +508,24 @@ export class EventList extends HTMLElement {
       onkeydown: (event) => this._onKeydown(event),
     });
     this._stateHost = el("div");
+    this._detailHead = el("div");
     this._detailBody = el("div", { class: "sheet__scroll" });
-    this._detail = el("dialog", { class: "sheet" }, this._detailBody);
+    this._detailFoot = el("div", { class: "sheet__foot", hidden: true });
+    this._detail = el(
+      "dialog",
+      {
+        class: "sheet",
+        // Left and right page through a segment that holds several detections, because
+        // reaching for a footer button to compare two of them is the wrong amount of work.
+        onkeydown: (event) => {
+          if (event.key === "ArrowLeft") this._page(-1);
+          if (event.key === "ArrowRight") this._page(1);
+        },
+      },
+      this._detailHead,
+      this._detailBody,
+      this._detailFoot
+    );
     this.shadowRoot.append(
       el("div", {}, this._notices, this._stateHost, this._list, this._detail)
     );
@@ -513,10 +544,14 @@ export class EventList extends HTMLElement {
    */
   _showDetail(event) {
     const store = this._store;
-    const known = store.relevanceFor(event.entry_id, event.channel);
-    const found = store.eventRelevance(event);
+    this._sheet = {
+      event,
+      known: store.relevanceFor(event.entry_id, event.channel),
+      found: store.eventRelevance(event),
+      at: 0,
+    };
 
-    this._detailBody.replaceChildren(
+    this._detailHead.replaceChildren(
       el(
         "div",
         { class: "sheet__head" },
@@ -524,20 +559,39 @@ export class EventList extends HTMLElement {
           "div",
           {},
           el("div", { class: "sheet__when", text: formatDayLabel(event.start.slice(0, 10)) }),
-          el("div", { class: "sheet__title", text: `${formatTime(event.start)} · ${event.camera}` })
+          el("div", {
+            class: "sheet__title",
+            text: `${formatTime(event.start)} · ${event.camera}`,
+          })
         ),
         el(
           "button",
-          {
-            class: "sheet__close",
-            "aria-label": "Close",
-            onclick: () => this._detail.close(),
-          },
+          { class: "sheet__close", "aria-label": "Close", onclick: () => this._detail.close() },
           icon("mdi:close")
         )
       )
     );
 
+    this._renderDetail();
+    this._detail.showModal();
+  }
+
+  /** Move to another detection inside the same recording, if there is one. */
+  _page(step) {
+    const sheet = this._sheet;
+    if (!sheet || sheet.found.length < 2) return;
+    const next = sheet.at + step;
+    if (next < 0 || next >= sheet.found.length) return;
+    sheet.at = next;
+    this._renderDetail();
+    this._detailBody.scrollTop = 0;
+  }
+
+  /** Draw whichever detection is being looked at, and the footer that moves between them. */
+  _renderDetail() {
+    const { known, found, at } = this._sheet;
+
+    this._detailBody.replaceChildren();
     if (!known) {
       this._detailBody.append(
         el("p", { class: "note", text: "Learning what is normal is switched off." })
@@ -545,33 +599,80 @@ export class EventList extends HTMLElement {
     } else if (found.length === 0) {
       this._detailBody.append(el("p", { class: "note", html: this._collectingNote(known) }));
     } else {
-      if (found.length > 1) {
-        this._detailBody.append(
-          el("div", {
-            class: "more",
-            text: `${found.length} detections inside this recording, most unusual first.`,
-          })
-        );
-      }
-      for (const item of found) this._detailBody.append(...this._detailFor(item, known));
+      this._detailBody.append(...this._detailFor(found[at], known));
     }
 
-    this._detail.showModal();
+    // Only when there is somewhere to go: one detection needs no footer saying so.
+    this._detailFoot.hidden = found.length < 2;
+    if (found.length < 2) return;
+
+    this._detailFoot.replaceChildren(
+      el("span", {
+        class: "sheet__count",
+        text: `Detection ${at + 1} of ${found.length} in this recording`,
+      }),
+      el(
+        "div",
+        { class: "sheet__pager" },
+        el(
+          "button",
+          { class: "btn btn--quiet", disabled: at === 0, onclick: () => this._page(-1) },
+          icon("mdi:chevron-left"),
+          "Previous"
+        ),
+        el(
+          "button",
+          {
+            class: "btn btn--quiet",
+            disabled: at === found.length - 1,
+            onclick: () => this._page(1),
+          },
+          "Next",
+          icon("mdi:chevron-right")
+        )
+      )
+    );
   }
 
-  /** What the panel says while a camera has too little behind it to compare anything. */
+  /**
+   * What the panel says while a camera has too little behind it to compare anything.
+   *
+   * Names the requirement that is actually outstanding. It used to recite both — "a
+   * fortnight, and a few hundred detections" — at a camera that had four hundred and ninety
+   * three of them and was short only of the calendar, which reads as the panel not knowing
+   * what it is waiting for.
+   */
   _collectingNote(known) {
-    if (known.state === "too_few_events") {
+    const seen = known.coverage || { days: 0, events: 0 };
+    const needs = known.needs || null;
+    if (!needs) {
+      return `Still collecting: <b>${seen.days} days</b> and <b>${seen.events} detections</b> so far.`;
+    }
+
+    const shortOfDays = seen.days < needs.days;
+    const shortOfEvents = seen.events < needs.events;
+
+    if (shortOfDays && shortOfEvents) {
       return (
-        `This camera has been watched for <b>${known.coverage.days} days</b> but has seen ` +
-        `only <b>${known.coverage.events} detections</b> — too few to compare anything against.`
+        `Still collecting: <b>${seen.days} of ${needs.days} days</b> and ` +
+        `<b>${seen.events} of ${needs.events} detections</b>.`
       );
     }
-    return (
-      `Still collecting: <b>${known.coverage.days} days</b> and ` +
-      `<b>${known.coverage.events} detections</b> so far. A camera needs about a fortnight, ` +
-      `and a few hundred detections, before anything can be called unusual.`
-    );
+    if (shortOfDays) {
+      return (
+        `Still collecting: <b>${seen.days} of ${needs.days} days</b>. It has seen ` +
+        `${seen.events} detections, which is already enough — a camera needs a full week ` +
+        `as well, because a Saturday does not look like a Tuesday.`
+      );
+    }
+    if (shortOfEvents) {
+      return (
+        `This camera has been watched for <b>${seen.days} days</b> but has seen only ` +
+        `<b>${seen.events} of the ${needs.events} detections</b> it needs to be compared ` +
+        `against itself.`
+      );
+    }
+    return `Nothing was recorded inside this stretch of footage.`;
   }
 
   /**
@@ -614,49 +715,56 @@ export class EventList extends HTMLElement {
       el("div", { class: "verdict__reason", text: item.reason })
     );
 
-    if (item.threshold !== null && item.threshold !== undefined) {
-      // Zero in the middle, as below. The extent covers whichever of the score and the cut
-      // reaches furthest, with headroom, so both are always on the scale.
-      const extent = Math.max(Math.abs(item.score), Math.abs(item.threshold), 1) * 1.15;
-      const rarer = item.score > 0;
-      verdict.append(
+    // Always drawn, threshold or not.
+    //
+    // It used to be skipped while a camera was still collecting, which is every camera on a
+    // fresh install — so the summary simply vanished and the sheet showed one chart instead
+    // of two. That made a new install look like a different build from one with history in
+    // it, and it contradicted the one thing this view is for: answering from the first day.
+    //
+    // Without a threshold there is no region to shade and nothing can be marked, so the
+    // scale still says where the event sits and stops short of claiming a verdict.
+    const hasCut = item.threshold !== null && item.threshold !== undefined;
+    const extent =
+      Math.max(Math.abs(item.score), hasCut ? Math.abs(item.threshold) : 0, 1) * 1.15;
+    const rarer = item.score > 0;
+    verdict.append(
+      el(
+        "div",
+        { class: "gauge" },
         el(
           "div",
-          { class: "gauge" },
-          el(
-            "div",
-            { class: "gauge__track" },
-            // Back to front: the region that gets marked, the bar over it, the chance line
-            // on top of both.
-            el("div", {
-              class: "gauge__zone",
-              style: {
-                left: `${Math.max(0, Math.min(100, 50 + (item.threshold / extent) * 50))}%`,
-              },
-              title: `Marked above ${item.threshold}`,
-            }),
-            el("div", {
-              class: "gauge__fill",
-              dataset: { side: rarer ? "rarer" : "common" },
-              style: { width: `${Math.min(50, (Math.abs(item.score) / extent) * 50)}%` },
-              title: `This event scored ${item.score}`,
-            }),
-            el("div", { class: "gauge__zero" })
-          ),
-          el(
-            "div",
-            { class: "gauge__legend" },
-            // "Unusual" rather than "rarer", and the difference is not cosmetic: the red
-            // region has a line to cross and crossing it has a name — the same word on the
-            // row's mark and on the filter chip. The chart below keeps "rarer", because its
-            // right-hand side has no threshold in it and means only what it says.
-            el("span", { text: "more common" }),
-            el("span", { class: "axis__mid", text: "chance" }),
-            el("span", { class: "axis__rare", text: "unusual" })
-          )
+          { class: "gauge__track" },
+          // Back to front: the region that gets marked, the bar over it, the chance line
+          // on top of both.
+          hasCut
+            ? el("div", {
+                class: "gauge__zone",
+                style: {
+                  left: `${Math.max(0, Math.min(100, 50 + (item.threshold / extent) * 50))}%`,
+                },
+                title: `Marked above ${item.threshold}`,
+              })
+            : null,
+          el("div", {
+            class: "gauge__fill",
+            dataset: { side: rarer ? "rarer" : "common" },
+            style: { width: `${Math.min(50, (Math.abs(item.score) / extent) * 50)}%` },
+            title: `This event scored ${item.score}`,
+          }),
+          el("div", { class: "gauge__zero" })
+        ),
+        el(
+          "div",
+          { class: "gauge__legend" },
+          el("span", { text: "more common" }),
+          el("span", { class: "axis__mid", text: "chance" }),
+          // "Unusual" is a verdict, and without a threshold there is nothing entitled to
+          // reach one — so the end goes back to naming the direction.
+          el("span", { class: "axis__rare", text: hasCut ? "unusual" : "rarer" })
         )
-      );
-    }
+      )
+    );
 
     const evidence = el(
       "div",
@@ -692,7 +800,11 @@ export class EventList extends HTMLElement {
           el(
             "div",
             { class: "term__what" },
-            el("div", { class: "term__name", text: names[term.name] || term.name }),
+            // A chosen signal names itself; the built-in terms are named by the panel.
+            el("div", {
+              class: "term__name",
+              text: term.subject || names[term.name] || term.name,
+            }),
             el("div", { class: "term__value", text: term.label })
           ),
           el(
@@ -735,6 +847,12 @@ export class EventList extends HTMLElement {
     const open = (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
+      // A pointer click leaves the ring behind after the dialog closes, because closing
+      // returns focus to whatever opened it and a span with a tabindex gets `:focus-visible`
+      // from a click where a real button would not. Dropping focus first means the ring
+      // never comes back — while a keyboard activation, which reports a detail of zero,
+      // keeps it, because there it is the only way of knowing where you are.
+      if (ev.type === "click" && ev.detail > 0) ev.currentTarget.blur();
       onOpen();
     };
     return el(
