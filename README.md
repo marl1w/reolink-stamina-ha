@@ -50,6 +50,7 @@ Worth knowing:
 - **Playback uses the low-resolution stream** where available. High resolution is H.265 at full sensor size — slow to open, undecodable in most browsers — so it is offered for downloads, not for watching. [Adaptive playback (beta)](#beta-options) makes it watchable, and adds a resolution picker to the player. Some models and firmware serve H.265 on the low-resolution stream too, and there the beta is what (hopefully) makes *any* resolution play in Chrome or Firefox.
 - **The player says how a clip reached you.** A badge reads *Direct play* when the footage came straight off the recorder with nothing in between, and names the conversion when [adaptive playback](#beta-options) had to step in.
 - **Pinch to look closer.** Pinch, drag, or double-tap the picture to zoom in on a face or a number plate — useful on a phone, where the low-resolution stream is small and the screen is smaller. Ctrl-scroll or a trackpad pinch does the same on a desktop. A pill in the corner shows the level and taps back to the whole frame. Home Assistant switches its own page zoom off, so this is the panel's rather than the browser's.
+- **The player is as wide as you want it.** On a desktop it opens beside the list, and the seam between the two is a handle — drag the grip in the middle of it to give the picture more room, or the rows more. It stops before the list stops being a list, remembers where you left it, and a double-click puts it back. Arrow keys move it too, once it has focus. On a screen taller than it is wide, or a window too small to hold both, the player opens over the list instead.
 - **High-resolution downloads won't open in QuickTime or Preview.** The file is valid and VLC and browsers play it, but the H.265 these recorders produce stalls Apple's decoder however it is packaged. Convert once if you need to: `ffmpeg -i clip.mp4 -c:v libx264 -crf 20 -c:a copy out.mp4`.
 - **Downloads take about as long as the clip** — no fast-forward on the recorder's treadmill.
 - **Detection labels, counts and clip trimming need Home Assistant's recorder.** Disabled or purged, rows fall back to whatever the NVR itself reported and clips to whole segments.
@@ -166,12 +167,14 @@ logger:
 | Cloud sync has no entities | Its recorder is gone from the Reolink integration, or the chosen cloud account was removed — the log says which |
 | Clips queue but never upload | Check *Last error*; a revoked cloud login surfaces as a reauth prompt on that integration |
 | "no ffmpeg is installed" | A 24/7 camera's clip must be cut; install ffmpeg or sync event-recording cameras only |
-| Panel looks stale after an update | Clear your browser cache, then hard-refresh |
+| Panel looks stale after an update | Every module is served under a URL named after the contents of the frontend directory, so an update renames all of them and a plain reload is enough. If you *edited* the files in place, reload the integration — see below — because the URL is only renamed when the integration loads, and until then the browser is right to keep the copy it has |
 | Everything is slow | It's the NVR. It's always the NVR |
 
 ## Contributing
 
 Fork, open a pull request with a description of your changes and the use case you are addressing, follow the existing style, include tests.
+
+**Editing the panel:** everything under `custom_components/reolink_stamina/frontend/` is served under a URL named after that directory's contents, with cache headers that tell the browser it never changes — which is true of any one URL, and what keeps the panel off the network on every load. The name is computed when the integration loads, so an edit becomes visible on **Settings → Devices & services → Reolink Stamina → ⋮ → Reload**, not on a browser reload. No restart, and no clearing the cache: reloading renames every module and the browser fetches all of them again. Skipping the reload is what leaves Safari, quite correctly, showing you yesterday's panel.
 
 ## Licence
 

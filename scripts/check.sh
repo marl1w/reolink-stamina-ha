@@ -88,6 +88,15 @@ else
   printf '  skipped (node not installed)\n'
 fi
 
+step "Split layout"
+# Whether the panel is wide enough to hold the list and the player side by side, and how far
+# the divider between them may be dragged. Numbers, so no window has to be resized to see it.
+if command -v node >/dev/null 2>&1; then
+  if node tests/frontend/test_split.mjs; then ok "split"; else bad "split"; fi
+else
+  printf '  skipped (node not installed)\n'
+fi
+
 step "Clip writer (FLV to MP4)"
 # Real files rather than fixtures: ffmpeg builds the FLV, the panel's own code remuxes it,
 # and ffprobe reports what came out. Nothing here needs an NVR.

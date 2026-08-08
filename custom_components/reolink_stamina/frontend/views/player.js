@@ -67,15 +67,36 @@ const STYLES = /* css */ `
 .head__sub { font-size: 0.8rem; color: var(--rv-text-dim); }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 2px; }
 
+/*
+ * The stage is sized by the layout above it, never by what is in it.
+ *
+ * Everything it holds — the video, the overlay, the zoom pill — is positioned against it,
+ * so its height is the one flex gives it and nothing inside can argue. That is not tidiness:
+ * the video used to be a centred grid item at height 100%, which asks the row to size
+ * itself from the video while the video sizes itself from the row. Chrome settles that
+ * against the definite flex height; Safari settles it by feeding the video's aspect-derived
+ * height back into the row, so widening the player past the picture's aspect grew the
+ * element a little more each pass — the picture sinking below the stage with a growing band
+ * of black above it, which is exactly what dragging the divider out did.
+ *
+ * Absolute rather than a grid item, so the video cannot contribute a height to anything and
+ * the loop has no way to start, on any engine.
+ */
 .stage {
   position: relative;
   background: #000;
   flex: 1 1 auto;
   min-height: 200px;
-  display: grid;
-  place-items: center;
 }
-video { width: 100%; height: 100%; max-height: 100%; display: block; object-fit: contain; background: #000; }
+video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+}
 
 /* ---------------------------------------------------------------- controls */
 

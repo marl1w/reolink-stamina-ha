@@ -11,6 +11,16 @@ import { SHARED } from "./theme.js";
 import { ToolbarFold } from "./fold.js";
 import { StaminaApi } from "./api.js";
 import { StaminaStore } from "./store.js";
+import {
+  GUTTER,
+  LIST_MIN,
+  PLAYER_MIN,
+  clampPlayerWidth,
+  openingPlayerWidth,
+  readPlayerWidth,
+  savePlayerWidth,
+  splitFits,
+} from "./split.js";
 import { forgetRoutesFromEarlierRelease } from "./playback/routes.js";
 import "./views/device-picker.js";
 import "./views/toolbar.js";
@@ -66,39 +76,99 @@ const STYLES = /* css */ `
 
 .split { flex: 1 1 auto; min-height: 0; display: flex; }
 .pane-list { flex: 1 1 auto; min-width: 0; }
+
+/*
+ * Covering the screen is the default, and the side-by-side split the exception — the other
+ * way round from how this used to read.
+ *
+ * Which one applies is data-layout on the host, set from the panel's own measured box
+ * rather than a media query on the window: Home Assistant docks its sidebar outside the
+ * panel, so the viewport is worth a couple of hundred pixels the panel never had. Taking
+ * the overlay as the default is what makes that safe — it is the layout that works at any
+ * size, so the moment before the first measurement, and any engine that cannot measure at
+ * all, get a player that covers the screen rather than a split squeezed into a phone.
+ */
 .pane-player {
-  flex: 0 0 46%;
-  max-width: 760px;
-  min-width: 360px;
-  border-left: 1px solid var(--rv-line);
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  flex: 1 1 auto;
   display: flex;
-  animation: rv-slide-in 220ms var(--rv-ease) both;
+  background: var(--rv-surface);
+  /* Covering the screen means covering the notch and the home indicator too. The player
+     is above even the panel's own header here, so nothing else is holding either off it,
+     and its chrome is fixed at both edges: the clip's title would sit under the clock and
+     the play button under the home indicator. */
+  padding: var(--rv-safe-top) var(--rv-safe-right) var(--rv-safe-bottom) var(--rv-safe-left);
+  animation: rv-slide-up 220ms var(--rv-ease) both;
 }
 .pane-player[hidden] { display: none; }
+@keyframes rv-slide-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+
+:host([data-layout="split"]) .pane-player {
+  position: static;
+  /* The width the divider was left at. The panel keeps it inside its bounds, so the list
+     always has room for a row; the fallback only stands in for the frame before it does. */
+  flex: 0 0 var(--rv-player-width, 46%);
+  min-width: 0;
+  padding: 0;
+  animation: rv-slide-in 220ms var(--rv-ease) both;
+}
 @keyframes rv-slide-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
 
 reolink-event-player { flex: 1 1 auto; min-width: 0; }
 
-/* On narrow screens the player takes over the screen instead of squeezing the list. */
-@media (max-width: 900px) {
-  .pane-player {
-    position: fixed;
-    inset: 0;
-    z-index: 10;
-    flex: 1 1 auto;
-    max-width: none;
-    min-width: 0;
-    border-left: none;
-    background: var(--rv-surface);
-    /* Covering the screen means covering the notch and the home indicator too. The player
-       is above even the panel's own header here, so nothing else is holding either off it,
-       and its chrome is fixed at both edges: the clip's title would sit under the clock and
-       the play button under the home indicator. */
-    padding: var(--rv-safe-top) var(--rv-safe-right) var(--rv-safe-bottom) var(--rv-safe-left);
-    animation: rv-slide-up 220ms var(--rv-ease) both;
-  }
-  @keyframes rv-slide-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+/* ------------------------------------------------------------------- divider */
+
+/*
+ * The line between the panes, and the handle it doubles as.
+ *
+ * It stands in for the border the player pane used to draw, so the seam looks the same when
+ * nobody goes near it — what is new is the grip in the middle of it, which is there to say
+ * the seam can be dragged at all. A hairline is too thin to aim at, so the hit area is the
+ * whole ${GUTTER} pixels and the line is drawn down the middle of it.
+ */
+.gutter {
+  flex: 0 0 ${GUTTER}px;
+  position: relative;
+  align-self: stretch;
+  cursor: col-resize;
+  /* A drag here is a drag, not the start of a scroll of the list behind it. */
+  touch-action: none;
 }
+.gutter[hidden] { display: none; }
+.gutter::before,
+.gutter::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  pointer-events: none;
+}
+.gutter::before { top: 0; bottom: 0; width: 1px; transform: translateX(-50%); background: var(--rv-line); }
+.gutter::after {
+  top: 50%;
+  /* Centred by transform rather than by a margin, so growing on hover grows both ways and
+     the grip stays where the eye left it. */
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 34px;
+  border-radius: var(--rv-radius-pill);
+  background: color-mix(in srgb, var(--rv-text) 28%, transparent);
+  transition: background 140ms var(--rv-ease), height 140ms var(--rv-ease);
+}
+.gutter:hover::after,
+.gutter:focus-visible::after,
+.gutter[dragging]::after {
+  height: 56px;
+  background: var(--rv-accent);
+}
+
+/*
+ * While the divider is being dragged, the pointer is over the list and the player rather
+ * than over the handle — so the cursor and the ban on selecting text belong to the panel
+ * for the length of the drag, or the first pull sweeps a selection across the rows.
+ */
+:host([resizing]) { cursor: col-resize; user-select: none; -webkit-user-select: none; }
 `;
 
 class ReolinkStaminaPanel extends HTMLElement {
@@ -109,6 +179,14 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._built = false;
     this._store = null;
     this._render = frameDebounce(() => this._doRender());
+    /** The panel's own box, which decides between the split and the overlay. */
+    this._panelWidth = 0;
+    this._panelHeight = 0;
+    this._layoutSplit = false;
+    /** The width the divider was dragged to, or null for the opening one. */
+    this._playerWidth = readPlayerWidth();
+    /** And the width that is actually applied, which is that one held inside the bounds. */
+    this._appliedWidth = 0;
     this._onKeydown = (event) => {
       if (event.key !== "Escape" || !this._store?.selectedEventId) return;
       // While the player fills the screen, Escape is how you come back out of it — the
@@ -120,10 +198,13 @@ class ReolinkStaminaPanel extends HTMLElement {
 
   connectedCallback() {
     this.addEventListener("keydown", this._onKeydown);
+    this._watchSize();
   }
 
   disconnectedCallback() {
     this.removeEventListener("keydown", this._onKeydown);
+    this._sizeObserver?.disconnect();
+    this._sizeObserver = null;
     this._store?.destroy();
   }
 
@@ -201,6 +282,20 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._player = el("reolink-event-player");
     this._playerPane = el("div", { class: "pane-player", hidden: true }, this._player);
 
+    // The divider between them. A separator rather than a decoration, so it can be moved from
+    // the keyboard as well as dragged, and a double-click puts it back where it started.
+    this._gutter = el("div", {
+      class: "gutter",
+      role: "separator",
+      "aria-orientation": "vertical",
+      "aria-label": "Resize the player",
+      tabindex: "0",
+      hidden: true,
+      onpointerdown: (event) => this._onGutterDown(event),
+      onkeydown: (event) => this._onGutterKey(event),
+      ondblclick: () => this._setPlayerWidth(null),
+    });
+
     // Reading down the list folds the toolbar away; a flick back up brings it back. Whether
     // that attribute means anything is the toolbar's CSS to decide — on a wide screen there
     // is room for both. Passive, so this can never hold up a scroll.
@@ -218,17 +313,15 @@ class ReolinkStaminaPanel extends HTMLElement {
       }
     });
 
-    this._main = el(
-      "div",
-      { class: "content" },
-      this._toolbar,
-      el("div", { class: "split" }, this._list, this._playerPane)
-    );
+    this._split = el("div", { class: "split" }, this._list, this._gutter, this._playerPane);
+    this._main = el("div", { class: "content" }, this._toolbar, this._split);
 
     this._body = el("div", { class: "content" });
     this.shadowRoot.append(header, this._body);
     this._built = true;
     this._syncMenuButton();
+    // The panel may well have been measured before there was anything to lay out.
+    this._applyLayout();
   }
 
   /**
@@ -240,6 +333,122 @@ class ReolinkStaminaPanel extends HTMLElement {
   _syncMenuButton() {
     if (!this._menuBtn) return;
     this._menuBtn.hidden = !(this._narrow || this._hass?.dockedSidebar === "always_hidden");
+  }
+
+  // ------------------------------------------------------------------ the divider
+
+  /**
+   * Follow the panel's own size, which is what decides the layout.
+   *
+   * Its box rather than the window's: the sidebar is docked outside the panel, so the two
+   * differ by however wide it is, and a split is only worth opening if the panel itself has
+   * the room. Measuring the panel and not the split is also what keeps a drag from feeding
+   * back into this — dragging the divider changes the panes' widths and never the panel's.
+   */
+  _watchSize() {
+    if (this._sizeObserver || typeof ResizeObserver === "undefined") return;
+    this._sizeObserver = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1].contentRect;
+      this._panelWidth = box.width;
+      this._panelHeight = box.height;
+      this._applyLayout();
+    });
+    this._sizeObserver.observe(this);
+  }
+
+  /** Side by side, or the player over the list — and if side by side, how wide. */
+  _applyLayout() {
+    this._layoutSplit = splitFits(this._panelWidth, this._panelHeight);
+    this.dataset.layout = this._layoutSplit ? "split" : "overlay";
+    if (!this._built) return;
+    this._syncGutter();
+    if (this._layoutSplit) this._applyPlayerWidth();
+  }
+
+  /** The divider is only there when there are two panes for it to be between. */
+  _syncGutter() {
+    this._gutter.hidden = !this._layoutSplit || this._playerPane.hidden;
+  }
+
+  /** The space the two panes share: the panel, less the divider between them. */
+  get _sharedWidth() {
+    return Math.max(0, this._panelWidth - GUTTER);
+  }
+
+  /**
+   * Put the current width on the split, held inside what the panel can give.
+   *
+   * The dragged width is kept as it was asked for rather than overwritten by the clamp, so
+   * that narrowing the window and widening it again gives the picture its size back instead
+   * of leaving it at whatever the narrow window could spare.
+   */
+  _applyPlayerWidth() {
+    const total = this._sharedWidth;
+    const width = clampPlayerWidth(this._playerWidth ?? openingPlayerWidth(total), total);
+    this._appliedWidth = width;
+    this._split.style.setProperty("--rv-player-width", `${width}px`);
+    this._gutter.setAttribute("aria-valuenow", String(width));
+    this._gutter.setAttribute("aria-valuemin", String(PLAYER_MIN));
+    this._gutter.setAttribute("aria-valuemax", String(Math.max(PLAYER_MIN, total - LIST_MIN)));
+  }
+
+  /**
+   * Move the divider. `null` puts the player back to the width it opens at.
+   *
+   * `remember` is off for the frames of a drag: the width worth writing down is the one it
+   * was let go at, not the couple of hundred it passed through on the way.
+   */
+  _setPlayerWidth(width, { remember = true } = {}) {
+    this._playerWidth = width === null ? null : clampPlayerWidth(width, this._sharedWidth);
+    if (remember) savePlayerWidth(this._playerWidth);
+    this._applyPlayerWidth();
+  }
+
+  /**
+   * Drag the divider.
+   *
+   * The pointer is captured, so the rest of the drag is reported here however far it strays
+   * over the list or the video — and dragging left widens the player, which is the pane on
+   * the right. Focus follows the grab so the arrow keys can finish the job; `:focus-visible`
+   * means that costs a mouse user no focus ring.
+   */
+  _onGutterDown(event) {
+    if (event.button > 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = this._appliedWidth;
+    this._gutter.setPointerCapture(event.pointerId);
+    this._gutter.focus({ preventScroll: true });
+    this._gutter.toggleAttribute("dragging", true);
+    this.toggleAttribute("resizing", true);
+
+    const move = (moved) => {
+      this._setPlayerWidth(startWidth - (moved.clientX - startX), { remember: false });
+    };
+    const done = () => {
+      this._gutter.removeEventListener("pointermove", move);
+      this._gutter.removeEventListener("pointerup", done);
+      this._gutter.removeEventListener("pointercancel", done);
+      this._gutter.removeAttribute("dragging");
+      this.removeAttribute("resizing");
+      savePlayerWidth(this._playerWidth);
+    };
+    this._gutter.addEventListener("pointermove", move);
+    this._gutter.addEventListener("pointerup", done);
+    this._gutter.addEventListener("pointercancel", done);
+  }
+
+  /** And move it from the keyboard, the way a separator is expected to. */
+  _onGutterKey(event) {
+    const step = event.shiftKey ? 64 : 16;
+    let width;
+    if (event.key === "ArrowLeft") width = this._appliedWidth + step;
+    else if (event.key === "ArrowRight") width = this._appliedWidth - step;
+    else if (event.key === "Home") width = PLAYER_MIN;
+    else if (event.key === "End") width = this._sharedWidth; // clamped down to the ceiling
+    else return;
+    event.preventDefault();
+    this._setPlayerWidth(width);
   }
 
   /**
@@ -285,6 +494,7 @@ class ReolinkStaminaPanel extends HTMLElement {
     // in the list.
     const selected = store.selectedEvent;
     this._playerPane.hidden = !selected;
+    this._syncGutter();
     this._player.store = store;
     this._player.api = this._api;
     if (selected) {

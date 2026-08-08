@@ -89,9 +89,21 @@ const STYLES = /* css */ `
 .mark .icon { --mdc-icon-size: 21px; width: 21px; height: 21px; }
 
 .body { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1; }
-.headline { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+/*
+ * Time and camera on one line while they fit, and the camera on its own line when they do
+ * not — which is the list at its narrowest, with the player dragged most of the way over.
+ *
+ * Wrapping rather than an ellipsis, deliberately. The name is what says which camera this
+ * row is, and truncating is the one thing that can make it stop saying it: "Driveway" and
+ * "Driveway (side)" both read as "Drivew…". A row that is one line taller costs a fraction
+ * of what a row you have to click to identify does. The row gap is small because these two
+ * are one headline in two lines, not two separate things.
+ */
+.headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
 .time { font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
-.camera { font-size: 0.84rem; color: var(--rv-text-dim); }
+/* Long names are not sentences — "Front_Door_Left" has nowhere it would rather break, so it
+   is allowed to break anywhere rather than run out of the row. */
+.camera { font-size: 0.84rem; color: var(--rv-text-dim); min-width: 0; overflow-wrap: anywhere; }
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
 
 .side { display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }
@@ -129,11 +141,12 @@ const STYLES = /* css */ `
 }
 .notice .icon { color: var(--rv-warn); }
 
+/* The headline stacks itself now, at whatever width it runs out of room — so what is left
+   here is the phone's own two: tighter padding, and the row's length and size, which is the
+   widest thing in a row and the least of what it says. */
 @media (max-width: 620px) {
   .list { padding: 6px 10px 32px; }
   .facts__main { display: none; }
-  .camera { display: block; }
-  .headline { flex-direction: column; align-items: flex-start; gap: 2px; }
 }
 `;
 
@@ -323,7 +336,7 @@ export class EventList extends HTMLElement {
     const refs = {};
     refs.mark = el("div", { class: "mark" }, (refs.markIcon = icon("mdi:record-circle-outline")));
     refs.time = el("span", { class: "time" });
-    refs.camera = el("span", { class: "camera truncate" });
+    refs.camera = el("span", { class: "camera" });
     refs.chips = el("div", { class: "chips" });
     refs.facts = el("div", { class: "facts" });
 
