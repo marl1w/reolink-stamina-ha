@@ -95,6 +95,12 @@ class FakeApi:
         self.search_calls: list[dict[str, Any]] = []
         self.baichuan = _FakeBaichuan()
         self.vod_source_calls: list[dict[str, Any]] = []
+        # Private on the real Host, and read as such by redact.api_secrets. The password
+        # carries an `&` on purpose: it is what a pattern-only scrub truncates.
+        self._username = "admin"
+        self._password = "s3cr&t"
+        self._enc_password = ""
+        self._token = "TOK123"
 
     @property
     def channels(self) -> list[int]:
@@ -114,6 +120,8 @@ class FakeApi:
         return ["person", "vehicle"]
 
     async def get_vod_source(self, channel, filename, stream=None, request_type=None):
+        from reolink_aio.enums import VodRequestType
+
         self.vod_source_calls.append(
             {
                 "channel": channel,
@@ -122,6 +130,17 @@ class FakeApi:
                 "request_type": request_type,
             }
         )
+        if request_type == VodRequestType.FLV:
+            # Shaped like reolink_aio's FLV URL: seek pinned to zero, credentials in the
+            # query unencoded, the recording named by `start`. Used whole, with only the
+            # seek replaced.
+            stream_type = 1 if stream == "sub" else 0
+            return (
+                "application/x-mpegURL",
+                f"http://nvr:80/flv?port=1935&app=bcs&stream=playback.bcs&channel={channel}"
+                f"&type={stream_type}&start={filename}&seek=0"
+                f"&user={self._username}&password={self._password}",
+            )
         # Shaped like reolink_aio's PLAYBACK URL: only its base and token are used.
         return (
             "video/mp4",
@@ -129,7 +148,7 @@ class FakeApi:
         )
 
     def hide_password(self, text):
-        return str(text).replace("password=p", "password=***")
+        return str(text).replace(self._password, "<password>")
 
     async def request_vod_files(
         self,
@@ -197,7 +216,7 @@ def patch_host(fake_api: FakeApi):
         ),
         # Imported by name, so each module that uses it needs patching in its own right.
         patch(
-            "custom_components.reolink_stamina.flv_proxy.async_get_host",
+            "custom_components.reolink_stamina.playback_route.async_get_host",
             return_value=host,
         ),
     ):

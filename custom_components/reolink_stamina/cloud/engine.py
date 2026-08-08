@@ -37,7 +37,7 @@ from ..const import (
     SYNC_WRITE_DELAY_SECONDS,
 )
 from ..detections import async_detection_entities
-from ..flv_proxy import async_playback_source
+from ..playback_route import Recording, async_playback_source
 from ..reolink_registry import async_discover_devices, async_get_host
 from .destination import Destination, DestinationError
 from .fetch import (
@@ -537,13 +537,15 @@ class NvrSyncer:
         seek = max(0.0, (job.window.start - file_start).total_seconds())
         source = await async_playback_source(
             self.hass,
-            job.entry_id,
-            job.channel,
-            self.stream,
-            recording["name"],
-            recording.get("file_start_id") or recording["start_id"],
-            recording.get("playback_id", ""),
-            int(seek + float(recording.get("offset") or 0.0)),
+            Recording(
+                entry_id=job.entry_id,
+                channel=job.channel,
+                stream=self.stream,
+                filename=recording["name"],
+                start_id=recording.get("file_start_id") or recording["start_id"],
+                playback_id=recording.get("playback_id", ""),
+                seek=int(seek + float(recording.get("offset") or 0.0)),
+            ),
         )
         return await async_cut_with_ffmpeg(binary, source, wanted, SYNC_MAX_CLIP_BYTES)
 

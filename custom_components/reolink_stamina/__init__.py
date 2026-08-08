@@ -73,6 +73,7 @@ from .const import (
     SUBENTRY_TYPE_SYNC,
 )
 from .flv_proxy import ReolinkStaminaFlvView
+from .playback_route import async_forget_routes
 from .reolink_registry import async_is_compatible
 from .restream import (
     ReolinkStaminaHlsView,
@@ -310,6 +311,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_unload_platforms(entry, SYNC_PLATFORMS)
         for syncer in data.syncers.values():
             await syncer.async_stop()
+
+    # Measured against the firmware that was running, so a reload re-measures rather than
+    # carrying an answer that a device update may have invalidated.
+    async_forget_routes(hass)
 
     data = hass.data.pop(DOMAIN, None)
     if data is not None:
