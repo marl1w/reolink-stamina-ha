@@ -86,6 +86,16 @@ export const SCRUB_STYLES = /* css */ `
 .marker[data-tone="alert"] { --marker-tone: var(--rv-tone-alert); }
 .marker[data-tone="motion"] { --marker-tone: var(--rv-tone-motion); }
 .marker[data-tone="neutral"] { --marker-tone: var(--rv-tone-neutral); }
+
+/*
+ * A detection the model found unusual keeps the line in the colour of whatever was detected
+ * — that is what the line is for, and losing it would cost the one thing the bar says at a
+ * glance — and turns only the dot red. Two facts, two marks, neither displacing the other.
+ */
+.marker[data-unusual="true"]::after {
+  background: var(--rv-tone-alert);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--rv-tone-alert) 30%, transparent);
+}
 `;
 
 export class ScrubBar {
@@ -164,13 +174,17 @@ export class ScrubBar {
     this._markers.replaceChildren();
   }
 
-  /** Marks as `{ratio, tone, exact, title}`, already placed along the bar. */
+  /** Marks as `{ratio, tone, exact, unusual, title}`, already placed along the bar. */
   setMarkers(marks) {
     this._markers.replaceChildren(
       ...marks.map((mark) =>
         el("div", {
           class: "marker",
-          dataset: { exact: String(Boolean(mark.exact)), tone: mark.tone },
+          dataset: {
+            exact: String(Boolean(mark.exact)),
+            tone: mark.tone,
+            unusual: String(Boolean(mark.unusual)),
+          },
           style: { left: `${mark.ratio * 100}%` },
           title: mark.title,
         })

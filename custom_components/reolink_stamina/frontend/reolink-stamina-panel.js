@@ -10,6 +10,8 @@ import { adoptStyles, el, frameDebounce, icon } from "./dom.js";
 import { SHARED } from "./theme.js";
 import { ToolbarFold } from "./fold.js";
 import { StaminaApi } from "./api.js";
+import { shouldIntroduce } from "./whats-new.js";
+import "./views/whats-new.js";
 import { StaminaStore } from "./store.js";
 import {
   GUTTER,
@@ -246,6 +248,40 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._build();
     await this._store.init();
     this._render();
+    this._maybeIntroduce();
+  }
+
+  /**
+   * Say what the panel can do, once per release.
+   *
+   * After the first render rather than before it: an introduction over a blank panel is a
+   * dialog about nothing, and the list behind it is most of what the words refer to.
+   */
+  _maybeIntroduce() {
+    const version = this._panel?.config?.version;
+    if (!shouldIntroduce(this._store.seenVersion, version, this._store.returning)) {
+      // Nothing to say, but remember where this browser got to — otherwise the *next*
+      // release would look like a first install and stay silent for ever.
+      this._store.markIntroduced(version);
+      return;
+    }
+    this._whatsNew.open(version);
+  }
+
+  /**
+   * Go to this integration's own page in Home Assistant.
+   *
+   * Pushing the path and announcing it, which is how Home Assistant's router is told to
+   * follow a link from inside a panel: it listens for `location-changed` rather than
+   * watching the history. A plain assignment would work too and would reload the whole
+   * frontend to get somewhere two clicks away.
+   */
+  _openSettings() {
+    const path = "/config/integrations/integration/reolink_stamina";
+    history.pushState(null, "", path);
+    window.dispatchEvent(
+      new CustomEvent("location-changed", { bubbles: true, composed: true, detail: { replace: false } })
+    );
   }
 
   _build() {
@@ -275,7 +311,31 @@ class ReolinkStaminaPanel extends HTMLElement {
       "header",
       { class: "app-header" },
       this._menuBtn,
-      el("div", { class: "app-header__title", text: "Reolink Stamina" })
+      el("div", { class: "app-header__title", text: "Reolink Stamina" }),
+      el("div", { class: "spacer" }),
+      // Beside the name of the thing it introduces, which is where somebody looks for
+      // "what is this". A sparkle rather than a question mark: this is what the panel can
+      // do, not a help desk.
+      el(
+        "button",
+        {
+          class: "icon-btn",
+          title: "Settings",
+          "aria-label": "Reolink Stamina settings",
+          onclick: () => this._openSettings(),
+        },
+        icon("mdi:cog-outline")
+      ),
+      el(
+        "button",
+        {
+          class: "icon-btn",
+          title: "What this panel can do",
+          "aria-label": "What this panel can do",
+          onclick: () => this._whatsNew?.open(this._panel?.config?.version),
+        },
+        icon("mdi:star-four-points-outline")
+      )
     );
 
     // Setup view
@@ -319,7 +379,15 @@ class ReolinkStaminaPanel extends HTMLElement {
     });
 
     this._split = el("div", { class: "split" }, this._list, this._gutter, this._playerPane);
-    this._main = el("div", { class: "content" }, this._toolbar, this._split);
+    // Built with the panel but only ever shown deliberately: it costs one element and one
+    // listener, and lazily creating it would mean the toolbar's way back to it could open
+    // nothing on a slow first click.
+    this._whatsNew = el("reolink-stamina-whats-new");
+    this._whatsNew.addEventListener("seen", () => {
+      this._store?.markIntroduced(this._panel?.config?.version);
+    });
+
+    this._main = el("div", { class: "content" }, this._toolbar, this._split, this._whatsNew);
 
     this._body = el("div", { class: "content" });
     this.shadowRoot.append(header, this._body);

@@ -8,11 +8,14 @@ shape this fake imitates, the adapter tests fail loudly.
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from reolink_aio.typings import VOD_trigger
+
+from custom_components.reolink_stamina.const import JOURNAL_FILENAME
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -21,6 +24,21 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Make the custom integration loadable in every test."""
     return enable_custom_integrations
+
+
+@pytest.fixture(autouse=True)
+def clean_journal(hass):
+    """Remove the relevance journal after every test.
+
+    The test harness shares one configuration directory across the whole run, and the
+    journal is deliberately a real file in it — so a test that switches the beta on leaves
+    one behind for every test that follows. The first casualty is the test asserting that
+    the beta being *off* means no file exists at all, which is the one assertion in the
+    suite that must not be able to pass or fail by accident.
+    """
+    yield
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{hass.config.path(JOURNAL_FILENAME)}{suffix}").unlink(missing_ok=True)
 
 
 class FakeVodFile:

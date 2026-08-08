@@ -14,32 +14,47 @@
   "options": {
     "step": {
       "init": {
-        "title": "Reolink Stamina options",
+        "title": "Reolink Stamina",
+        "description": "What is switched on. The next pages cover the player, and anything a switched-on feature needs.",
+        "data": {
+          "hide_timer": "Show detections only",
+          "require_admin": "Restrict the panel to administrators",
+          "verify_tls": "Verify the recorder's HTTPS certificate",
+          "beta_restream": "Adaptive playback (beta)",
+          "beta_all_devices": "Show hubs and standalone cameras (beta)",
+          "beta_relevance": "Learn what is normal (beta)"
+        },
+        "data_description": {
+          "hide_timer": "On: person, vehicle and animal, with motion as a filter. Off also brings back scheduled and unlabelled recordings, which dominate a 24/7 recorder.",
+          "require_admin": "Recordings can be sensitive. Off lets non-admin users open the panel.",
+          "verify_tls": "Off suits the self-signed certificate Reolink ships, which no verification can pass. On only if you installed one this Home Assistant trusts.",
+          "beta_restream": "Converts a recording when the browser cannot play it — H.265 on Chrome or Firefox, or anything on an iPhone. Needs ffmpeg.",
+          "beta_all_devices": "Lists Home Hubs and cameras with their own SD card. Untested hardware, hence beta.",
+          "beta_relevance": "Marks the events that are unusual for a camera, by counting what it normally sees. Nothing is recorded until you turn this on, it stays on this machine, and removing the integration deletes it."
+        }
+      },
+      "signals": {
+        "title": "What else should count?",
+        "description": "Relevance already counts the time of day, how long a detection lasted and which camera fired before it. Anything you add here is counted alongside them, so \"a person on the drive while nobody is in\" becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leave them empty if you would rather not — the time of day is most of the value on its own."
+      },
+      "player": {
+        "title": "The player",
+        "description": "How recordings are searched, trimmed and played.",
         "data": {
           "browse_stream": "Stream used for browsing",
           "split_minutes": "Event segment length",
           "pre_roll": "Estimated pre-roll",
-          "hide_timer": "Show detections only",
-          "require_admin": "Restrict the panel to administrators",
           "event_lead": "Start playback before the detection",
           "clip_lead": "Clip: seconds before the first detection",
-          "clip_tail": "Clip: seconds after the last detection",
-          "verify_tls": "Verify the recorder's HTTPS certificate",
-          "beta_restream": "Adaptive playback (beta)",
-          "beta_all_devices": "Show hubs and standalone cameras (beta)"
+          "clip_tail": "Clip: seconds after the last detection"
         },
         "data_description": {
-          "browse_stream": "Low resolution searches faster. Playback can still use high resolution.",
-          "split_minutes": "How finely long continuous recordings are split into separate events. Shorter gives sharper event boundaries but costs more searching. Set to 0 to list one event per recording file.",
-          "pre_roll": "Where to place the trigger marker for cameras that do not report their own pre-record time. Shown as an estimate.",
-          "hide_timer": "On by default: the timeline shows person, vehicle and animal detections, with motion available as a filter. Turn off to also include scheduled and unlabelled continuous recordings, which dominate a 24/7 recorder.",
-          "require_admin": "Recordings can be sensitive. Turn off to let non-admin users open the panel.",
-          "event_lead": "How many seconds before a detection to begin playing. Independent of the clip length above: this only places the playhead, and is clamped to the start of the clip when it reaches further back. Recorders store long recording segments, so this skips straight to the event using the exact detection time from Home Assistant's recorder.",
-          "clip_lead": "On 24/7 footage the player trims a five-minute segment down to what actually happened: the clip starts this many seconds before the first detection in the segment. Cameras that record on events are left alone — the recorder already trimmed those, and its pre-record buffer must not be cut into.",
-          "clip_tail": "Where the trimmed clip ends: this many seconds after the last detection in the segment clears. Several detections in one segment stay in a single clip, spanning from the first to the last. The full segment is always one click away in the player.",
-          "verify_tls": "Turn this on if you have put a certificate on your recorder that this Home Assistant trusts — playback, downloads and cloud sync will then all check it. It is off by default because a recorder still carrying the self-signed certificate Reolink ships cannot pass verification, and would refuse to serve a single recording. Note that the Reolink integration's own calls to the device never verify the certificate either, so leaving this off matches what the rest of your setup already does.",
-          "beta_restream": "For browsers that cannot play what the recorder sends. Playback normally goes straight from the recorder to the browser with nothing in between, and that stays the first thing tried. When it fails — H.265 on Chrome or Firefox, or any iPhone, which cannot demux the recorder's stream at all — Home Assistant repackages the recording, and re-encodes it only if repackaging was not enough. Needs ffmpeg, uses the machine's GPU where there is one, caps re-encoded video at 1080p, and converts one stream at a time. Downloads are unaffected: they are always the original footage.",
-          "beta_all_devices": "Lists Home Hubs and standalone cameras with an SD card alongside your recorders. They answer the same search API, but nothing here has been tested against them — hence beta. A camera that is already a channel on one of your NVRs is left out, so nothing is listed twice. Cloud sync remains NVR-only."
+          "browse_stream": "Low resolution searches faster. Playback and downloads can still use high.",
+          "split_minutes": "How finely long recordings split into rows. 0 lists one row per file.",
+          "pre_roll": "Where to draw the trigger marker for cameras that do not report their own.",
+          "event_lead": "Where the playhead opens inside the clip. It does not change the clip.",
+          "clip_lead": "On 24/7 footage, where a trimmed clip starts before the first detection.",
+          "clip_tail": "And where it ends, after the last one clears."
         }
       }
     }

@@ -57,11 +57,32 @@ export class StaminaStore extends EventTarget {
     this.selectedEventId = null;
     this.setupDone = false;
 
+    /** The release this browser was last shown the introduction for. */
+    this.seenVersion = null;
+    /** Whether this browser has used the panel before, which a fresh install has not. */
+    this.returning = false;
+
     this._eventsCache = null;
     this._eventsUnsub = null;
     this._calendarUnsub = null;
     this._generation = 0;
     this._resubscribeTimer = null;
+
+    /**
+     * What the "learn what is normal" beta knows, keyed by `entry_id:channel`.
+     *
+     * `{ state, coverage, detections: [...] }`, where each detection is one thing the
+     * camera saw rather than one row: a five-minute segment can hold several, which is why
+     * a row looks its own window up rather than matching a timestamp.
+     *
+     * Fetched rather than subscribed. It changes when the model is rebuilt — once a night —
+     * so a subscription would cost a socket to deliver nothing almost all of the time.
+     */
+    this.relevance = new Map();
+    this.relevanceEnabled = false;
+    /** Show only the rows the model found unusual. Client-side, like every other filter. */
+    this.unusualOnly = false;
+    this._relevanceKey = null;
   }
 
   // ------------------------------------------------------------------ lifecycle
@@ -298,6 +319,11 @@ export class StaminaStore extends EventTarget {
 
   setAllFilters(enabled) {
     this.filters = enabled ? new Set(FILTER_GROUPS.map((group) => group.id)) : new Set();
+    // "Show all" has to mean all of them. The unusual chip narrows the list further than any
+    // trigger chip does, so leaving it on made the strictest filter survive the button that
+    // exists to clear filters — and the count went on blaming "filters" for rows it had just
+    // declined to bring back.
+    if (enabled) this.unusualOnly = false;
     this._persist();
     this._emit();
   }
@@ -329,9 +355,15 @@ export class StaminaStore extends EventTarget {
 
     if (this.cameras.length === 0) {
       this.buckets.clear();
+      this.relevance = new Map();
+      this._relevanceKey = null;
       this._emit();
       return;
     }
+
+    // Alongside the subscription rather than inside it: the rows must not wait on this, and
+    // this must not be refetched every time a patch arrives.
+    this.refreshRelevance();
 
     const targets = this.cameras.map((camera) => ({
       entry_id: camera.entry_id,
@@ -370,6 +402,123 @@ export class StaminaStore extends EventTarget {
   /** How many times each kind fired inside a row, by `kind`. */
   detectionCounts(event) {
     return new Map(Object.entries(event.counts || {}));
+  }
+
+  // ------------------------------------------------------- learning what is normal
+
+  /** The camera key the journal uses, which is not the one the buckets use. */
+  relevanceKey(entryId, channel) {
+    return `${entryId}:${channel}`;
+  }
+
+  /** What is known about one camera: `collecting`, `too_few_events` or `active`. */
+  relevanceFor(entryId, channel) {
+    return this.relevance.get(this.relevanceKey(entryId, channel)) || null;
+  }
+
+  /**
+   * What the model saw inside one row, most unusual first.
+   *
+   * A row is a stretch of recording and a detection is a moment inside it, so this is a
+   * window lookup rather than a match: a five-minute segment can hold three detections, and
+   * the row should reflect the most remarkable of them while the popover lists them all.
+   */
+  eventRelevance(event) {
+    const known = this.relevanceFor(event.entry_id, event.channel);
+    if (!known) return [];
+    const start = Date.parse(event.start);
+    const end = Date.parse(event.end || event.start);
+    if (Number.isNaN(start)) return [];
+    // The same slack the panel's own detection lookup uses, and for the same reason: a
+    // recorder tags a segment for a detection that fired just *before* the segment began,
+    // because that is what made it start recording. Matching on the segment's own bounds
+    // therefore found nothing on exactly the rows that carry a detection, and the sheet
+    // opened empty on a camera with hundreds of them.
+    const LOOKBACK = 30_000;
+    return known.detections
+      .filter((item) => {
+        const at = Date.parse(item.at);
+        return at >= start - LOOKBACK && at <= (Number.isNaN(end) ? start : end);
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+
+  /** Whether anything inside this row was found unusual. */
+  isUnusual(event) {
+    return this.eventRelevance(event).some((item) => item.unusual);
+  }
+
+  /** Record that the introduction has been seen for this release. */
+  markIntroduced(version) {
+    this.seenVersion = version || null;
+    this.returning = true;
+    this._persist();
+  }
+
+  toggleUnusualOnly() {
+    this.unusualOnly = !this.unusualOnly;
+    this._persist();
+    this._emit();
+  }
+
+  /**
+   * Ask each selected camera what it makes of the visible range.
+   *
+   * Deliberately not part of the event subscription. That one is a live thing patched as a
+   * slow recorder answers; this changes when the model is rebuilt, which is once a night —
+   * so it is fetched when the selection or the range settles, and never again in between.
+   */
+  async refreshRelevance() {
+    const key = `${this.startDate}|${this.endDate}|${this.cameras
+      .map((camera) => this.relevanceKey(camera.entry_id, camera.channel))
+      .sort()
+      .join(",")}`;
+    if (key === this._relevanceKey) return;
+    this._relevanceKey = key;
+
+    if (this.cameras.length === 0) {
+      this.relevance = new Map();
+      return;
+    }
+
+    // The range is whole local days, and the journal is addressed in absolute time.
+    const start = new Date(`${this.startDate}T00:00:00`);
+    const end = new Date(`${this.endDate}T00:00:00`);
+    end.setDate(end.getDate() + 1);
+
+    const found = new Map();
+    let enabled = false;
+    await Promise.all(
+      this.cameras.map(async (camera) => {
+        try {
+          const answer = await this.api.relevance({
+            entryId: camera.entry_id,
+            channel: camera.channel,
+            start: start.toISOString(),
+            end: end.toISOString(),
+          });
+          if (!answer || !answer.enabled) return;
+          enabled = true;
+          found.set(this.relevanceKey(camera.entry_id, camera.channel), {
+            state: answer.state,
+            coverage: answer.coverage || { days: 0, events: 0 },
+            // What it is still short of, from the backend, so the panel never has to
+            // guess at a limit or word it vaguely.
+            needs: answer.needs || null,
+            detections: answer.events || [],
+          });
+        } catch (err) {
+          // A camera that cannot answer is not a reason to lose the ones that can, and this
+          // is an ornament on a list that works perfectly well without it.
+          console.debug("Relevance unavailable for a camera", err);
+        }
+      })
+    );
+
+    this.relevance = found;
+    this.relevanceEnabled = enabled;
+    if (!enabled) this.unusualOnly = false;
+    this._emit();
   }
 
   _subscribeCalendar(targets, generation, force) {
@@ -460,6 +609,11 @@ export class StaminaStore extends EventTarget {
       }
     }
     all.sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
+    // Last, so it narrows what the other filters left rather than competing with them:
+    // "unusual" is a judgement about a row, not another kind of thing to show.
+    if (this.unusualOnly && this.relevanceEnabled) {
+      return all.filter((event) => this.isUnusual(event));
+    }
     return all;
   }
 
@@ -619,6 +773,7 @@ export class StaminaStore extends EventTarget {
           rangePreset: this.rangePreset,
           filters: [...this.filters],
           setupDone: this.setupDone,
+          seenVersion: this.seenVersion,
         })
       );
     } catch {
@@ -634,6 +789,10 @@ export class StaminaStore extends EventTarget {
       saved = null;
     }
     if (!saved) return;
+    // Something was saved, so this browser has been here before — which is what tells a
+    // first install apart from an upgrade.
+    this.returning = true;
+    if (typeof saved.seenVersion === "string") this.seenVersion = saved.seenVersion;
 
     if (Array.isArray(saved.cameras)) this.cameras = saved.cameras;
     if (Array.isArray(saved.filters)) {
