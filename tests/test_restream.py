@@ -303,12 +303,12 @@ async def test_an_encoder_that_is_listed_but_cannot_run_is_not_chosen(
     """
     with (
         patch(
-            "custom_components.reolink_stamina.restream._available_encoders",
+            "custom_components.reolink_stamina.restream.encoders._available_encoders",
             return_value={"h264_qsv", "h264_vaapi", "libx264"},
         ),
-        patch("custom_components.reolink_stamina.restream.Path.exists", return_value=True),
+        patch("custom_components.reolink_stamina.restream.encoders.Path.exists", return_value=True),
         patch(
-            "custom_components.reolink_stamina.restream._async_encoder_works",
+            "custom_components.reolink_stamina.restream.encoders._async_encoder_works",
             return_value=False,
         ) as tested,
         patch("asyncio.create_subprocess_exec", side_effect=_listing_process),
@@ -327,12 +327,12 @@ async def test_a_working_hardware_encoder_is_chosen_and_the_rest_left_alone(
     """Testing stops at the first that works: the probe is startup cost, so it stays small."""
     with (
         patch(
-            "custom_components.reolink_stamina.restream._available_encoders",
+            "custom_components.reolink_stamina.restream.encoders._available_encoders",
             return_value={"h264_qsv", "h264_vaapi", "libx264"},
         ),
-        patch("custom_components.reolink_stamina.restream.Path.exists", return_value=True),
+        patch("custom_components.reolink_stamina.restream.encoders.Path.exists", return_value=True),
         patch(
-            "custom_components.reolink_stamina.restream._async_encoder_works",
+            "custom_components.reolink_stamina.restream.encoders._async_encoder_works",
             return_value=True,
         ) as tested,
         patch("asyncio.create_subprocess_exec", side_effect=_listing_process),
@@ -535,7 +535,7 @@ async def test_a_session_nobody_is_reading_deletes_its_own_files(
     (directory / "s00000.m4s").write_bytes(b"segment")
     process = _FakeProcess()
 
-    with patch("custom_components.reolink_stamina.restream._HLS_SWEEP_INTERVAL", 0.01):
+    with patch("custom_components.reolink_stamina.restream.sessions._HLS_SWEEP_INTERVAL", 0.01):
         session = _HlsStream(hass, process, "label", SOFTWARE_ENCODER, "token", directory)
         # Nobody has asked for a segment since well before the idle timeout.
         session.last_read = time.monotonic() - HLS_IDLE_TIMEOUT - 1
@@ -577,7 +577,8 @@ async def test_setup_reclaims_what_an_earlier_run_left_behind(
     os.utime(stale, (time.time() - HLS_MAX_SESSION_SECONDS - 60,) * 2)
 
     with patch(
-        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+        "custom_components.reolink_stamina.restream.sessions.tempfile.gettempdir",
+        return_value=str(tmp_path),
     ):
         removed = await async_sweep_sessions(hass)
 
@@ -599,7 +600,8 @@ async def test_the_sweep_leaves_a_session_that_is_still_playing(
     (live / "s00000.m4s").write_bytes(b"segment")
 
     with patch(
-        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+        "custom_components.reolink_stamina.restream.sessions.tempfile.gettempdir",
+        return_value=str(tmp_path),
     ):
         removed = await async_sweep_sessions(hass)
 
@@ -616,7 +618,8 @@ async def test_the_sweep_touches_nothing_it_did_not_write(
     os.utime(someone_else, (time.time() - HLS_MAX_SESSION_SECONDS - 60,) * 2)
 
     with patch(
-        "custom_components.reolink_stamina.restream.tempfile.gettempdir", return_value=str(tmp_path)
+        "custom_components.reolink_stamina.restream.sessions.tempfile.gettempdir",
+        return_value=str(tmp_path),
     ):
         removed = await async_sweep_sessions(hass)
 
@@ -838,11 +841,11 @@ async def test_the_restream_view_says_so_when_there_is_no_ffmpeg(
 
     with (
         patch(
-            "custom_components.reolink_stamina.restream.async_playback_source",
+            "custom_components.reolink_stamina.restream.views.async_playback_source",
             return_value=_URL,
         ),
         patch(
-            "custom_components.reolink_stamina.restream.async_ffmpeg_binary",
+            "custom_components.reolink_stamina.restream.runner.async_ffmpeg_binary",
             return_value=None,
         ),
     ):
