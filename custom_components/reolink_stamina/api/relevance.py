@@ -27,6 +27,7 @@ from ..detections import async_detections_in_window
 from ..relevance.journal import camera_key
 from ..relevance.score import SCORE_MIN_DAYS, SCORE_MIN_EVENTS
 from ..relevance.shapes import profile_payload
+from ..relevance.watcher import async_signal_map
 from ..reolink_registry import async_discover_devices
 from .shared import TARGET_SCHEMA, _access
 
@@ -83,6 +84,26 @@ async def ws_detections(
 
 
 @callback
+def _labels(hass: HomeAssistant, data: Any, camera: str) -> dict[str, str]:
+    """Return what Home Assistant calls every signal this camera could mention."""
+    watched = async_signal_map(
+        hass,
+        data.options.relevance_signals or {},
+        include_all_devices=data.options.beta_all_devices,
+    )
+    model = data.relevance.analysis.model
+    wanted = set(watched.get(camera, ()))
+    # And whatever the history holds, which is not the same set: a signal removed last week
+    # is still counted against every event that happened while it was there.
+    for (key, _kind), profile in model.profiles.items():
+        if key == camera:
+            wanted |= set(profile.signals)
+    return {
+        entity_id: (state.name if (state := hass.states.get(entity_id)) else entity_id)
+        for entity_id in wanted
+    }
+
+
 def _camera_names(hass: HomeAssistant, include_all_devices: bool) -> dict[str, str]:
     """Map each camera's journal key onto the name a person would recognise.
 
@@ -137,13 +158,16 @@ async def ws_relevance(
     camera = camera_key(msg["entry_id"], msg["channel"])
     names = _camera_names(hass, data.options.beta_all_devices)
 
-    # What Home Assistant calls each chosen entity, so a term reads "Someone home — off"
-    # rather than an entity id. The scorer is handed them; it knows nothing about entities.
-    labels = {
-        entity_id: (state.name if (state := hass.states.get(entity_id)) else entity_id)
-        for entities in (data.options.relevance_signals or {}).values()
-        for entity_id in entities
-    }
+    # What Home Assistant calls every entity that could appear in a breakdown, so a term reads
+    # "Someone home — off" rather than an entity id. The scorer is handed them; it knows
+    # nothing about entities.
+    #
+    # Built from the configured signals alone, this missed the two families that are never
+    # configured: the floodlight, siren and day/night state each camera contributes about
+    # itself, and anything a camera keeps counting after being unpicked. Both then rendered
+    # as bare entity ids in the sheet — which is what the whole `subject` field exists to
+    # avoid, and it looked like the panel not knowing what it was showing.
+    labels = _labels(hass, data, camera)
     scored = await analysis.async_window(
         since=start.timestamp(),
         until=end.timestamp(),

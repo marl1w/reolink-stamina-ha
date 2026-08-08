@@ -150,22 +150,15 @@ const STYLES = /* css */ `
  * shape already say, and the tooltip and the label for assistive technology carry it for
  * anyone the shape does not reach.
  */
-.odd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--rv-tone-alert) 42%, transparent);
-  background: color-mix(in srgb, var(--rv-tone-alert) 16%, transparent);
-  color: color-mix(in srgb, var(--rv-tone-alert) 88%, var(--rv-text));
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.odd:hover { background: color-mix(in srgb, var(--rv-tone-alert) 26%, transparent); }
-/* Blocked, not inline: an inline icon sits on the text baseline, which inside a pill
-   with no text puts it a pixel or two below the middle of its own background. */
-.odd .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; display: block; }
+/*
+ * The mark is one glyph, in the same box as the ⓘ it stands in place of.
+ *
+ * It used to be a red pill with a round glyph inside it, which is a dot within a dot — two
+ * circles of nearly the same size, and no amount of padding makes one look centred inside the
+ * other when both are drawn from different metrics. Sharing the ⓘ's geometry exactly means
+ * the two are interchangeable by construction: a row with a mark and a row without cannot
+ * shift by a pixel, because the box is identical and only the glyph and its colour differ.
+ */
 
 /*
  * The way in to the numbers, on every row and always visible.
@@ -180,6 +173,7 @@ const STYLES = /* css */ `
    place and one being two pixels smaller reads as a mistake rather than as a difference.
    A transparent border rather than none: a zero border makes the button 2px narrower than
    the pill beside it, which is the whole of the discrepancy. */
+.odd,
 .why {
   display: inline-flex;
   align-items: center;
@@ -194,7 +188,14 @@ const STYLES = /* css */ `
   flex: 0 0 auto;
 }
 .why:hover, .why:focus-visible { color: var(--rv-text); }
-.why .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; display: block; }
+/* After the shared rule, not before it: the two share a selector for their box and this is
+   the one line where they differ, so it has to be the one that wins. */
+.odd { color: var(--rv-tone-alert); }
+.odd:hover { color: color-mix(in srgb, var(--rv-tone-alert) 75%, var(--rv-text)); }
+/* 18px rather than the 14 the pill used to hold. Without the pill around it the glyph *is*
+   the control, so it has to carry the weight the border used to. */
+.odd .icon,
+.why .icon { --mdc-icon-size: 18px; width: 18px; height: 18px; display: block; }
 
 /* ------------------------------------------------------------------ loading */
 
@@ -531,7 +532,7 @@ export class EventList extends HTMLElement {
                 "aria-label": "Unusual for this camera",
                 onOpen: () => this._ask(event),
               },
-              icon("mdi:circle-slice-8")
+              icon("mdi:alert-circle")
             )
           : this._pressable(
               {
