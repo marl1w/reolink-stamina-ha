@@ -331,27 +331,6 @@ const STYLES = /* css */ `
   .axis { display: none; }
 }
 
-/*
- * Fixed columns rather than content-sized ones.
- *
- * This group is anchored to the right of the row, so any child that changes width moves
- * every other child with it: "6s" and "3m 12s · 4.1 MB" are forty pixels apart, and that is
- * how far the mark and the play icon slid from one row to the next. Giving the mark its own
- * width was not enough on its own, because the column beside it was still free to change.
- */
-.side {
-  display: grid;
-  grid-template-columns: 78px auto;
-  align-items: center;
-  gap: 14px;
-  flex: 0 0 auto;
-}
-.facts { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
-.facts__main { font-size: 0.86rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.checking { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--rv-text-dim); }
-.checking .spinner { width: 10px; height: 10px; border-width: 1.5px; }
-.go { color: var(--rv-text-dim); }
-
 `;
 
 export class RelevanceSheet extends HTMLElement {

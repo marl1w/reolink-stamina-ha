@@ -113,6 +113,9 @@ const STYLES = /* css */ `
  * the tone that says what was detected, so only the glyph changes.
  */
 .chip[data-unusual="true"] .icon { color: var(--rv-tone-alert); }
+/* The count beside a chip's label, and the only part of it that survives a phone. Tabular so
+   a column of rows does not shuffle sideways between "(2)" and "(11)". */
+.chip__count { font-variant-numeric: tabular-nums; opacity: 0.75; }
 
 /*
  * On a phone the chips lose their words and keep their icons.
@@ -200,6 +203,27 @@ const STYLES = /* css */ `
    exactly what this takes, so the row's metrics do not move. */
 .odd .icon,
 .why .icon { --mdc-icon-size: 18px; width: 18px; height: 18px; display: block; }
+
+/*
+ * Fixed columns rather than content-sized ones.
+ *
+ * This group is anchored to the right of the row, so any child that changes width moves
+ * every other child with it: "6s" and "3m 12s · 4.1 MB" are forty pixels apart, and that is
+ * how far the mark and the play icon slid from one row to the next. Giving the mark its own
+ * width was not enough on its own, because the column beside it was still free to change.
+ */
+.side {
+  display: grid;
+  grid-template-columns: 78px auto;
+  align-items: center;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+.facts { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; }
+.facts__main { font-size: 0.86rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.checking { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--rv-text-dim); }
+.checking .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+.go { color: var(--rv-text-dim); }
 
 /* ------------------------------------------------------------------ loading */
 
