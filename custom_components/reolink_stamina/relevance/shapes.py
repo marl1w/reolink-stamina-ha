@@ -16,6 +16,15 @@ from typing import Any
 
 from .rates import Categorical, Profile
 
+# States that are the absence of a reading rather than a reading.
+#
+# `unknown` is what gets written for an entity that has never reported, and for every event
+# older than a signal that was added later. It is genuinely a category — a signal absent for
+# half the history is a fact about that half — but it is not one anybody wants to look at, and
+# a chart whose largest bar is "we do not know" is a chart about the recorder.
+UNINFORMATIVE = frozenset({"unknown", "unavailable", "none", ""})
+
+
 # Beyond this a duration reads better in minutes. The buckets are powers of two, so this is
 # the first one that is more than a minute and a half.
 _MINUTE = 90
@@ -85,8 +94,16 @@ def clock_shape(rate: Any) -> list[dict[str, float]]:
     ]
 
 
-def categorical_shape(table: Any, *, spell=state_phrase) -> list[dict[str, Any]]:
-    """Return a categorical as its values, commonest first, each spelled out."""
+def categorical_shape(
+    table: Any, *, spell=state_phrase, drop_unknown: bool = False
+) -> list[dict[str, Any]]:
+    """Return a categorical as its values, commonest first, each spelled out.
+
+    `drop_unknown` leaves the shares alone rather than renormalising: what is drawn is still
+    each value's share of everything counted, so a signal that was missing for a third of the
+    history shows bars that visibly do not fill the space. That is truer than rescaling them
+    to hide it.
+    """
     return [
         {
             "value": value,
@@ -95,7 +112,13 @@ def categorical_shape(table: Any, *, spell=state_phrase) -> list[dict[str, Any]]
             "share": round(table.weights[value] / table.total, 4) if table.total else 0.0,
         }
         for value in sorted(table.weights, key=lambda item: -table.weights[item])
+        if not (drop_unknown and value.lower() in UNINFORMATIVE)
     ]
+
+
+def informative(table: Any) -> bool:
+    """Whether a distribution holds any reading at all, as opposed to only absences."""
+    return any(value.lower() not in UNINFORMATIVE for value in table.weights)
 
 
 def _merge(profiles: list[Any]) -> Profile:
@@ -195,9 +218,13 @@ def profile_payload(
                 {
                     "entity_id": entity_id,
                     "label": label(entity_id),
-                    "values": categorical_shape(table),
+                    "values": categorical_shape(table, drop_unknown=True),
                 }
                 for entity_id, table in sorted(profile.signals.items())
+                # A signal that has only ever read `unknown` — a siren that never fired, an
+                # entity Home Assistant has disabled — says nothing about anything and would
+                # draw an empty section.
+                if informative(table)
             ],
         }
         if len(cameras) > 1:

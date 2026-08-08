@@ -180,7 +180,10 @@ const STYLES = /* css */ `
   justify-content: center;
   border: 1px solid transparent;
   background: none;
-  padding: 4px;
+  /* The glyph grew and the padding shrank to match, so the box is the 24px it always was.
+     Growing the box instead made the chip row taller, which pushed everything in the row's
+     right-hand group out of line with it — the play button most visibly. */
+  padding: 2px;
   border-radius: 50%;
   color: color-mix(in srgb, var(--rv-text-dim) 75%, transparent);
   cursor: pointer;
@@ -192,8 +195,9 @@ const STYLES = /* css */ `
    the one line where they differ, so it has to be the one that wins. */
 .odd { color: var(--rv-tone-alert); }
 .odd:hover { color: color-mix(in srgb, var(--rv-tone-alert) 75%, var(--rv-text)); }
-/* 18px rather than the 14 the pill used to hold. Without the pill around it the glyph *is*
-   the control, so it has to carry the weight the border used to. */
+/* 18px rather than the 14 the pill used to hold: without a pill around it the glyph *is* the
+   control, so it has to carry the weight the border used to. The padding above gives back
+   exactly what this takes, so the row's metrics do not move. */
 .odd .icon,
 .why .icon { --mdc-icon-size: 18px; width: 18px; height: 18px; display: block; }
 

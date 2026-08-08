@@ -393,6 +393,41 @@ def test_a_busy_camera_can_tell_one_day_from_another():
     assert unheard_of > ordinary
 
 
+def test_a_signal_that_never_reports_is_not_counted_at_all():
+    """A siren that has never fired is not evidence, and it was being treated as strong.
+
+    One category means a probability of one, and a surprisal measured against two categories
+    is then a *constant* negative — subtracted from every score on that camera for ever. It
+    cost nothing to notice and it moved the line for everything else.
+    """
+    silent = _with(_history(), "siren.never_fired", ["unknown"])
+    model = build(silent, now=_NOW)
+    calibrate(model, silent, floor=0.0)
+
+    result = score(silent[-1], model, previous=None)
+    assert not [term for term in result.terms if term.name == "signal"], (
+        "a signal with nothing to say should contribute no term"
+    )
+
+    # And the score is the same as it would be with the signal absent entirely.
+    plain = _history()
+    bare = build(plain, now=_NOW)
+    calibrate(bare, plain, floor=0.0)
+    assert math.isclose(result.total, score(plain[-1], bare, previous=None).total, abs_tol=1e-9)
+
+
+def test_a_signal_that_is_usually_absent_still_counts_when_it_reports():
+    """The guard is about signals with *nothing* to say, not about ones that are often quiet."""
+    mostly = _with(_history(), "binary_sensor.rare", ["unknown"] * 9 + ["on"])
+    model = build(mostly, now=_NOW)
+    calibrate(model, mostly, floor=0.0)
+
+    result = score(mostly[-1], model, previous=None)
+    assert [term for term in result.terms if term.name == "signal"], (
+        "one real reading is enough to make a signal worth counting"
+    )
+
+
 # --------------------------------------------------------------- numeric signals
 
 
@@ -409,6 +444,10 @@ def _with(events, entity: str, values):
             solar_offset=item.solar_offset,
             solar_phase=item.solar_phase,
             is_weekend=item.is_weekend,
+            # Carried, not defaulted. Leaving it out gave every rebuilt event the same phantom
+            # day, which the day term then read as a household of remarkable regularity — and
+            # made two otherwise identical models score differently.
+            day_of_week=item.day_of_week,
             context=((entity, str(values[index % len(values)])),),
         )
         for index, item in enumerate(events)

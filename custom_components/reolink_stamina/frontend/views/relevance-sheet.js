@@ -673,7 +673,13 @@ export class RelevanceSheet extends HTMLElement {
       )
     );
 
-    for (const term of item.terms) {
+    // Rarest first, commonest last. The order used to be the order the scorer happens to
+    // build them in — clock, sun, duration, and so on — which buries the one signal that made
+    // this event stand out somewhere in the middle of five that did not. Sorted, the answer
+    // to "why is this marked" is the first line, and the bars descend from it.
+    const ordered = [...item.terms].sort((left, right) => right.contribution - left.contribution);
+
+    for (const term of ordered) {
       const rarer = term.contribution > 0;
       const width = (Math.abs(term.contribution) / widest) * 48;
       evidence.append(

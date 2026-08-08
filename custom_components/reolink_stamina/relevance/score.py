@@ -41,6 +41,7 @@ from .rates import (
     quantile,
     signal_value,
 )
+from .shapes import informative
 
 # Below this a term is not worth mentioning in the sentence: it agrees with the model, and
 # saying so would bury the one thing that does not.
@@ -279,11 +280,17 @@ def _terms(
     # silently skipping those events would shift every count that mentions it.
     seen = dict(event.context)
     for entity_id in sorted(set(specific.signals) | set(seen)):
+        # A signal that has only ever read `unknown` is not a signal. A siren that has never
+        # fired, or an entity Home Assistant has disabled, has one category — so its
+        # probability is 1 and its surprisal is a *constant* negative, subtracted from every
+        # score on that camera for ever. It cost nothing to notice and it moved the line.
+        distribution = specific.signals.get(entity_id)
+        if distribution is not None and not informative(distribution):
+            continue
         # Through the same function the training pass used. A numeric signal is counted as the
         # band its reading fell in, and training recording "12 to 18" while scoring looked up
         # "14.2" would mean no numeric signal ever matched anything it had learned.
         value = signal_value(entity_id, seen.get(entity_id, "unknown"), model)
-        distribution = specific.signals.get(entity_id)
         categories = max(len(distribution.weights) if distribution else 0, 2)
         terms.append(
             Term(
