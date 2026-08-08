@@ -83,6 +83,33 @@ KIND_HUB: Final = "hub"
 KIND_CAMERA: Final = "camera"
 
 
+# Why a Reolink config entry was left out of the device list. Reported in diagnostics:
+# an entry that is simply absent from the panel, with nothing anywhere saying why, is
+# what made issue #4 unanswerable without screenshots.
+EXCLUDED_DISABLED: Final = "disabled_in_home_assistant"
+EXCLUDED_NOT_A_RECORDER: Final = "not_a_recorder_and_the_beta_is_off"
+EXCLUDED_ON_RECORDER: Final = "already_a_channel_on_a_recorder"
+EXCLUDED_UNREADABLE: Final = "kind_could_not_be_read"
+
+
+@dataclass(slots=True)
+class ExcludedEntry:
+    """A Reolink config entry discovery left out, and why.
+
+    Deliberately unnamed: this is what diagnostics reports, and the rule there is that no
+    camera is named. The entry id is what ties a line here to the Reolink integration's
+    own diagnostics.
+    """
+
+    entry_id: str
+    reason: str
+    kind: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialise for diagnostics."""
+        return {"entry_id": self.entry_id, "reason": self.reason, "kind": self.kind}
+
+
 @dataclass(slots=True)
 class DeviceInfo:
     """A recording Reolink device discovered through the Reolink integration."""
@@ -113,6 +140,14 @@ class DeviceInfo:
             "kind": self.kind,
             "cameras": [camera.as_dict() for camera in self.cameras],
         }
+
+
+@dataclass(slots=True)
+class Discovery:
+    """What discovery found: the devices to offer, and the entries it left out."""
+
+    devices: list[DeviceInfo] = field(default_factory=list)
+    excluded: list[ExcludedEntry] = field(default_factory=list)
 
 
 def _status_for_entry(entry: ConfigEntry) -> str:
@@ -197,9 +232,19 @@ def async_is_compatible(hass: HomeAssistant) -> bool:
     return False
 
 
+@dataclass(slots=True)
+class _ChannelDevice:
+    """What Home Assistant knows about the device behind one channel."""
+
+    name: str | None = None
+    disabled: bool = False
+
+
 @callback
-def _async_camera_channels(hass: HomeAssistant, entry_id: str, api: Any) -> dict[int, str]:
-    """Map channel -> user-facing camera name, from the Reolink camera entities.
+def _async_channel_devices(
+    hass: HomeAssistant, entry_id: str, api: Any
+) -> dict[int, _ChannelDevice]:
+    """Map channel -> the Home Assistant device for that channel, via Reolink's entities.
 
     Reolink addresses cameras two different ways on the same device, and both must be
     handled or cameras get the wrong name:
@@ -212,9 +257,14 @@ def _async_camera_channels(hass: HomeAssistant, entry_id: str, api: Any) -> dict
     `api.camera_name()`, which returns the *recorder's* name for channel 0 — so the
     camera list offers "Main - NVR" as though it were a camera.
 
+    The disabled flag matters as much as the name. Disabling a camera's device under a
+    recorder is a deliberate "I do not watch this camera through this recorder", and it is
+    honoured in both directions: the channel is not offered, and it no longer counts as a
+    reason to hide that same camera's own directly-connected entry.
+
     Best effort: any failure leaves the caller falling back to the device's own names.
     """
-    names: dict[int, str] = {}
+    found: dict[int, _ChannelDevice] = {}
     # Not present in every reolink_aio version; without it, UID-addressed cameras
     # simply keep the name the device reports.
     channel_for_uid = getattr(api, "channel_for_uid", None)
@@ -241,17 +291,18 @@ def _async_camera_channels(hass: HomeAssistant, entry_id: str, api: Any) -> dict
                     channel = channel_for_uid(token)
                 except Exception:
                     channel = None
-            if channel is None or channel < 0 or channel in names:
+            if channel is None or channel < 0 or channel in found:
                 continue
             device = dev_reg.async_get(entity.device_id)
             if device is None:
                 continue
-            name = device.name_by_user or device.name
-            if name:
-                names[channel] = name
+            found[channel] = _ChannelDevice(
+                name=device.name_by_user or device.name,
+                disabled=device.disabled_by is not None,
+            )
     except Exception:
-        _LOGGER.debug("Could not resolve camera names from the registries", exc_info=True)
-    return names
+        _LOGGER.debug("Could not resolve camera devices from the registries", exc_info=True)
+    return found
 
 
 @callback
@@ -316,6 +367,11 @@ def _async_channel_uids(hass: HomeAssistant) -> set[str]:
     integration, and its recordings would then appear under both. The UID is Reolink's own
     identity for a camera and is what the Reolink integration keys its entities on, so it
     is the one thing that matches across the two.
+
+    A channel whose device is disabled in Home Assistant is left out. Someone running a
+    doorbell on both its recorder and its own direct connection usually disables the copy
+    they do not use — and counting that copy would hide the one they kept, which is the
+    wrong way round and is what issue #4 would have hit next.
     """
     uids: set[str] = set()
     for entry in hass.config_entries.async_entries(REOLINK_DOMAIN):
@@ -334,7 +390,11 @@ def _async_channel_uids(hass: HomeAssistant) -> set[str]:
         camera_uid = getattr(api, "camera_uid", None)
         if camera_uid is None:
             continue
+        known = _async_channel_devices(hass, entry.entry_id, api)
         for channel in channels:
+            device = known.get(channel)
+            if device is not None and device.disabled:
+                continue
             try:
                 uid = camera_uid(channel)
             except Exception:
@@ -364,10 +424,19 @@ def _async_is_attached(api: Any, attached_uids: set[str]) -> bool:
 def async_discover_devices(
     hass: HomeAssistant, *, include_all_devices: bool = False
 ) -> list[DeviceInfo]:
-    """Return every recording Reolink device known to the Reolink integration.
+    """Return every recording Reolink device known to the Reolink integration."""
+    return async_discover(hass, include_all_devices=include_all_devices).devices
 
-    Entries that are not usable are still returned, with a status explaining why, so
-    the panel can tell the user *why* a device is missing instead of hiding it.
+
+@callback
+def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) -> Discovery:
+    """Return the Reolink devices to offer, and the entries left out with the reason.
+
+    Entries that are not usable are still returned as devices, with a status explaining
+    why, so the panel can tell the user *why* a device is missing instead of hiding it.
+    Entries left out entirely are returned separately, for diagnostics: they are invisible
+    in the panel by design, and issue #4 showed that makes them impossible to reason about
+    from a bug report.
 
     `include_all_devices` is the beta: hubs and standalone cameras record to their own
     storage and answer the same search API, so they are worth offering to someone willing
@@ -375,9 +444,20 @@ def async_discover_devices(
     even then — it would be the same footage listed twice, under two names.
     """
     results: list[DeviceInfo] = []
+    excluded: list[ExcludedEntry] = []
     attached_uids = _async_channel_uids(hass) if include_all_devices else set()
 
     for entry in hass.config_entries.async_entries(REOLINK_DOMAIN):
+        # Disabled in Home Assistant on purpose, so not a device that has gone missing.
+        # Carding these as unavailable is what made issue #4 unreadable: eight disabled
+        # camera entries showed as tiles because the status check runs before the
+        # recorders-only filter, while the one working camera was filtered out — which
+        # reads as "standalone cameras are supported and mine is broken" when in fact the
+        # beta was simply off.
+        if entry.disabled_by is not None:
+            excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_DISABLED))
+            continue
+
         status = _status_for_entry(entry)
         fallback_name = entry.title or "Reolink device"
 
@@ -412,13 +492,22 @@ def async_discover_devices(
         try:
             kind = _async_device_kind(api)
         except Exception:
+            _LOGGER.debug("Could not tell what Reolink entry %s is", entry.entry_id, exc_info=True)
+            excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_UNREADABLE))
             continue
         if kind != KIND_NVR and not include_all_devices:
+            _LOGGER.debug(
+                "Skipping %s: it is a %s, and the every-device beta is off",
+                entry.entry_id,
+                kind,
+            )
+            excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_NOT_A_RECORDER, kind))
             continue
 
         # A camera that is already a channel on a recorder is that recorder's to list.
         if kind == KIND_CAMERA and _async_is_attached(api, attached_uids):
             _LOGGER.debug("Skipping %s: this camera is already a channel on an NVR", entry.entry_id)
+            excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_ON_RECORDER, kind))
             continue
 
         try:
@@ -426,7 +515,7 @@ def async_discover_devices(
         except Exception:
             has_storage = False
 
-        camera_channels = _async_camera_channels(hass, entry.entry_id, api)
+        channel_devices = _async_channel_devices(hass, entry.entry_id, api)
 
         cameras: list[CameraInfo] = []
         try:
@@ -439,11 +528,16 @@ def async_discover_devices(
         dual_lens = bool(getattr(api, "is_dual_lens", False))
 
         for channel in channels:
+            known = channel_devices.get(channel)
+            # Disabled in Home Assistant: the user has said they do not watch this camera
+            # here, so offering it would be arguing with them.
+            if known is not None and known.disabled:
+                continue
             try:
                 reported_name = api.camera_name(channel)
             except Exception:
                 reported_name = f"Channel {channel}"
-            name = camera_channels.get(channel) or reported_name or f"Channel {channel}"
+            name = (known.name if known else None) or reported_name or f"Channel {channel}"
             if dual_lens:
                 name = f"{name} (lens {channel})"
             cameras.append(_async_build_camera(host, channel, name))
@@ -469,4 +563,4 @@ def async_discover_devices(
         )
 
     results.sort(key=lambda device: device.name.casefold())
-    return results
+    return Discovery(devices=results, excluded=excluded)

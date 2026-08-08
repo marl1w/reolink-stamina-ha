@@ -3,7 +3,8 @@
  *
  * Everything here comes from the official Reolink integration. Devices that exist but are
  * not usable are shown with the reason rather than hidden, so a missing recorder is
- * never a silent mystery.
+ * never a silent mystery. Entries the user disabled in Home Assistant are the exception:
+ * those are not sent here at all, because a deliberate choice is not a fault to report.
  */
 
 import { adoptStyles, el, icon, reconcile } from "../dom.js";
@@ -27,7 +28,12 @@ const KIND_TEXT = {
 const STATUS_TEXT = {
   not_connected: { label: "Not connected", hint: "Home Assistant cannot reach this device right now." },
   setup_error: { label: "Setup failed", hint: "Check the Reolink integration for this device." },
-  not_loaded: { label: "Disabled", hint: "This Reolink entry is disabled in Home Assistant." },
+  // Entries the user disabled are not sent here at all -- disabling one is a decision,
+  // not a fault. This is the entry that is set up and enabled but is not running.
+  not_loaded: {
+    label: "Not loaded",
+    hint: "This Reolink entry is not running. Check it in the Reolink integration.",
+  },
   incompatible: {
     label: "Unsupported",
     hint: "This panel could not read the Reolink integration for this device.",

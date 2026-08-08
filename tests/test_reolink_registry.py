@@ -11,14 +11,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import ClassVar
 
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.reolink_stamina.reolink_registry import (
+    EXCLUDED_DISABLED,
+    EXCLUDED_NOT_A_RECORDER,
     DeviceUnavailableError,
     ReolinkIncompatibleError,
+    async_discover,
     async_discover_devices,
     async_get_host,
     async_is_compatible,
@@ -27,13 +31,48 @@ from custom_components.reolink_stamina.reolink_registry import (
 from .conftest import FakeApi, FakeHost
 
 
-def _reolink_entry(hass: HomeAssistant, runtime_data, *, loaded: bool = True):
+def _reolink_entry(
+    hass: HomeAssistant, runtime_data, *, loaded: bool = True, disabled: bool = False
+):
     """Add a fake Reolink config entry in the requested state."""
-    entry = MockConfigEntry(domain="reolink", title="Backyard NVR")
+    entry = MockConfigEntry(
+        domain="reolink",
+        title="Backyard NVR",
+        disabled_by=ConfigEntryDisabler.USER if disabled else None,
+    )
     entry.add_to_hass(hass)
     entry.runtime_data = runtime_data
-    entry.mock_state(hass, ConfigEntryState.LOADED if loaded else ConfigEntryState.SETUP_RETRY)
+    if disabled:
+        entry.mock_state(hass, ConfigEntryState.NOT_LOADED)
+    else:
+        entry.mock_state(hass, ConfigEntryState.LOADED if loaded else ConfigEntryState.SETUP_RETRY)
     return entry
+
+
+def _reolink_channel_device(
+    hass: HomeAssistant, entry, channel: int, *, name: str, disabled: bool = False
+):
+    """Register the device and camera entity the Reolink integration creates for a channel.
+
+    The unique_id shape is Reolink's own (`<host uid>_ch<n>_<stream>`), because that is
+    what discovery parses to tie an entity back to a channel.
+    """
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("reolink", f"NVRUID_ch{channel}")},
+        name=name,
+    )
+    er.async_get(hass).async_get_or_create(
+        "camera",
+        "reolink",
+        f"NVRUID_ch{channel}_sub",
+        config_entry=entry,
+        device_id=device.id,
+    )
+    if disabled:
+        device = dev_reg.async_update_device(device.id, disabled_by=dr.DeviceEntryDisabler.USER)
+    return device
 
 
 # ----------------------------------------------------------------- the adapter
@@ -314,6 +353,96 @@ async def test_a_camera_on_no_recorder_is_still_listed(hass: HomeAssistant) -> N
     devices = async_discover_devices(hass, include_all_devices=True)
 
     assert sorted(device.kind for device in devices) == ["camera", "nvr"]
+
+
+# --------------------------------------------- what Home Assistant has been told to hide
+
+
+async def test_an_entry_disabled_in_home_assistant_is_left_out(hass: HomeAssistant) -> None:
+    """Disabling a Reolink entry is a decision, not a fault to report back.
+
+    Issue #4: eight disabled camera entries were carded as unavailable -- the status check
+    runs before the recorders-only filter, so they appeared while the one working camera
+    was filtered out. That reads as "standalone cameras work and mine is broken".
+    """
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(FakeApi(is_nvr=False))), disabled=True)
+
+    found = async_discover(hass)
+
+    assert found.devices == []
+    assert [item.reason for item in found.excluded] == [EXCLUDED_DISABLED]
+
+
+async def test_exclusions_say_why(hass: HomeAssistant) -> None:
+    """An entry that is nowhere in the panel has to be somewhere in diagnostics."""
+    entry = _reolink_entry(hass, SimpleNamespace(host=FakeHost(FakeApi(is_nvr=False))))
+
+    excluded = async_discover(hass).excluded
+
+    assert [(item.entry_id, item.reason, item.kind) for item in excluded] == [
+        (entry.entry_id, EXCLUDED_NOT_A_RECORDER, "camera")
+    ]
+    assert async_discover(hass, include_all_devices=True).excluded == []
+
+
+async def test_a_channel_disabled_in_home_assistant_is_not_offered(hass: HomeAssistant) -> None:
+    """A camera the user disabled on the recorder must not come back through this panel."""
+    entry = _reolink_entry(hass, SimpleNamespace(host=FakeHost(FakeApi(channels=[0, 1]))))
+    _reolink_channel_device(hass, entry, 0, name="Driveway")
+    _reolink_channel_device(hass, entry, 1, name="Doorbell NVR", disabled=True)
+
+    cameras = async_discover_devices(hass)[0].cameras
+
+    assert [(camera.channel, camera.name) for camera in cameras] == [(0, "Driveway")]
+
+
+async def test_a_disabled_channel_does_not_hide_the_direct_camera(hass: HomeAssistant) -> None:
+    """The dedup must not keep the copy the user disabled and drop the one they kept.
+
+    Issue #4's setup: one doorbell, reachable through the NVR and on its own direct
+    connection, with the NVR's copy disabled in Home Assistant.
+    """
+
+    class Recorder(FakeApi):
+        def camera_uid(self, channel):
+            return f"CAMUID{channel}"
+
+    class Doorbell(FakeApi):
+        uid = "CAMUID1"
+
+        def camera_uid(self, channel):
+            return self.uid
+
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR", disabled=True)
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(Doorbell(is_nvr=False, channels=[0]))))
+
+    found = async_discover(hass, include_all_devices=True)
+
+    assert sorted(device.kind for device in found.devices) == ["camera", "nvr"]
+    assert found.excluded == []
+
+
+async def test_an_enabled_channel_still_hides_the_direct_camera(hass: HomeAssistant) -> None:
+    """The dedup itself is unchanged: a channel in use is still the one that wins."""
+
+    class Recorder(FakeApi):
+        def camera_uid(self, channel):
+            return f"CAMUID{channel}"
+
+    class Doorbell(FakeApi):
+        uid = "CAMUID1"
+
+        def camera_uid(self, channel):
+            return self.uid
+
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR")
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(Doorbell(is_nvr=False, channels=[0]))))
+
+    assert [device.kind for device in async_discover_devices(hass, include_all_devices=True)] == [
+        "nvr"
+    ]
 
 
 async def test_deduplication_survives_a_library_without_camera_uid(hass: HomeAssistant) -> None:
