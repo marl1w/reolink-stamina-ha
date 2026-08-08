@@ -19,6 +19,7 @@ import voluptuous as vol
 
 from .const import (
     CONF_BETA_ALL_DEVICES,
+    CONF_BETA_RELEVANCE,
     CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
@@ -38,6 +39,7 @@ from .const import (
     CONF_SYNC_TAIL,
     CONF_VERIFY_TLS,
     DEFAULT_BETA_ALL_DEVICES,
+    DEFAULT_BETA_RELEVANCE,
     DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
@@ -231,6 +233,14 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                 vol.Required(
                     CONF_BETA_ALL_DEVICES,
                     default=options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES),
+                ): selector.BooleanSelector(),
+                # Last of the three, because it is the only one that starts keeping a record
+                # of anything. Switching it on is the consent for that; switching it off
+                # stops the recording but leaves what was collected, which removing the
+                # integration deletes.
+                vol.Required(
+                    CONF_BETA_RELEVANCE,
+                    default=options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE),
                 ): selector.BooleanSelector(),
             }
         )

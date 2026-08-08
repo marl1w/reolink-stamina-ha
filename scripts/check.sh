@@ -71,6 +71,40 @@ else
   printf '  skipped (node not installed)\n'
 fi
 
+step "Stylesheets are closed"
+# A backtick inside a /* css */ template literal ends the string, and what follows parses as
+# code. Sometimes that is a syntax error the check above catches; sometimes it is valid
+# JavaScript and the panel silently loses its styles. Caught here twice in one afternoon.
+#
+# The stylesheets in this project all end with a line of exactly `; so that is the end of the
+# block, and any backtick before it is one that should not be there.
+if "$PY" - <<'PYEOF'; then ok "stylesheets"; else bad "stylesheets"; fi
+import pathlib, sys
+
+OPEN = "/* css */ `"
+CLOSE = "\n`;"
+
+bad = []
+for path in sorted(pathlib.Path("custom_components/reolink_stamina/frontend").rglob("*.js")):
+    if "vendor" in str(path):
+        continue
+    text = path.read_text()
+    at = text.find(OPEN)
+    while at != -1:
+        body_at = at + len(OPEN)
+        end = text.find(CLOSE, body_at)
+        if end == -1:
+            bad.append(f"{path.name}: a /* css */ block is never closed")
+        elif "`" in text[body_at:end]:
+            line = text.count("\n", 0, body_at + text[body_at:end].index("`")) + 1
+            bad.append(f"{path.name}:{line}: backtick inside a CSS template literal")
+        at = text.find(OPEN, end if end != -1 else body_at)
+
+for problem in bad:
+    print(f"  {problem}")
+sys.exit(1 if bad else 0)
+PYEOF
+
 step "Playback ladder"
 # Pure decisions — which route to try next, and what to remember — so node alone runs them.
 if command -v node >/dev/null 2>&1; then
@@ -93,6 +127,15 @@ step "Split layout"
 # the divider between them may be dragged. Numbers, so no window has to be resized to see it.
 if command -v node >/dev/null 2>&1; then
   if node tests/frontend/test_split.mjs; then ok "split"; else bad "split"; fi
+else
+  printf '  skipped (node not installed)\n'
+fi
+
+step "What's new"
+# When the panel introduces itself: a dialog that opens when it should not is the most
+# annoying thing a panel can do, and it is four lines with three states easy to confuse.
+if command -v node >/dev/null 2>&1; then
+  if node tests/frontend/test_whats_new.mjs; then ok "what's new"; else bad "what's new"; fi
 else
   printf '  skipped (node not installed)\n'
 fi

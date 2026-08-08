@@ -25,7 +25,8 @@
           "clip_lead": "Clip: seconds before the first detection",
           "clip_tail": "Clip: seconds after the last detection",
           "beta_restream": "Adaptive playback (beta)",
-          "beta_all_devices": "Show hubs and standalone cameras (beta)"
+          "beta_all_devices": "Show hubs and standalone cameras (beta)",
+          "beta_relevance": "Learn what is normal (beta)"
         },
         "data_description": {
           "browse_stream": "Low resolution searches faster. Playback can still use high resolution.",
@@ -37,7 +38,8 @@
           "clip_lead": "On 24/7 footage the player trims a five-minute segment down to what actually happened: the clip starts this many seconds before the first detection in the segment. Cameras that record on events are left alone — the recorder already trimmed those, and its pre-record buffer must not be cut into.",
           "clip_tail": "Where the trimmed clip ends: this many seconds after the last detection in the segment clears. Several detections in one segment stay in a single clip, spanning from the first to the last. The full segment is always one click away in the player.",
           "beta_restream": "For browsers that cannot play what the recorder sends. Playback normally goes straight from the recorder to the browser with nothing in between, and that stays the first thing tried. When it fails — H.265 on Chrome or Firefox, or any iPhone, which cannot demux the recorder's stream at all — Home Assistant repackages the recording, and re-encodes it only if repackaging was not enough. Needs ffmpeg, uses the machine's GPU where there is one, caps re-encoded video at 1080p, and converts one stream at a time. Downloads are unaffected: they are always the original footage.",
-          "beta_all_devices": "Lists Home Hubs and standalone cameras with an SD card alongside your recorders. They answer the same search API, but nothing here has been tested against them — hence beta. A camera that is already a channel on one of your NVRs is left out, so nothing is listed twice. Cloud sync remains NVR-only."
+          "beta_all_devices": "Lists Home Hubs and standalone cameras with an SD card alongside your recorders. They answer the same search API, but nothing here has been tested against them — hence beta. A camera that is already a channel on one of your NVRs is left out, so nothing is listed twice. Cloud sync remains NVR-only.",
+          "beta_relevance": "Keeps a record of when each camera detects what, so that unusual events can eventually be marked as such — a person at three in the morning stands out, the cat that crosses every night does not. Nothing is recorded until you turn this on, and it needs a fortnight or so before it can say anything useful. Whatever Home Assistant's own recorder still holds is imported once at the start. The record stays on this machine, is a few megabytes a year, and is deleted if you remove the integration. Turning this off stops the recording but keeps what has been collected."
         }
       }
     }

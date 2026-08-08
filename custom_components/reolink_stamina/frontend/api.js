@@ -56,6 +56,23 @@ export class StaminaApi {
    * It is what lets playback open just before the event rather than at the start of a
    * long segment.
    */
+  /**
+   * What the "learn what is normal" beta makes of one camera over a window.
+   *
+   * Answers while a camera is still collecting, and that is deliberate: the scores mean
+   * nothing yet, but what has been *collected* about each detection does, and showing it is
+   * what makes the beta worth installing before it can say anything.
+   */
+  async relevance({ entryId, channel, start, end }) {
+    return this.hass.callWS({
+      type: `${DOMAIN}/relevance`,
+      entry_id: entryId,
+      channel,
+      start,
+      end,
+    });
+  }
+
   async detections({ entryId, channel, start, end }) {
     return this.hass.callWS({
       type: `${DOMAIN}/detections`,

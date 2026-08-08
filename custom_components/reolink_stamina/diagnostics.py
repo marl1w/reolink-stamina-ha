@@ -37,9 +37,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, JOURNAL_META_BACKFILLED
 from .ffmpeg import async_ffmpeg_binary
 from .playback_route import async_all_routes
+from .relevance.backfill import async_retention_days
 from .reolink_registry import async_discover, async_discover_devices, async_get_host
 from .restream import SESSION_PREFIX, async_beta_enabled, async_get_manager
 
@@ -184,4 +185,55 @@ async def async_get_config_entry_diagnostics(
         # the arithmetic was at fault.
         "playback_samples": data.cache.sample_files() if data is not None else [],
         "temporary_space": await hass.async_add_executor_job(_temporary_space),
+        "relevance": await _relevance(hass, data),
+    }
+
+
+async def _relevance(hass: HomeAssistant, data: Any) -> dict[str, Any]:
+    """Return what the journal has collected, per camera.
+
+    Chosen to answer the questions the next milestone has to make decisions from, rather than
+    to describe the feature. Scoring cannot begin until a camera has enough history, and every
+    constant in it — how wide the window that folds a flapping sensor into one detection, how
+    much smoothing a rate curve wants, how many events are enough — has to be picked from real
+    numbers rather than guessed. These are those numbers.
+
+    Cameras appear as `entry_id:channel`. No camera is named here, the same rule the rest of
+    this file keeps, and the entry id is what ties a line to the Reolink integration's own
+    diagnostics.
+    """
+    if data is None or data.relevance is None:
+        return {"enabled": False}
+
+    coverage = await data.relevance.journal.async_coverage()
+    analysis = data.relevance.analysis
+    model = analysis.model
+
+    return {
+        "enabled": True,
+        # Zero while the recorders are still loading, which is normal at startup and a
+        # problem if it stays that way.
+        "sensors_watched": data.relevance.watcher.watching,
+        # Set once the one-off import of Home Assistant's own history has run.
+        "history_imported": await data.relevance.journal.async_get_meta(JOURNAL_META_BACKFILLED),
+        "retention_days_available": async_retention_days(hass),
+        **coverage,
+        "model": {
+            "built_at": model.built_at or None,
+            # Transitions folded into events. The ratio is the number that says whether the
+            # merge window is right: far more transitions than events means the sensors flap
+            # more than assumed, and the window wants widening.
+            "events": len(analysis.events),
+            "cameras": [
+                {
+                    "camera": camera,
+                    "state": analysis.state(camera),
+                    **analysis.coverage(camera),
+                    # Present only once a camera has enough behind it to be compared with
+                    # itself, which is exactly what "still collecting" means.
+                    "threshold": model.thresholds.get(camera),
+                }
+                for camera in sorted(model.per_camera)
+            ],
+        },
     }

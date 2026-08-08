@@ -34,6 +34,7 @@ from .const import (
 from .detections import async_detections_in_window
 from .flv_proxy import async_flv_path
 from .fragments import FragmentsUnsupportedError, async_fragment_path
+from .relevance.journal import camera_key
 from .reolink_registry import (
     DeviceUnavailableError,
     ReolinkIncompatibleError,
@@ -154,6 +155,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_calendar)
     websocket_api.async_register_command(hass, ws_stream_url)
     websocket_api.async_register_command(hass, ws_detections)
+    websocket_api.async_register_command(hass, ws_relevance)
     websocket_api.async_register_command(hass, ws_clip_url)
     websocket_api.async_register_command(hass, ws_playback_failure)
 
@@ -777,6 +779,100 @@ async def ws_detections(
             "lead": data.options.event_lead,
             "clip_lead": data.options.clip_lead,
             "clip_tail": data.options.clip_tail,
+        },
+    )
+
+
+# -------------------------------------------------------------------- relevance
+
+
+@callback
+def _camera_names(hass: HomeAssistant, include_all_devices: bool) -> dict[str, str]:
+    """Map each camera's journal key onto the name a person would recognise.
+
+    The scorer deliberately knows nothing about names — it is handed them so its sentences
+    read as English rather than as identifiers, and works without them if the registry has
+    nothing to say.
+    """
+    return {
+        camera_key(device.entry_id, camera.channel): camera.name
+        for device in async_discover_devices(hass, include_all_devices=include_all_devices)
+        for camera in device.cameras
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/relevance",
+        vol.Required("entry_id"): cv.string,
+        vol.Required("channel"): vol.Coerce(int),
+        vol.Required("start"): cv.string,
+        vol.Required("end"): cv.string,
+    }
+)
+@callback
+def ws_relevance(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return what has been learned about one camera, and what it makes of each event.
+
+    Deliberately answers while a camera is still collecting. The scores mean nothing yet and
+    nothing is marked — but *what was collected* is worth showing from the first day, and it
+    is the only way somebody who does not read Python can tell whether this is working.
+    """
+    data = _access(hass, connection, msg)
+    if data is None:
+        return
+
+    if data.relevance is None:
+        connection.send_result(msg["id"], {"enabled": False})
+        return
+
+    try:
+        start = dt.datetime.fromisoformat(msg["start"])
+        end = dt.datetime.fromisoformat(msg["end"])
+    except ValueError as err:
+        connection.send_error(msg["id"], websocket_api.const.ERR_INVALID_FORMAT, str(err))
+        return
+
+    analysis = data.relevance.analysis
+    camera = camera_key(msg["entry_id"], msg["channel"])
+    names = _camera_names(hass, data.options.beta_all_devices)
+
+    scored = analysis.window(
+        since=start.timestamp(), until=end.timestamp(), camera=camera, names=names
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "enabled": True,
+            # "collecting", "too_few_events" or "active" — the middle one is the camera that
+            # has months of days behind it and still too little to compare against.
+            "state": analysis.state(camera),
+            "coverage": analysis.coverage(camera),
+            "events": [
+                {
+                    "at": dt_util.utc_from_timestamp(event.started_at).isoformat(),
+                    "kind": event.kind,
+                    "duration": event.duration,
+                    "score": round(result.total, 2),
+                    "threshold": (None if result.threshold is None else round(result.threshold, 2)),
+                    "unusual": result.unusual,
+                    "reason": result.reason,
+                    "terms": [
+                        {
+                            "name": term.name,
+                            "label": term.label,
+                            "contribution": round(term.contribution, 2),
+                            "seen": term.seen,
+                        }
+                        for term in result.terms
+                    ],
+                }
+                for event, result in scored
+            ],
         },
     )
 

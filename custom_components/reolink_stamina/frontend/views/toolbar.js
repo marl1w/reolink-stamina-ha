@@ -364,6 +364,7 @@ export class StaminaToolbar extends HTMLElement {
 
     // --- filters
     this._filters = el("div", { class: "line row--tight" });
+    this._unusualHost = el("span", { class: "row--tight" });
     this._hiddenNote = el("div", { class: "hidden-note" });
     const line2 = el(
       "div",
@@ -375,6 +376,7 @@ export class StaminaToolbar extends HTMLElement {
           "div",
           { class: "line line--filters" },
           this._filters,
+          this._unusualHost,
           el("div", { class: "spacer" }),
           this._hiddenNote
         )
@@ -460,6 +462,31 @@ export class StaminaToolbar extends HTMLElement {
         node.setAttribute("aria-pressed", store.filters.has(group.id) ? "true" : "false");
       }
     );
+
+    // "Unusual" is not another kind of thing to show, so it is not one of the trigger chips:
+    // it narrows whatever they left. Appended after them, and only once a camera in the
+    // selection has enough behind it to have an opinion — a chip that can only ever return
+    // nothing is worse than no chip.
+    this._unusualHost.replaceChildren();
+    if (store.relevanceEnabled) {
+      const ready = [...store.relevance.values()].some((item) => item.state === "active");
+      const chip = el(
+        "button",
+        {
+          class: "chip chip--button",
+          dataset: { tone: "alert" },
+          disabled: !ready,
+          title: ready
+            ? "Show only what is unusual for these cameras"
+            : "Still learning what is normal on these cameras",
+          onclick: () => store.toggleUnusualOnly(),
+        },
+        icon("mdi:circle-slice-8"),
+        el("span", { text: ready ? "Unusual" : "Learning…" })
+      );
+      chip.setAttribute("aria-pressed", store.unusualOnly ? "true" : "false");
+      this._unusualHost.append(chip);
+    }
 
     const total = store.totalEventCount;
     const shown = store.events.length;

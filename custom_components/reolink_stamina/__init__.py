@@ -28,6 +28,7 @@ from .cloud.engine import NvrSyncer
 from .const import (
     BYTES_PER_GB,
     CONF_BETA_ALL_DEVICES,
+    CONF_BETA_RELEVANCE,
     CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
@@ -48,6 +49,7 @@ from .const import (
     CONF_SYNC_TAIL,
     CONF_VERIFY_TLS,
     DEFAULT_BETA_ALL_DEVICES,
+    DEFAULT_BETA_RELEVANCE,
     DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
@@ -76,6 +78,12 @@ from .const import (
 )
 from .flv_proxy import ReolinkStaminaFlvView
 from .playback_route import async_forget_routes
+from .relevance import (
+    RelevanceRuntime,
+    async_delete as async_delete_journal,
+    async_start as async_start_relevance,
+    async_stop as async_stop_relevance,
+)
 from .reolink_registry import async_is_compatible
 from .restream import (
     ReolinkStaminaHlsView,
@@ -114,6 +122,9 @@ class StaminaOptions:
     # Betas. Off is the behaviour this integration has always had.
     beta_restream: bool = DEFAULT_BETA_RESTREAM
     beta_all_devices: bool = DEFAULT_BETA_ALL_DEVICES
+    # Off, and while it is off no journal exists and nothing about the household is written
+    # down. Switching it on is the consent, which is why there is no quieter way to start it.
+    beta_relevance: bool = DEFAULT_BETA_RELEVANCE
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> StaminaOptions:
@@ -134,6 +145,7 @@ class StaminaOptions:
             verify_tls=bool(options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS)),
             beta_restream=bool(options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM)),
             beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
+            beta_relevance=bool(options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE)),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -151,6 +163,7 @@ class StaminaOptions:
             "verify_tls": self.verify_tls,
             "beta_restream": self.beta_restream,
             "beta_all_devices": self.beta_all_devices,
+            "beta_relevance": self.beta_relevance,
         }
 
 
@@ -163,6 +176,8 @@ class StaminaData:
     # One syncer per configured recorder, keyed by its subentry id. Empty unless cloud sync
     # has been set up, so an installation that only wants the panel pays nothing for it.
     syncers: dict[str, NvrSyncer] = field(default_factory=dict)
+    # None unless the Relevance beta is on, in which case no journal exists at all.
+    relevance: RelevanceRuntime | None = None
 
 
 def _frontend_fingerprint(path: Path) -> str:
@@ -189,8 +204,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cache = VodCache(hass)
     await cache.async_load()
 
-    hass.data[DOMAIN] = StaminaData(cache=cache, options=options)
+    data = StaminaData(cache=cache, options=options)
+    hass.data[DOMAIN] = data
     await _async_start_syncers(hass, entry)
+
+    if options.beta_relevance:
+        data.relevance = await async_start_relevance(
+            hass, entry, include_all_devices=options.beta_all_devices
+        )
 
     # Unconditional rather than gated on the beta being on: what was left behind was left
     # behind by whatever the option said at the time, and turning the beta off does not
@@ -313,6 +334,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_shutdown_restreams(hass)
 
     data: StaminaData | None = hass.data.get(DOMAIN)
+    if data is not None and data.relevance is not None:
+        # Before anything else that could fail: whatever is buffered is unrecoverable once
+        # the process is gone, and a reload is the most common reason to be here.
+        await async_stop_relevance(data.relevance)
+        data.relevance = None
+
     if data is not None and data.syncers:
         await hass.config_entries.async_unload_platforms(entry, SYNC_PLATFORMS)
         for syncer in data.syncers.values():
@@ -329,9 +356,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the cached search results when the integration is removed."""
+    """Delete what this integration wrote when it is removed.
+
+    The cached search results are a convenience; the journal is a record of when a household
+    is in and out. Neither should survive somebody removing the integration, and the second
+    one is the reason this is not merely tidiness.
+    """
     cache = VodCache(hass)
     await cache.async_clear()
+    await async_delete_journal(hass)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
