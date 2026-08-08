@@ -15,6 +15,8 @@ import pytest
 from custom_components.reolink_stamina.relevance.events import Event
 from custom_components.reolink_stamina.relevance.rates import (
     CircularRate,
+    band_label,
+    bands,
     build,
     duration_bucket,
     interpolate,
@@ -22,6 +24,7 @@ from custom_components.reolink_stamina.relevance.rates import (
     predecessor_label,
     quantile,
     recency,
+    signal_value,
 )
 from custom_components.reolink_stamina.relevance.score import (
     Score,
@@ -319,6 +322,116 @@ def test_the_floor_is_what_the_sensitivity_setting_moves():
     # is a higher floor finding *more*.
     assert counts == sorted(counts, reverse=True), f"a higher floor cannot mark more: {counts}"
     assert counts[0] > 0 and counts[-1] == 0, "and a high enough floor marks nothing at all"
+
+
+# --------------------------------------------------------------- numeric signals
+
+
+def _with(events, entity: str, values):
+    """Attach a numeric signal reading to each event, cycling through the values given."""
+    return [
+        Event(
+            camera=item.camera,
+            kind=item.kind,
+            started_at=item.started_at,
+            ended_at=item.ended_at,
+            duration=item.duration,
+            minute_of_day=item.minute_of_day,
+            solar_offset=item.solar_offset,
+            solar_phase=item.solar_phase,
+            is_weekend=item.is_weekend,
+            context=((entity, str(values[index % len(values)])),),
+        )
+        for index, item in enumerate(events)
+    ]
+
+
+def test_a_continuous_reading_is_cut_into_bands_from_its_own_history():
+    """A number never repeats, so it could never be rare. Bands are what make it countable.
+
+    Learned rather than fixed: any set of edges chosen in advance is wrong for every
+    installation but one, and "brighter than four days in five" has to mean the same thing
+    under a porch light and facing a field.
+    """
+    assert bands([float(n) for n in range(100)]) == (19.0, 39.0, 59.0, 79.0)
+    assert band_label(5.0, (19.0, 39.0, 59.0, 79.0)) == "< 19"
+    assert band_label(45.0, (19.0, 39.0, 59.0, 79.0)) == "39 to 59"
+    assert band_label(95.0, (19.0, 39.0, 59.0, 79.0)) == "79 and up"
+
+
+def test_a_sensor_that_barely_moves_is_not_cut_at_all():
+    """A thermostat sitting at 21 all winter would make five bands holding one value."""
+    assert bands([21.0] * 200) == ()
+    # And too little history to cut is left alone rather than cut badly.
+    assert bands([float(n) for n in range(10)]) == ()
+
+
+def test_training_and_scoring_agree_on_which_band_a_reading_is():
+    """They once did not, for the predecessor label, and every ordinary event scored wrong."""
+    events = _with(_history(), "sensor.lux", list(range(0, 200, 7)))
+    model = build(events, now=_NOW)
+    calibrate(model, events, floor=0.0)
+
+    assert model.signal_bands["sensor.lux"], "the readings were varied enough to band"
+
+    # The value the scorer looks up has to be the one the training pass wrote down.
+    learned = model.profiles[(_CAMERA, "person")].signals["sensor.lux"]
+    result = score(
+        Event(
+            camera=_CAMERA,
+            kind="person",
+            started_at=_NOW,
+            ended_at=_NOW + 8,
+            duration=8.0,
+            minute_of_day=18 * 60,
+            solar_offset=None,
+            solar_phase=None,
+            is_weekend=False,
+            context=(("sensor.lux", "45.0"),),
+        ),
+        model,
+        previous=None,
+    )
+    term = next(item for item in result.terms if item.name == "signal")
+    assert term.label in learned.weights, f"{term.label} was never counted during training"
+    assert term.seen > 0, "and it has a count behind it, not a guess"
+
+
+def test_a_reading_outside_everything_ever_seen_is_the_rare_one():
+    """The point of the exercise: a night far darker than any before it has to stand out."""
+    events = _with(_history(), "sensor.lux", list(range(100, 140)))
+    model = build(events, now=_NOW)
+    calibrate(model, events, floor=0.0)
+
+    def _lux(reading: str) -> float:
+        result = score(
+            Event(
+                camera=_CAMERA,
+                kind="person",
+                started_at=_NOW,
+                ended_at=_NOW + 8,
+                duration=8.0,
+                minute_of_day=18 * 60,
+                solar_offset=None,
+                solar_phase=None,
+                is_weekend=False,
+                context=(("sensor.lux", reading),),
+            ),
+            model,
+            previous=None,
+        )
+        return next(item.contribution for item in result.terms if item.name == "signal")
+
+    assert _lux("0.0") > _lux("120.0"), "a reading below anything ever seen is the surprising one"
+
+
+def test_a_state_that_is_not_a_number_is_left_as_itself():
+    """`unavailable` is a category, and a sensor's bands must not swallow it."""
+    events = _with(_history(), "sensor.lux", list(range(0, 200, 7)))
+    model = build(events, now=_NOW)
+
+    assert signal_value("sensor.lux", "unavailable", model) == "unavailable"
+    assert signal_value("sensor.alarm", "armed_away", model) == "armed_away"
 
 
 # -------------------------------------------------------------------- the words

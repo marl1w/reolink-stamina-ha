@@ -39,6 +39,7 @@ from .rates import (
     interpolate,
     predecessor_label,
     quantile,
+    signal_value,
 )
 
 # Below this a term is not worth mentioning in the sentence: it agrees with the model, and
@@ -222,7 +223,10 @@ def _terms(
     # silently skipping those events would shift every count that mentions it.
     seen = dict(event.context)
     for entity_id in sorted(set(specific.signals) | set(seen)):
-        value = seen.get(entity_id, "unknown")
+        # Through the same function the training pass used. A numeric signal is counted as the
+        # band its reading fell in, and training recording "12 to 18" while scoring looked up
+        # "14.2" would mean no numeric signal ever matched anything it had learned.
+        value = signal_value(entity_id, seen.get(entity_id, "unknown"), model)
         distribution = specific.signals.get(entity_id)
         categories = max(len(distribution.weights) if distribution else 0, 2)
         terms.append(

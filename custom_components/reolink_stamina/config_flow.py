@@ -63,6 +63,7 @@ from .const import (
     RELEVANCE_SENSITIVITY_FLOORS,
     RELEVANCE_SIGNAL_DOMAINS,
     RELEVANCE_SIGNAL_ENUM_DOMAINS,
+    RELEVANCE_SIGNAL_WORLD_CLASSES,
     STREAM_MAIN,
     STREAM_SUB,
     SUBENTRY_TYPE_SYNC,
@@ -434,6 +435,14 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
             selector.EntityFilterSelectorConfig(domain=list(RELEVANCE_SIGNAL_DOMAINS)),
             selector.EntityFilterSelectorConfig(
                 domain=list(RELEVANCE_SIGNAL_ENUM_DOMAINS), device_class="enum"
+            ),
+            # Numbers, but only the ones measuring the world rather than the wiring. "Any
+            # sensor with a unit" offered 383 entities on a real installation and all but a
+            # handful were voltage and energy counters; this offers 85, and they are the
+            # weather station and the room sensors.
+            selector.EntityFilterSelectorConfig(
+                domain=list(RELEVANCE_SIGNAL_ENUM_DOMAINS),
+                device_class=list(RELEVANCE_SIGNAL_WORLD_CLASSES),
             ),
         ]
         return self.async_show_form(

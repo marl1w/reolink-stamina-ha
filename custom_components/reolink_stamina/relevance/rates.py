@@ -34,6 +34,8 @@ from ..const import (
     RATE_HALF_LIFE_DAYS,
     RATE_SMOOTHING,
     SCORE_LAG_BUCKETS,
+    SIGNAL_BAND_MIN,
+    SIGNAL_BANDS,
 )
 from .events import Event
 
@@ -200,6 +202,9 @@ class Model:
     # One threshold per camera, because surprisal is not on a portable scale. Empty for a
     # camera with too little behind it, which is what "still collecting" means.
     thresholds: dict[str, float] = field(default_factory=dict)
+    # Cut points per numeric signal, learned from that sensor's own history. Empty for every
+    # signal whose states were already categories.
+    signal_bands: dict[str, tuple[float, ...]] = field(default_factory=dict)
     # The absolute minimum a score must clear, in nats, whatever the per-camera threshold says.
     #
     # Without one, a camera whose life is entirely predictable still marks its top few percent
@@ -251,6 +256,72 @@ def predecessor_label(event: Event, previous: Event | None) -> str:
     return "none" if lag == "none" else f"{previous.camera}|{lag}"
 
 
+def numeric(raw: str) -> float | None:
+    """Return a signal's value as a number, or None if it is not one.
+
+    `unknown`, `unavailable` and every ordinary state land here as None, which is correct:
+    they are categories in their own right and are counted as themselves.
+    """
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def bands(values: list[float], count: int = SIGNAL_BANDS) -> tuple[float, ...]:
+    """Return the cut points that divide observed values into equal-sized groups.
+
+    Learned from the history rather than fixed, and that is the whole reason numeric signals
+    can be counted at all. A continuous value never repeats, so it can never be rare — and any
+    fixed set of edges is wrong for every installation but one. Quantiles of what this sensor
+    has actually read make "brighter than four days in five" a category with real counts
+    behind it, on a camera under a porch light and on one facing a field.
+
+    Nothing is returned where there is too little to cut, or where the sensor barely moves: a
+    thermostat sitting at 21 all winter would otherwise produce five bands with one value in
+    them, which is a lot of arithmetic to say nothing.
+    """
+    if len(values) < count * SIGNAL_BAND_MIN:
+        return ()
+    ordered = sorted(values)
+    cuts = tuple(round(quantile(ordered, index / count), 4) for index in range(1, count))
+    # Ties collapse the bands into each other; a sensor that reads the same number most of the
+    # time is a category, not a range, and is counted as its own value.
+    return cuts if len(set(cuts)) == len(cuts) else ()
+
+
+def band_label(value: float, cuts: tuple[float, ...]) -> str:
+    """Name the band a value falls in, as the range itself.
+
+    The range rather than a word. "Above average" needs the reader to know the average, and
+    invents a vocabulary that has to be explained; a number they can compare with the one on
+    their own thermostat does not.
+    """
+    for index, cut in enumerate(cuts):
+        if value < cut:
+            return f"< {_trim(cut)}" if index == 0 else f"{_trim(cuts[index - 1])} to {_trim(cut)}"
+    return f"{_trim(cuts[-1])} and up"
+
+
+def _trim(value: float) -> str:
+    """Render a cut point without a trailing zero nobody asked for."""
+    return f"{value:.0f}" if float(value).is_integer() else f"{value:g}"
+
+
+def signal_value(entity_id: str, raw: str, model: Model) -> str:
+    """Return the label a signal's reading is counted as.
+
+    Public, and used by the training pass and the scorer alike, because they must agree
+    exactly — the same lesson as the predecessor label, which once recorded one string and
+    looked up another so the commonest situation in a quiet household was never found.
+    """
+    cuts = model.signal_bands.get(entity_id)
+    if not cuts:
+        return raw
+    reading = numeric(raw)
+    return raw if reading is None else band_label(reading, cuts)
+
+
 def build(events: list[Event], *, now: float) -> Model:
     """Learn from a history of events.
 
@@ -258,8 +329,20 @@ def build(events: list[Event], *, now: float) -> Model:
     the predecessor term needs to know what came before each one.
     """
     model = Model(built_at=now)
-    previous: Event | None = None
 
+    # One pass to learn each numeric signal's own scale, before anything is counted against
+    # it. Categorical signals never reach this and are counted as they were recorded.
+    readings: dict[str, list[float]] = {}
+    for event in events:
+        for entity_id, value in event.context:
+            reading = numeric(value)
+            if reading is not None:
+                readings.setdefault(entity_id, []).append(reading)
+    model.signal_bands = {
+        entity_id: cuts for entity_id, values in readings.items() if (cuts := bands(values))
+    }
+
+    previous: Event | None = None
     for event in events:
         weight = recency((now - event.started_at) / _SECONDS_PER_DAY)
         label = predecessor_label(event, previous)
@@ -277,7 +360,9 @@ def build(events: list[Event], *, now: float) -> Model:
             profile.duration.add(bucket, weight)
             profile.predecessor.add(label, weight)
             for entity_id, value in event.context:
-                profile.signals.setdefault(entity_id, Categorical()).add(value, weight)
+                profile.signals.setdefault(entity_id, Categorical()).add(
+                    signal_value(entity_id, value, model), weight
+                )
             profile.weight += weight
             profile.events += 1
             if profile.first_seen is None:

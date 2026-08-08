@@ -253,6 +253,35 @@ RELEVANCE_SIGNAL_DOMAINS: Final = (
 # rather than as an almanac calculates it.
 RELEVANCE_SIGNAL_ENUM_DOMAINS: Final = ("sensor",)
 
+# Numeric sensors are admitted too, but only the ones measuring the world rather than the
+# wiring. On the installation this was measured against, "any sensor with a unit" offered 383
+# entities and all but a handful were voltage, current and energy counters; this list offers
+# 85, and they are the weather station and the room sensors.
+RELEVANCE_SIGNAL_WORLD_CLASSES: Final = (
+    "aqi",
+    "atmospheric_pressure",
+    "distance",
+    "humidity",
+    "illuminance",
+    "irradiance",
+    "moisture",
+    "pm25",
+    "precipitation",
+    "precipitation_intensity",
+    "pressure",
+    "sound_pressure",
+    "speed",
+    "temperature",
+    "uv_index",
+    "wind_speed",
+)
+
+# How many equal-population bands a numeric signal is cut into, and how many readings each
+# band needs before cutting is worth doing at all. Five is enough to separate "unusually dark"
+# from "ordinary" without asking a few hundred events to fill twenty buckets.
+SIGNAL_BANDS: Final = 5
+SIGNAL_BAND_MIN: Final = 20
+
 # What a camera reports about itself, counted beside its own detections without anybody
 # choosing it — discovered exactly as the detection sensors are. `(domain, reolink key)`,
 # because the key alone is ambiguous and the domain alone is far too broad.
