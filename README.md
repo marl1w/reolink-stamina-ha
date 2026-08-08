@@ -100,6 +100,7 @@ Then *Reolink Stamina → **Configure*** for how the panel searches and presents
 | Clip: seconds before / after | 15 s / 15 s | Where a trimmed clip starts and ends on 24/7 footage |
 | Hide scheduled recordings | on | Which filters start enabled. Off also brings back scheduled and unlabelled footage |
 | Restrict to administrators | on | Recordings can be sensitive. Off lets non-admins open the panel |
+| Verify the recorder's HTTPS certificate | off | On if you have installed a certificate on the recorder that this Home Assistant trusts, and want playback, downloads and cloud sync to check it. Off suits a recorder still carrying the self-signed certificate Reolink ships, which no verification can pass — and is what the Reolink integration's own calls to the device do regardless |
 | Adaptive playback (beta) | off | Convert a recording server-side when the browser cannot play it — see below |
 | Show hubs and standalone cameras (beta) | off | List devices other than recorders — see below |
 
@@ -159,6 +160,7 @@ logger:
 | Nothing plays in the iPhone app | Same option: iOS cannot read the recorder's stream at all, and needs the repackaged one |
 | One camera is black on the phone while the others play | Its stream needs more than repackaging. With the beta on it lands on the re-encode rung by itself and stays there; the log says what ffmpeg made of it under `custom_components.reolink_stamina` at debug |
 | "Adaptive playback needs ffmpeg" | Install ffmpeg, or leave the option off |
+| `CERTIFICATE_VERIFY_FAILED`, or a 502 with an empty body, while search works fine | The recorder is being reached over HTTPS with a certificate Home Assistant does not trust. Turn *Verify the recorder's HTTPS certificate* off — it is off by default from 1.2.12 on. Alternatively, point the Reolink integration at the recorder's HTTP port instead, which many local-network setups already do |
 | Playback is slow and the player says "Re-encoded" | The machine is converting in software. Expected on a Pi at high resolution; low resolution is far cheaper |
 | "This clip cannot be played in this browser" | Every route was tried and none drew a frame. **Download this clip** beside the message writes it out as MP4 to watch locally, and the other resolution is often worth a try |
 | A camera on an NVR is missing from the beta list | Deliberate: it is listed under its recorder instead, so the same footage does not appear twice |

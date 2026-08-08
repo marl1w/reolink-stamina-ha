@@ -30,6 +30,7 @@ import shutil
 from homeassistant.core import HomeAssistant
 
 from ..redact import scrub_credentials
+from ..tls import ffmpeg_tls_args
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +99,8 @@ async def async_cut_with_ffmpeg(
     source_url: str,
     seconds: float,
     limit: int,
+    *,
+    verify_tls: bool = False,
 ) -> bytes:
     """Copy `seconds` of a stream into a fragmented MP4, in memory.
 
@@ -108,6 +111,9 @@ async def async_cut_with_ffmpeg(
     The process is given a deadline and killed if it misses it: an NVR that stops sending
     mid-clip would otherwise leave ffmpeg waiting for bytes that never come, and a stuck
     subprocess inside Home Assistant is worse than a missing clip.
+
+    `verify_tls` follows the option, so this pull agrees with the aiohttp ones about the
+    recorder's certificate. Its default matches the option's: ffmpeg does not verify.
     """
     args = [
         binary,
@@ -115,6 +121,7 @@ async def async_cut_with_ffmpeg(
         "-loglevel",
         "error",
         "-nostdin",
+        *ffmpeg_tls_args(source_url, verify_tls=verify_tls),
         "-i",
         source_url,
         "-t",

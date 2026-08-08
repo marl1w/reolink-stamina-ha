@@ -41,11 +41,11 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from aiohttp import ClientResponse, ClientTimeout
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import STREAM_MAIN, STREAM_SUB
 from .redact import api_secrets, scrub_credentials
 from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError, async_get_host
+from .tls import async_nvr_session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -292,7 +292,9 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
     """
     api = async_get_host(hass, recording.entry_id).api
     secrets = api_secrets(api)
-    session = async_get_clientsession(hass)
+    # Not Home Assistant's default session: a recorder's certificate is its own, and
+    # verifying it is off unless the user has said otherwise. See tls.py.
+    session = async_nvr_session(hass)
     problems: list[str] = []
 
     for route in _async_route_order(hass, recording.entry_id):

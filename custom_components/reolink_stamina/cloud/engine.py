@@ -24,7 +24,6 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.storage import Store
 
@@ -39,6 +38,7 @@ from ..const import (
 from ..detections import async_detection_entities
 from ..playback_route import Recording, async_playback_source
 from ..reolink_registry import async_discover_devices, async_get_host
+from ..tls import async_nvr_session, async_verify_tls
 from .destination import Destination, DestinationError
 from .fetch import (
     FetchError,
@@ -509,7 +509,8 @@ class NvrSyncer:
 
     async def _async_bytes(self, job: SyncJob, recording: dict) -> bytes:
         """Get the clip's bytes, whole or cut, whichever suits the recording."""
-        session = async_get_clientsession(self.hass)
+        # The recorder's own certificate, on the recorder's own terms. See tls.py.
+        session = async_nvr_session(self.hass)
         duration = float(recording.get("duration") or 0.0)
         wanted = job.window.seconds
 
@@ -547,7 +548,13 @@ class NvrSyncer:
                 seek=int(seek + float(recording.get("offset") or 0.0)),
             ),
         )
-        return await async_cut_with_ffmpeg(binary, source, wanted, SYNC_MAX_CLIP_BYTES)
+        return await async_cut_with_ffmpeg(
+            binary,
+            source,
+            wanted,
+            SYNC_MAX_CLIP_BYTES,
+            verify_tls=async_verify_tls(self.hass),
+        )
 
     async def _async_reconcile(self) -> None:
         """Forget clips the destination no longer holds, so the quota reflects reality."""

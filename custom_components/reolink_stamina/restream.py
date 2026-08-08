@@ -67,6 +67,7 @@ from .playback_route import (
 )
 from .redact import scrub_credentials
 from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
+from .tls import async_verify_tls, ffmpeg_tls_args
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -379,6 +380,7 @@ def build_args(
     output_format: str,
     encoder: Encoder = SOFTWARE_ENCODER,
     directory: Path | None = None,
+    verify_tls: bool = False,
 ) -> list[str]:
     """Build the ffmpeg command for one stream.
 
@@ -401,8 +403,16 @@ def build_args(
     if mode == MODE_ENCODE:
         args += ["-hwaccel", "auto", *encoder.input_args]
 
-    # The recorder's FLV carries no usable timestamps at the start of a seek.
-    args += ["-fflags", "+genpts", "-i", source_url]
+    # The recorder's FLV carries no usable timestamps at the start of a seek. `verify_tls`
+    # follows the option, so ffmpeg agrees with the rest of the integration about the
+    # recorder's certificate; it adds nothing in the default case, which ffmpeg already is.
+    args += [
+        "-fflags",
+        "+genpts",
+        *ffmpeg_tls_args(source_url, verify_tls=verify_tls),
+        "-i",
+        source_url,
+    ]
 
     if mode == MODE_ENCODE:
         filters = [f"scale=-2:min(ih\\,{MAX_HEIGHT})", *encoder.filters]
@@ -1109,6 +1119,7 @@ async def _async_spawn(
         output_format=output_format,
         encoder=encoder,
         directory=directory,
+        verify_tls=async_verify_tls(hass),
     )
     _LOGGER.debug(
         "Restreaming %s (%s, %s)",

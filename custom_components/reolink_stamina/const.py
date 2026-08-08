@@ -24,6 +24,10 @@ CONF_INCLUDE_UNLABELLED: Final = "include_unlabelled"
 CONF_EVENT_LEAD: Final = "event_lead"
 CONF_CLIP_LEAD: Final = "clip_lead"
 CONF_CLIP_TAIL: Final = "clip_tail"
+# Whether the recorder's TLS certificate is checked. See `tls.py` for why the answer is no
+# unless asked: recorders ship a self-signed certificate, and reolink_aio — which every
+# other call to the device goes through — never checks it either.
+CONF_VERIFY_TLS: Final = "verify_tls"
 
 # Beta options. Both default to off, and with both off the integration behaves exactly as
 # it did before they existed: nothing in the normal paths reads them.
@@ -53,6 +57,9 @@ DEFAULT_EVENT_LEAD: Final = 30
 # pre-record buffer must not be trimmed away — so neither applies there.
 DEFAULT_CLIP_LEAD: Final = 15
 DEFAULT_CLIP_TAIL: Final = 15
+# Off, because a Reolink recorder's factory certificate cannot pass verification and the
+# calls this integration does not make itself are already not verifying it.
+DEFAULT_VERIFY_TLS: Final = False
 DEFAULT_BETA_RESTREAM: Final = False
 DEFAULT_BETA_ALL_DEVICES: Final = False
 

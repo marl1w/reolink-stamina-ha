@@ -46,6 +46,7 @@ from .const import (
     CONF_SYNC_LEAD,
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
+    CONF_VERIFY_TLS,
     DEFAULT_BETA_ALL_DEVICES,
     DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
@@ -62,6 +63,7 @@ from .const import (
     DEFAULT_SYNC_KINDS,
     DEFAULT_SYNC_LEAD,
     DEFAULT_SYNC_TAIL,
+    DEFAULT_VERIFY_TLS,
     DOMAIN,
     ISSUE_INCOMPATIBLE,
     PANEL_COMPONENT,
@@ -107,6 +109,8 @@ class StaminaOptions:
     event_lead: int = DEFAULT_EVENT_LEAD
     clip_lead: int = DEFAULT_CLIP_LEAD
     clip_tail: int = DEFAULT_CLIP_TAIL
+    # Off, and a recorder with its factory certificate needs it to stay that way. See tls.py.
+    verify_tls: bool = DEFAULT_VERIFY_TLS
     # Betas. Off is the behaviour this integration has always had.
     beta_restream: bool = DEFAULT_BETA_RESTREAM
     beta_all_devices: bool = DEFAULT_BETA_ALL_DEVICES
@@ -127,6 +131,7 @@ class StaminaOptions:
             event_lead=int(options.get(CONF_EVENT_LEAD, DEFAULT_EVENT_LEAD)),
             clip_lead=int(options.get(CONF_CLIP_LEAD, DEFAULT_CLIP_LEAD)),
             clip_tail=int(options.get(CONF_CLIP_TAIL, DEFAULT_CLIP_TAIL)),
+            verify_tls=bool(options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS)),
             beta_restream=bool(options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM)),
             beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
         )
@@ -143,6 +148,7 @@ class StaminaOptions:
             "event_lead": self.event_lead,
             "clip_lead": self.clip_lead,
             "clip_tail": self.clip_tail,
+            "verify_tls": self.verify_tls,
             "beta_restream": self.beta_restream,
             "beta_all_devices": self.beta_all_devices,
         }

@@ -36,6 +36,7 @@ from .const import (
     CONF_SYNC_LEAD,
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
+    CONF_VERIFY_TLS,
     DEFAULT_BETA_ALL_DEVICES,
     DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_SYNC_KINDS,
     DEFAULT_SYNC_LEAD,
     DEFAULT_SYNC_TAIL,
+    DEFAULT_VERIFY_TLS,
     DOMAIN,
     PANEL_TITLE,
     STREAM_MAIN,
@@ -215,6 +217,11 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                 vol.Required(
                     CONF_REQUIRE_ADMIN,
                     default=options.get(CONF_REQUIRE_ADMIN, DEFAULT_REQUIRE_ADMIN),
+                ): selector.BooleanSelector(),
+                # Off unless the recorder has a certificate that can actually be verified.
+                vol.Required(
+                    CONF_VERIFY_TLS,
+                    default=options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS),
                 ): selector.BooleanSelector(),
                 # Betas last, because with both off nothing above them behaves differently.
                 vol.Required(

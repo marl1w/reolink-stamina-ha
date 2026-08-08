@@ -74,7 +74,7 @@ def patch_session(monkeypatch):
     def install(*, playback: int | Exception, flv: int | Exception) -> _FakeSession:
         session = _FakeSession(playback=playback, flv=flv)
         monkeypatch.setattr(
-            "custom_components.reolink_stamina.playback_route.async_get_clientsession",
+            "custom_components.reolink_stamina.playback_route.async_nvr_session",
             lambda _hass: session,
         )
         return session
