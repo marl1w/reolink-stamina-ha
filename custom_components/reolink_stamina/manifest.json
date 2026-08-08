@@ -1,6 +1,10 @@
 {
   "domain": "reolink_stamina",
   "name": "Reolink Stamina",
+  "after_dependencies": [
+    "recorder",
+    "reolink"
+  ],
   "codeowners": [
     "@marl1w"
   ],
@@ -17,9 +21,6 @@
     {
       "macaddress": "EC71DB*"
     }
-  ],
-  "after_dependencies": [
-    "reolink"
   ],
   "documentation": "https://github.com/marl1w/reolink-stamina-ha",
   "integration_type": "service",
