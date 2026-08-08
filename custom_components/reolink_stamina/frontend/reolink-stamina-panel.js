@@ -28,6 +28,7 @@ import "./views/device-picker.js";
 import "./views/learned.js";
 import "./views/toolbar.js";
 import "./views/event-list.js";
+import "./views/relevance-sheet.js";
 import "./views/player.js";
 
 const STYLES = /* css */ `
@@ -389,6 +390,10 @@ class ReolinkStaminaPanel extends HTMLElement {
       });
     });
     this._list = el("reolink-event-list", { class: "pane-list scroll" });
+    this._list.addEventListener("show-relevance", (event) => {
+      this._relevance.store = this._store;
+      this._relevance.open(event.detail.event);
+    });
     this._player = el("reolink-event-player");
     this._playerPane = el("div", { class: "pane-player", hidden: true }, this._player);
 
@@ -428,17 +433,20 @@ class ReolinkStaminaPanel extends HTMLElement {
     // listener, and lazily creating it would mean the toolbar's way back to it could open
     // nothing on a slow first click.
     this._learned = el("reolink-learned-sheet");
+    this._relevance = el("reolink-relevance-sheet");
     this._whatsNew = el("reolink-stamina-whats-new");
     this._whatsNew.addEventListener("seen", () => {
       this._store?.markIntroduced(this._panel?.config?.version);
     });
 
-    this._main = el("div", { class: "content" }, this._toolbar, this._split, this._whatsNew);
+    this._main = el("div", { class: "content" }, this._toolbar, this._split);
 
     this._body = el("div", { class: "content" });
-    // Outside the swapped body: the picker replaces the main content, and a dialog that goes
-    // with it would be torn out of the tree the moment it was opened from.
-    this.shadowRoot.append(header, this._body, this._learned);
+    // Both dialogs live outside the swapped body. The camera picker *replaces* the main
+    // content rather than sitting beside it, so anything parented to that content is not in
+    // the document while the picker is up — which is why the introduction could not be opened
+    // from the setup page at all.
+    this.shadowRoot.append(header, this._body, this._learned, this._relevance, this._whatsNew);
     this._built = true;
     this._syncMenuButton();
     // The panel may well have been measured before there was anything to lay out.
