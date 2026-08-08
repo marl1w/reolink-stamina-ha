@@ -107,6 +107,11 @@ const STYLES = /* css */ `
 
 :host([data-layout="split"]) .pane-player {
   position: static;
+  /* The lift above belongs to the overlay, which has a header to cover. Beside the list the
+     pane covers nothing, and keeping it would outrank the toolbar's own stacking context and
+     paint over an open popover hanging down from it -- z-index applies to a flex item whether
+     or not it is positioned, so dropping position is not enough to drop the lift. */
+  z-index: auto;
   /* The width the divider was left at. The panel keeps it inside its bounds, so the list
      always has room for a row; the fallback only stands in for the frame before it does. */
   flex: 0 0 var(--rv-player-width, 46%);
