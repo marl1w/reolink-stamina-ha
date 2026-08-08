@@ -852,7 +852,15 @@ HARNESS = """<!doctype html>
                 if (entry === target.entry_id && Number(channel) === target.channel &&
                     year === msg.year && month === msg.month) days.add(day);
               }
-              return { entry_id: target.entry_id, channel: target.channel, days: [...days] };
+              // `key`, exactly as the integration sends it. Without it the store filed every
+              // camera's days under `undefined` and the date picker threw on the first one —
+              // a fault in the harness that looked for all the world like a fault in the panel.
+              return {
+                key: `${target.entry_id}|${target.channel}`,
+                entry_id: target.entry_id,
+                channel: target.channel,
+                days: [...days],
+              };
             }),
           }), 60);
         }

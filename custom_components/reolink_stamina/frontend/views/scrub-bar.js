@@ -88,13 +88,23 @@ export const SCRUB_STYLES = /* css */ `
 .marker[data-tone="neutral"] { --marker-tone: var(--rv-tone-neutral); }
 
 /*
- * A detection the model found unusual keeps the line in the colour of whatever was detected
- * — that is what the line is for, and losing it would cost the one thing the bar says at a
- * glance — and turns only the dot red. Two facts, two marks, neither displacing the other.
+ * A detection the model found unusual keeps its whole marker — line and dot — in the colour
+ * of whatever was detected, and the dot is circled in red.
+ *
+ * The dot used to turn red, which meant the mark could only carry one of the two facts: a red
+ * dot said "unusual" and stopped saying "person", and on a vehicle it overwrote the tone the
+ * rest of the panel uses for vehicles. A soft band behind the whole marker carried both but
+ * read as a smudge at this size. A ring is the third try and the right one: it is a shape
+ * rather than a wash, it survives being two pixels wide, and it leaves the fill alone.
  */
 .marker[data-unusual="true"]::after {
-  background: var(--rv-tone-alert);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--rv-tone-alert) 30%, transparent);
+  /* Circled, not recoloured. The dot keeps the tone that says what was detected and gains a
+     ring around it, held off the fill by a gap in the bar's own colour so the two do not
+     blend into one bigger dot — the same trick that keeps a marker legible where it crosses
+     a line. A ring reads as "this one" at a glance and costs the mark nothing. */
+  box-shadow:
+    0 0 0 1.5px var(--rv-surface),
+    0 0 0 3px var(--rv-tone-alert);
 }
 `;
 

@@ -257,6 +257,8 @@ export class EventList extends HTMLElement {
       onkeydown: (event) => this._onKeydown(event),
     });
     this._stateHost = el("div");
+
+    this.shadowRoot.append(el("div", {}, this._notices, this._stateHost, this._list));
     this._built = true;
   }
 
