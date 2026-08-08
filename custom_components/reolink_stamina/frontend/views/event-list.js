@@ -287,6 +287,18 @@ const STYLES = /* css */ `
 }
 .sheet__close:hover { background: color-mix(in srgb, var(--rv-text) 10%, transparent); }
 
+/* The sheet with nothing to show, made to look like a state rather than a failure. */
+.blank { padding: 30px 24px 34px; text-align: center; }
+.blank .icon {
+  --mdc-icon-size: 30px; width: 30px; height: 30px;
+  color: color-mix(in srgb, var(--rv-text-dim) 60%, transparent);
+}
+.blank__body { margin-top: 12px; font-size: 0.9rem; }
+.blank__aside {
+  margin-top: 8px; font-size: 0.8rem; color: var(--rv-text-dim);
+  max-width: 42ch; margin-inline: auto;
+}
+
 .verdict { padding: 14px 24px 18px; }
 .verdict__line { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 /* The sheet says the word; the row cannot spare the width for it and shows the mark alone.
@@ -655,7 +667,23 @@ export class EventList extends HTMLElement {
         el("p", { class: "note", text: "Learning what is normal is switched off." })
       );
     } else if (found.length === 0) {
-      this._detailBody.append(el("p", { class: "note", html: this._collectingNote(known) }));
+      // A header and one grey line in a 680px sheet reads as a modal that failed to load.
+      // The state is legitimate — a stretch of footage the journal has nothing for, or a
+      // camera still collecting — and it should look like an answer rather than an absence.
+      this._detailBody.append(
+        el(
+          "div",
+          { class: "blank" },
+          icon("mdi:timeline-text-outline"),
+          el("p", { class: "blank__body", html: this._collectingNote(known) }),
+          el("p", {
+            class: "blank__aside",
+            text:
+              "Detections are counted as the sensors report them, which is not always the " +
+              "same as what the recorder tagged this recording with.",
+          })
+        )
+      );
     } else {
       this._detailBody.append(...this._detailFor(found[at], known));
     }

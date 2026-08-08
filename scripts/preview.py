@@ -362,6 +362,11 @@ def _model(detections):
     return events, model
 
 
+# How long before a detection an event-recording camera starts writing. Matches the pre-roll
+# the panel assumes for cameras that do not report their own.
+PRE_ROLL_SECONDS = 5.0
+
+
 def _rows(detections) -> dict[str, list[dict]]:
     """Group detections into recording segments, the way a recorder writes them."""
     facts = {
@@ -378,12 +383,25 @@ def _rows(detections) -> dict[str, list[dict]]:
     buckets: dict[str, list[dict]] = {}
     for (entry_id, channel, index), inside in sorted(segments.items()):
         name, continuous, playable = facts[(entry_id, channel)]
-        start = datetime.fromtimestamp(index * span, UTC)
-        # A camera recording on events writes a clip the length of the event; one recording
-        # 24/7 writes a fixed segment whatever happened inside it.
-        length = span if continuous else max(20.0, max(s for _, _, s in inside) + 16)
+
+        # A camera recording 24/7 writes a fixed segment whatever happened inside it, so its
+        # row begins on the segment boundary. One recording on events writes a clip *around*
+        # what fired, so its row begins shortly before the first detection.
+        #
+        # This used to give both the segment boundary and give the event camera a clip only as
+        # long as its detection, so a detection three minutes into a segment landed outside
+        # its own row — and the sheet for that row opened with nothing in it. The preview was
+        # inventing a state the panel then rendered perfectly correctly.
+        first = min(at for at, _, _ in inside)
+        last = max(at + seconds for at, _, seconds in inside)
+        if continuous:
+            start = datetime.fromtimestamp(index * span, UTC)
+            length = float(span)
+        else:
+            start = datetime.fromtimestamp(first - PRE_ROLL_SECONDS, UTC)
+            length = max(20.0, last - first + PRE_ROLL_SECONDS + 16)
         end = start + timedelta(seconds=length)
-        date = datetime.fromtimestamp(index * span).astimezone().date().isoformat()
+        date = start.astimezone().date().isoformat()
         counts: dict[str, int] = {}
         for _, kind, _ in inside:
             counts[kind] = counts.get(kind, 0) + 1

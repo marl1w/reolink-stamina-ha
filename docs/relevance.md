@@ -94,5 +94,5 @@ Worth saying plainly, because the obvious expectations are the wrong ones.
 
 1. **The record.** ✅ The journal, and the one-off import of what Home Assistant already held.
 2. **Scoring and the mark.** ✅ The rate model, the mark on the row, the sentence saying why, the detail view and the filter chip.
-3. **Your own signals.** ✅ Pick entities per recorder, and each camera's own floodlight, siren and day/night state are found without being asked for. History for a signal is read back from Home Assistant's recorder, so adding one counts immediately. Numeric sensors still need bucketing before they can be offered.
+3. **Your own signals.** ✅ Pick entities per recorder, and each camera's own floodlight, siren and day/night state are found without being asked for. Numbers are counted in bands learned from each sensor's own history. History for a signal is read back from Home Assistant's recorder, so adding one counts immediately.
 4. **What the picture says.** Optional and behind its own switch: the coarse shape and position of what moved, so an unfamiliar vehicle at the gate can be told from a familiar one. This is the only part that will need ffmpeg.
