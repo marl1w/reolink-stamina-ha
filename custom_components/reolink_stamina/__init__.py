@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.loader import async_get_integration
 
+from .api import async_register as async_register_websocket_api
 from .cache import VodCache
 from .cloud.destination import OneDriveDestination
 from .cloud.devices import async_entry_device_name, async_nvr_identifier, async_nvr_name
@@ -94,7 +95,6 @@ from .restream import (
     async_shutdown as async_shutdown_restreams,
     async_sweep_sessions,
 )
-from .websocket_api import async_register as async_register_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
 

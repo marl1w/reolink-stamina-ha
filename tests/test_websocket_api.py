@@ -685,7 +685,7 @@ async def test_an_hls_session_is_started_and_addressed_by_its_token(
     session is started here and the URL says it must not be signed.
     """
     with patch(
-        "custom_components.reolink_stamina.websocket_api.async_start_hls",
+        "custom_components.reolink_stamina.api.playback.async_start_hls",
         return_value="tok123",
     ) as start:
         client = await hass_ws_client(hass)
