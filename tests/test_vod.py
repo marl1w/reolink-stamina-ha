@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from homeassistant.util import dt as dt_util
 from reolink_aio.typings import VOD_trigger
 
 from custom_components.reolink_stamina.vod import (
@@ -325,6 +326,18 @@ def test_a_day_with_a_few_clips_is_event_recording() -> None:
     """A camera recording on events covers almost none of its day."""
     files = [serialize_file(_file(9, 0, seconds=30)), serialize_file(_file(15, 0, seconds=45))]
     assert is_continuous_day(files, dt.date(2026, 8, 1)) is False
+
+
+def test_a_day_that_has_not_begun_is_not_continuous() -> None:
+    """Nothing has elapsed to measure coverage against, so nothing may be concluded.
+
+    Home Assistant's local date and the day being asked about differ by one either side of
+    midnight, which used to clamp the elapsed day to a fraction of a second and make a
+    single clip read as full coverage — every camera continuous, for hours a day.
+    """
+    tomorrow = dt_util.now().date() + dt.timedelta(days=1)
+    files = [serialize_file(_file(9, 0, seconds=30))]
+    assert is_continuous_day(files, tomorrow) is False
 
 
 def test_discarded_recordings_prove_the_day_was_continuous() -> None:

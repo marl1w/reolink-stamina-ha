@@ -47,13 +47,22 @@ def is_continuous_day(files: list[dict[str, Any]], date: dt.date, unlabelled: in
     discarded from a continuous camera, so a day that dropped any is continuous by
     definition — and its remaining files no longer cover the day, which would otherwise
     make it measure as event recording.
+
+    A day that has not begun yet cannot be measured at all, and must not be guessed at.
+    Home Assistant's local date and the day being asked about routinely differ by one
+    either side of midnight — the panel asks for a date, not for "today" — so `elapsed`
+    comes out negative, and clamping that to a fraction of a second made any recording
+    whatsoever read as full coverage. Every camera then reported continuous for hours
+    around the date line, and the panel trims a continuous day rather than listing it.
     """
     if unlabelled > 0:
         return True
     start, end = _day_bounds(date)
     recorded = sum(item.get("duration") or 0.0 for item in files)
     day_end = min(dt_util.now().replace(tzinfo=None), end)
-    elapsed = max(1.0, (day_end - start).total_seconds())
+    elapsed = (day_end - start).total_seconds()
+    if elapsed <= 0:
+        return False
     return (recorded / elapsed) >= CONTINUOUS_COVERAGE
 
 
