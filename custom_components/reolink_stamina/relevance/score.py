@@ -87,6 +87,31 @@ def _surprisal(probability: float, categories: int) -> float:
     return -math.log(probability * max(categories, 1))
 
 
+# What share of days are weekends. The baseline the weekend term is measured against, and the
+# whole reason that term needs one of its own: measured against an even split, a household that
+# behaves identically all week would report every Saturday as unusual — because a Saturday is
+# two days in seven, which is true of every household there has ever been and says nothing
+# about any of them. Against this, an even household contributes nothing and only a household
+# whose weekend genuinely differs does.
+_WEEKEND_SHARE = 2 / 7
+
+
+def _ratio(probability: float, expected: float) -> float:
+    """Return how many times more often than expected something was seen."""
+    return max(probability, 1e-9) / max(expected, 1e-9)
+
+
+_DAY_NAMES = {
+    "Mon": "a Monday",
+    "Tue": "a Tuesday",
+    "Wed": "a Wednesday",
+    "Thu": "a Thursday",
+    "Fri": "a Friday",
+    "Sat": "a Saturday",
+    "Sun": "a Sunday",
+}
+
+
 def _clock_time(minute: int) -> str:
     """Render a minute of the day as a clock time."""
     return f"{minute // 60:02d}:{minute % 60:02d}"
@@ -218,6 +243,37 @@ def _terms(
         )
     )
 
+    # Which day it was, at whichever granularity this camera has earned.
+    #
+    # Two tables, blended by how much the seven-day one has behind it, so a busy gate is judged
+    # against Sundays and a quiet garden against weekends — with no threshold at which one
+    # becomes the other. Blended as *ratios to expectation* rather than as probabilities,
+    # because the two are not on the same scale: p(Sunday) is around a seventh and p(weekend)
+    # around two, and averaging those two numbers would mean nothing at all.
+    group = "weekend" if event.is_weekend else "weekday"
+    coarse = _ratio(
+        blend(lambda p, was=group: p.weekend.probability(was, categories=2)),
+        _WEEKEND_SHARE if event.is_weekend else 1 - _WEEKEND_SHARE,
+    )
+    exact = _ratio(
+        blend(lambda p, was=event.day_of_week: p.day_of_week.probability(was, categories=7)),
+        1 / 7,
+    )
+    terms.append(
+        Term(
+            name="weekend",
+            # The day itself, whichever table did the deciding: it is true either way, and
+            # "on a Sunday" reads better than a granularity the reader did not ask about.
+            label=_DAY_NAMES.get(
+                event.day_of_week, "a weekend" if event.is_weekend else "a weekday"
+            ),
+            contribution=-math.log(
+                max(interpolate(exact, coarse, specific.day_of_week.total / 7.0), 1e-9)
+            ),
+            seen=specific.day_of_week.count(event.day_of_week) or specific.weekend.count(group),
+        )
+    )
+
     # Whatever else the user asked to be counted. Absent is a value in its own right rather
     # than a gap: a signal added six months in was genuinely unknown before that, and
     # silently skipping those events would shift every count that mentions it.
@@ -339,6 +395,8 @@ def _phrase(term: Term) -> str:
         return term.label
     if term.name == "duration":
         return f"lasting {term.label}"
+    if term.name == "weekend":
+        return f"on {term.label}"
     if term.name == "predecessor":
         # Already a phrase in both of its forms: "nothing fired first", "after Gate".
         return term.label

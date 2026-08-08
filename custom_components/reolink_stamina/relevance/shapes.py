@@ -118,6 +118,7 @@ def _merge(profiles: list[Any]) -> Profile:
         pairs: list[tuple[Categorical, Categorical]] = [
             (profile.duration, total.duration),
             (profile.predecessor, total.predecessor),
+            (profile.weekend, total.weekend),
         ]
         for entity_id, table in profile.signals.items():
             pairs.append((table, total.signals.setdefault(entity_id, Categorical())))
@@ -146,7 +147,7 @@ def profile_payload(
     cameras: list[str],
     *,
     names: dict[str, str] | None = None,
-    labels: dict[str, str] | None = None,
+    label: Any = None,
 ) -> dict[str, Any]:
     """Return everything the given cameras have learned, shaped for the panel.
 
@@ -157,7 +158,14 @@ def profile_payload(
 
     Every kind gets its own distributions, because "when does this see anything" and "when
     does it see a person" are different questions and the second is the one worth asking.
+
+    `label` resolves an entity id to what Home Assistant calls it, and it is a function rather
+    than a map on purpose. A map has to be built from *something*, and the obvious something —
+    the signals configured right now — is not the same set as the signals in the history: a
+    camera keeps counting an entity that has since been unpicked, and anything discovery
+    failed to resolve at read time falls through it too. Both showed as bare entity ids.
     """
+    label = label or (lambda entity_id: entity_id)
     kinds = sorted(
         {kind for (key, kind) in model.profiles if key in cameras},
         key=lambda kind: (
@@ -182,10 +190,11 @@ def profile_payload(
             "predecessor": categorical_shape(
                 profile.predecessor, spell=lambda value: predecessor_phrase(value, names)
             ),
+            "weekend": categorical_shape(profile.weekend),
             "signals": [
                 {
                     "entity_id": entity_id,
-                    "label": (labels or {}).get(entity_id, entity_id),
+                    "label": label(entity_id),
                     "values": categorical_shape(table),
                 }
                 for entity_id, table in sorted(profile.signals.items())

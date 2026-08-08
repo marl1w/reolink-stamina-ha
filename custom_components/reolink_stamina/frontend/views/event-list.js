@@ -332,25 +332,44 @@ const STYLES = /* css */ `
   border-radius: 3px; background: color-mix(in srgb, var(--rv-text) 6%, transparent);
 }
 /*
- * The region an event has to reach to be marked.
+ * The track is a scale, not a container: each of its three regions is coloured for what it
+ * means, and the event is a mark placed on it.
  *
- * It carries no caption, because it no longer needs one: it is the same red as the word
- * "rarer" beneath it and the same red as the bars that reach into it, so the colour is the
- * label. Earlier attempts named it in words — a tick that read as a second chance line, then
- * "shaded: marked above 0.64", which is a number on a log scale and told a reader nothing.
- * The exact value is on its tooltip, for anyone tuning rather than reading.
+ * It used to be one grey track with a red bar growing from the middle and a red region at the
+ * end, which left a grey stretch between the bar and the region — and that stretch is where
+ * most events land. Grey there read as "nothing", when it means "rarer than chance, but not
+ * enough to be worth your time", which is the single most common thing this can say.
+ *
+ * No caption on the regions. The words under the track name the two ends, and the colour runs
+ * from one to the other, so a caption would be repeating the axis at it.
  */
-.gauge__zone {
-  position: absolute; top: 5px; height: 10px; right: 0;
-  background: color-mix(in srgb, var(--rv-tone-alert) 15%, transparent);
-  border-radius: 0 3px 3px 0;
+.gauge__band {
+  position: absolute; top: 5px; height: 10px;
+  background: color-mix(in srgb, var(--rv-text) 6%, transparent);
 }
-.gauge__fill {
-  position: absolute; top: 5px; height: 10px; min-width: 2px; border-radius: 3px;
-  background: var(--rv-tone-motion);
+.gauge__band[data-band="common"] { left: 0; right: 50%; border-radius: 3px 0 0 3px; }
+.gauge__band[data-band="rarer"] {
+  background: color-mix(in srgb, var(--rv-tone-alert) 13%, transparent);
 }
-.gauge__fill[data-side="rarer"] { left: calc(50% + 1px); background: var(--rv-tone-alert); }
-.gauge__fill[data-side="common"] { right: calc(50% + 1px); }
+.gauge__band[data-band="marked"] {
+  right: 0; border-radius: 0 3px 3px 0;
+  background: color-mix(in srgb, var(--rv-tone-alert) 34%, transparent);
+}
+
+/* Where this event landed. A needle rather than a bar: the regions behind it already carry
+   the reading, and a filled bar would cover the very region it is being compared against. */
+.gauge__needle {
+  position: absolute; top: 1px; bottom: 1px; width: 2px; margin-left: -1px;
+  border-radius: 2px; background: var(--rv-text);
+}
+.gauge__needle::after {
+  content: ""; position: absolute; left: 50%; top: -3px;
+  width: 7px; height: 7px; margin-left: -3.5px;
+  border-radius: 50%; background: var(--rv-text);
+}
+.gauge__needle[data-marked="true"], .gauge__needle[data-marked="true"]::after {
+  background: var(--rv-tone-alert);
+}
 .gauge__zero {
   position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
   background: color-mix(in srgb, var(--rv-text) 32%, transparent);
@@ -813,7 +832,11 @@ export class EventList extends HTMLElement {
     const hasCut = item.threshold !== null && item.threshold !== undefined;
     const extent =
       Math.max(Math.abs(item.score), hasCut ? Math.abs(item.threshold) : 0, 1) * 1.15;
-    const rarer = item.score > 0;
+    // Where the marked region begins, as a share of the track. Without a threshold there is
+    // nothing entitled to be marked, so the rarer region simply runs to the end.
+    const cut = hasCut
+      ? Math.max(50, Math.min(100, 50 + (item.threshold / extent) * 50))
+      : 100;
     verdict.append(
       el(
         "div",
@@ -821,24 +844,28 @@ export class EventList extends HTMLElement {
         el(
           "div",
           { class: "gauge__track" },
-          // Back to front: the region that gets marked, the bar over it, the chance line
-          // on top of both.
+          // The three regions, then the chance line, then the event on top of both.
+          el("div", { class: "gauge__band", dataset: { band: "common" } }),
+          el("div", {
+            class: "gauge__band",
+            dataset: { band: "rarer" },
+            style: { left: "50%", right: `${100 - cut}%` },
+          }),
           hasCut
             ? el("div", {
-                class: "gauge__zone",
-                style: {
-                  left: `${Math.max(0, Math.min(100, 50 + (item.threshold / extent) * 50))}%`,
-                },
+                class: "gauge__band",
+                dataset: { band: "marked" },
+                style: { left: `${cut}%` },
                 title: `Marked above ${item.threshold}`,
               })
             : null,
+          el("div", { class: "gauge__zero" }),
           el("div", {
-            class: "gauge__fill",
-            dataset: { side: rarer ? "rarer" : "common" },
-            style: { width: `${Math.min(50, (Math.abs(item.score) / extent) * 50)}%` },
+            class: "gauge__needle",
+            dataset: { marked: String(Boolean(item.unusual)) },
+            style: { left: `${Math.max(1, Math.min(99, 50 + (item.score / extent) * 50))}%` },
             title: `This event scored ${item.score}`,
-          }),
-          el("div", { class: "gauge__zero" })
+          })
         ),
         el(
           "div",

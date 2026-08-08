@@ -167,6 +167,24 @@ class Profile:
     solar: CircularRate = field(default_factory=CircularRate)
     duration: Categorical = field(default_factory=Categorical)
     predecessor: Categorical = field(default_factory=Categorical)
+    # The shape of the week, kept at two granularities and blended between them.
+    #
+    # Seven days is what a household actually has — Thursday is bin day, Sunday nobody leaves
+    # before ten — but seven categories need seven times the history before any of them has
+    # numbers behind it, which on a quiet camera is months. Two categories are affordable
+    # immediately and still catch the thing most worth catching: a departure that happens five
+    # days in seven makes the same departure on a Sunday stand out.
+    #
+    # So both are counted and the scorer backs off from one to the other by how much evidence
+    # the seven-day table has, exactly as it already backs off from a camera to its kind. A
+    # busy gate ends up judged by the actual day; a quiet garden by weekday against weekend;
+    # and nothing has to choose a threshold at which one becomes the other.
+    #
+    # Bank holidays are deliberately absent. Home Assistant's own Workday sensor already knows
+    # a country's, so that belongs in the signals list rather than being reimplemented here
+    # against a timezone — and "is anybody home" covers most of what a holiday would say.
+    weekend: Categorical = field(default_factory=Categorical)
+    day_of_week: Categorical = field(default_factory=Categorical)
     # One distribution per configured signal, keyed by entity id. Added rather than
     # conditioned on: three booleans used as conditions would cut six months of history into
     # three weeks per bucket, while three more terms in a sum cost nothing in sample size.
@@ -359,6 +377,8 @@ def build(events: list[Event], *, now: float) -> Model:
                 profile.solar.add(event.solar_offset % 1440, weight)
             profile.duration.add(bucket, weight)
             profile.predecessor.add(label, weight)
+            profile.weekend.add("weekend" if event.is_weekend else "weekday", weight)
+            profile.day_of_week.add(event.day_of_week, weight)
             for entity_id, value in event.context:
                 profile.signals.setdefault(entity_id, Categorical()).add(
                     signal_value(entity_id, value, model), weight

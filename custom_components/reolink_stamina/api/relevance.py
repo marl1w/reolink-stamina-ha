@@ -27,7 +27,6 @@ from ..detections import async_detections_in_window
 from ..relevance.journal import camera_key
 from ..relevance.score import SCORE_MIN_DAYS, SCORE_MIN_EVENTS
 from ..relevance.shapes import profile_payload
-from ..relevance.watcher import async_signal_map
 from ..reolink_registry import async_discover_devices
 from .shared import TARGET_SCHEMA, _access
 
@@ -230,18 +229,11 @@ def ws_relevance_profile(
         )
         return
     names = _camera_names(hass, data.options.beta_all_devices)
-    # Every signal on this camera, chosen or discovered — the floodlight and the day/night
-    # state are attached automatically and would otherwise show as bare entity ids.
-    watched = async_signal_map(
-        hass,
-        data.options.relevance_signals or {},
-        include_all_devices=data.options.beta_all_devices,
-    )
-    labels = {
-        entity_id: (state.name if (state := hass.states.get(entity_id)) else entity_id)
-        for camera in cameras
-        for entity_id in watched.get(camera, ())
-    }
+
+    def _label(entity_id: str) -> str:
+        """Return what Home Assistant calls an entity, or its id if it is gone."""
+        state = hass.states.get(entity_id)
+        return state.name if state is not None else entity_id
 
     # Across several cameras the state is the *least* ready of them, and the coverage is the
     # longest span with every camera's events in it. Reporting the best of them would say the
@@ -259,6 +251,6 @@ def ws_relevance_profile(
                 "days": max((c["days"] for c in coverages), default=0.0),
                 "events": sum(c["events"] for c in coverages),
             },
-            **profile_payload(analysis.model, cameras, names=names, labels=labels),
+            **profile_payload(analysis.model, cameras, names=names, label=_label),
         },
     )

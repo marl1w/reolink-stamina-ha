@@ -354,6 +354,7 @@ def _model(detections):
                 solar_offset=None,
                 solar_phase=None,
                 is_weekend=local.weekday() >= 5,
+                day_of_week=("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[local.weekday()],
                 context=_context(local, entry_id),
             )
         )
@@ -477,7 +478,7 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
             "enabled": True,
             "state": relevance[key]["state"],
             "coverage": relevance[key]["coverage"],
-            **profile_payload(model, [key], names=names, labels=labels),
+            **profile_payload(model, [key], names=names, label=labels.get),
         }
         for key in names
     }
@@ -497,7 +498,7 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
                     "days": max(relevance[key]["coverage"]["days"] for key in chosen),
                     "events": sum(relevance[key]["coverage"]["events"] for key in chosen),
                 },
-                **profile_payload(model, list(chosen), names=names, labels=labels),
+                **profile_payload(model, list(chosen), names=names, label=labels.get),
             }
 
     previous = None

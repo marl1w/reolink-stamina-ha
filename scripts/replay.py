@@ -109,6 +109,7 @@ def _event(camera: str, kind: str, started_at: float, ended_at: float | None) ->
         solar_offset=None,
         solar_phase=None,
         is_weekend=moment.weekday() >= 5,
+        day_of_week=("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[moment.weekday()],
     )
 
 

@@ -8,6 +8,7 @@ has to know what a cat is for that to fall out.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 
 import pytest
@@ -44,6 +45,10 @@ def _event(started_at: float, minute: int, kind: str, *, duration: float = 8.0) 
     Sunset would be a second reading of the same clock, and these tests are about whether the
     clock term works rather than about counting it twice.
     """
+    # The day comes from the timestamp, exactly as `derive` works it out. Hardcoding it — or
+    # leaving it at its default — gave every event in a 180-day history the same phantom day,
+    # which the day-of-week term then read as the single most predictable household on earth.
+    local = dt.datetime.fromtimestamp(started_at)
     return Event(
         camera=_CAMERA,
         kind=kind,
@@ -53,7 +58,8 @@ def _event(started_at: float, minute: int, kind: str, *, duration: float = 8.0) 
         minute_of_day=minute,
         solar_offset=None,
         solar_phase=None,
-        is_weekend=False,
+        is_weekend=local.weekday() >= 5,
+        day_of_week=("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[local.weekday()],
     )
 
 
@@ -322,6 +328,69 @@ def test_the_floor_is_what_the_sensitivity_setting_moves():
     # is a higher floor finding *more*.
     assert counts == sorted(counts, reverse=True), f"a higher floor cannot mark more: {counts}"
     assert counts[0] > 0 and counts[-1] == 0, "and a high enough floor marks nothing at all"
+
+
+def test_a_weekend_is_not_unusual_merely_for_being_a_weekend():
+    """The trap this term walks into if its baseline is wrong.
+
+    Measured against an even split, "it was a Saturday" is rare in every household there has
+    ever been — because a Saturday is two days in seven — and every weekend event would carry
+    a large positive contribution for a fact about the calendar. The baseline is the calendar's
+    own proportion, so a household that behaves identically all week contributes nothing.
+    """
+    model, _ = _model()
+
+    # This history is the same three events every single day, so no day is special.
+    weekday = _term(score(_event(_NOW, 18 * 60, "person"), model, previous=None), "weekend")
+    saturday = _NOW + (5 - dt.datetime.fromtimestamp(_NOW).weekday()) % 7 * _DAY
+    weekend = _term(score(_event(saturday, 18 * 60, "person"), model, previous=None), "weekend")
+
+    assert abs(weekday) < 0.35, f"an ordinary weekday should say almost nothing, said {weekday}"
+    assert abs(weekend) < 0.35, f"nor should an ordinary weekend, said {weekend}"
+
+
+def test_a_camera_with_little_history_is_judged_on_weekday_against_weekend():
+    """Seven categories need seven times the history; two are affordable immediately.
+
+    Both are counted and the scorer backs off between them, so there is no threshold at which
+    one becomes the other — a camera simply earns the finer judgement as it collects.
+    """
+    quiet = [_event(_NOW - day * _DAY, 18 * 60, "person") for day in range(21)]
+    model = build(quiet, now=_NOW)
+
+    profile = model.profiles[(_CAMERA, "person")]
+    assert profile.day_of_week.total / 7.0 < 40.0, "this camera has not earned seven categories"
+
+    # Every day is represented three times over, so nothing is remarkable whichever table wins.
+    for day in range(7):
+        contribution = _term(
+            score(_event(_NOW - day * _DAY, 18 * 60, "person"), model, previous=None), "weekend"
+        )
+        assert abs(contribution) < 0.6, f"day {day} scored {contribution} on an even history"
+
+
+def test_a_busy_camera_can_tell_one_day_from_another():
+    """A gate that never sees anyone on a Sunday should say so when it does."""
+    events = []
+    for offset in range(210):
+        at = _NOW - offset * _DAY
+        # The actual weekday of that timestamp, not the loop counter: an offset of six days
+        # from today is some weekday or other, and skipping it skips whichever one that is.
+        if dt.datetime.fromtimestamp(at).weekday() == 6:
+            continue  # nothing ever happens on a Sunday
+        for _ in range(4):
+            events.append(_event(at, 18 * 60, "person"))
+    events.sort(key=lambda item: item.started_at)
+    model = build(events, now=_NOW)
+
+    sunday = _NOW - ((dt.datetime.fromtimestamp(_NOW).weekday() - 6) % 7) * _DAY
+    assert dt.datetime.fromtimestamp(sunday).weekday() == 6
+
+    unheard_of = _term(score(_event(sunday, 18 * 60, "person"), model, previous=None), "weekend")
+    ordinary = _term(score(events[-1], model, previous=None), "weekend")
+
+    assert unheard_of > 1.0, f"a Sunday it has never seen should stand out, scored {unheard_of}"
+    assert unheard_of > ordinary
 
 
 # --------------------------------------------------------------- numeric signals

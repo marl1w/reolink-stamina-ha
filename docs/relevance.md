@@ -8,7 +8,7 @@
 
 A 24/7 recorder produces hundreds of detections a day, and almost all of them are the same detections it produced yesterday. The timeline puts them in one list; what it cannot do is tell you which three are worth opening.
 
-This answers that without recognising anything. It keeps a record of what each camera normally sees, at what hour, for how long — and an event is interesting when that combination is rare. A cat that crosses the drive at one in the morning every night has told you what normal looks like there. A person doing the same thing has not, and the difference falls out of counting rather than out of understanding anything.
+This answers that without recognising anything. It keeps a record of what each camera normally sees, at what hour, on what sort of day, for how long — and an event is interesting when that combination is rare. A cat that crosses the drive at one in the morning every night has told you what normal looks like there. A person doing the same thing has not, and the difference falls out of counting rather than out of understanding anything.
 
 That becomes a small mark on the row, a sentence saying why, and a filter that turns four hundred events into twelve.
 
@@ -29,6 +29,8 @@ The second one is not a technicality. A quantile always cuts somewhere, however 
 **An *Unusual* chip** in the filter row narrows the list to just those rows. While a camera is still learning it reads *Learning…* and is not clickable, which is true and better than a filter that can only return nothing.
 
 **On the player's scrub bar**, a detection keeps the colour of what was detected and turns its dot red when the model marked it — two facts, two marks, neither displacing the other.
+
+**The shape of the week counts too.** A departure that happens five days in seven makes the same departure on a Sunday worth noticing. A camera busy enough to have numbers behind each of the seven days is judged against the actual day; a quieter one against weekday versus weekend, and it moves from one to the other as it collects rather than at some threshold. Bank holidays are deliberately not built in — Home Assistant's own Workday sensor already knows your country's, so add it as a signal.
 
 ## What each camera has learned
 

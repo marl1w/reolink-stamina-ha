@@ -41,6 +41,8 @@ _LOGGER = logging.getLogger(__name__)
 # How far either side of sunrise or sunset still counts as twilight, for the phrase alone.
 TWILIGHT_MINUTES = 30
 
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
 _MINUTES_PER_DAY = 1440
 _HALF_DAY_MINUTES = _MINUTES_PER_DAY // 2
 
@@ -67,6 +69,9 @@ class Event:
     # evening: 07:00 and 21:00 are both hours away from sunset.
     solar_phase: str | None
     is_weekend: bool
+    # "Mon" … "Sun". Beside the weekend flag rather than derived from it, because the two are
+    # counted separately and blended: see `Profile.day_of_week`.
+    day_of_week: str = ""
     # The configured signals as they stood when this began, or None where none are set up.
     # Raw states: what a value means is a question for whoever reads it back.
     context: tuple[tuple[str, str], ...] = ()
@@ -269,6 +274,7 @@ def derive(
                     solar_offset=clock.offset(local),
                     solar_phase=clock.phase(local),
                     is_weekend=local.weekday() >= 5,
+                    day_of_week=_DAYS[local.weekday()],
                     context=_signals(context),
                 )
             )
