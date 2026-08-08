@@ -39,6 +39,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .ffmpeg import async_ffmpeg_binary
+from .playback_route import async_all_routes
 from .reolink_registry import async_discover_devices, async_get_host
 from .restream import SESSION_PREFIX, async_beta_enabled, async_get_manager
 
@@ -148,6 +149,12 @@ async def async_get_config_entry_diagnostics(
             "disabled_encoders": sorted(manager.failed_encoders),
         },
         "clocks": _clock(hass),
+        # Which endpoint each recorder was measured to serve playback from, keyed by
+        # Reolink config entry. Recorders disagree about this and the disagreement does not
+        # follow the model, so "which route is this device on" is the first question a
+        # report about a clip that will not play has to answer. Empty until a recording has
+        # been opened this run -- the measurement is not made until it is needed.
+        "playback_routes": async_all_routes(hass),
         # The timestamps one recording was described by, which is what a playback URL is
         # built from. `playback_id` is the recording's own start as the recorder stated it,
         # `file_start_id` is that same instant in the recorder's local time and is what the

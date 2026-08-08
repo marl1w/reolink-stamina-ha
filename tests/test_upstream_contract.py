@@ -121,32 +121,33 @@ def test_the_triggers_we_present_still_exist() -> None:
 def test_vod_request_types_we_use_still_exist() -> None:
     """Each of these names one route out of the recorder that this integration takes.
 
-    `Playback` is what every stream is built from, `Download` is how cloud sync fetches a
-    recording whole, and `NvrDownload` is the fragment request in fragments.py — which
-    encodes the value into a URL the Reolink integration's own view parses back.
+    `Playback` is the route every stream is built from first, `FLV` is the fallback for
+    recorders that answer 404 to it, `Download` is how cloud sync fetches a recording
+    whole, and `NvrDownload` is the fragment request in fragments.py — which encodes the
+    value into a URL the Reolink integration's own view parses back.
     """
     from reolink_aio.enums import VodRequestType
 
     assert VodRequestType.DOWNLOAD.value == "Download"
     assert VodRequestType.PLAYBACK.value == "Playback"
     assert VodRequestType.NVR_DOWNLOAD.value == "NvrDownload"
-    # The route every NVR stream is built from: NVRs answer 404 to `cmd=Playback`.
     assert VodRequestType.FLV.value == "FLV"
 
 
-def test_the_flv_vod_url_still_pins_seek_to_zero() -> None:
-    """The NVR playback route substitutes the library's pinned `seek=0`.
+def test_the_flv_vod_url_still_states_a_seek() -> None:
+    """The `/flv` route overrides the seek the library writes into its URL.
 
-    If the library stops writing `seek=0`, the substitution in
-    flv_proxy.async_playback_source has nothing to match and needs revisiting (it
-    appends instead, which only works while the endpoint tolerates it).
+    `playback_route._with_seek` substitutes any `seek=<digits>`, so a library that starts
+    computing the value is overridden rather than duplicated. It only has to be told about
+    a library that stops writing the parameter at all — then the substitution has nothing
+    to match and the appended fallback is what runs.
     """
     import inspect
 
     from reolink_aio.api import Host
 
-    assert "seek=0" in inspect.getsource(Host.get_vod_source), (
-        "reolink_aio's FLV VOD URL no longer pins seek=0; update flv_proxy.async_playback_source"
+    assert "seek=" in inspect.getsource(Host.get_vod_source), (
+        "reolink_aio's FLV VOD URL no longer states a seek; check playback_route._with_seek"
     )
 
 

@@ -11,44 +11,32 @@ machine stopped responding. Piping bytes has no such failure mode: when the brow
 reading, the connection closes and nothing is left behind.
 
 Nothing is buffered to disk, and nothing is held in memory beyond one chunk.
+
+Which endpoint on the recorder the bytes come from is `playback_route.py`'s problem, not
+this module's: recorders disagree about that, and the disagreement is measured rather
+than assumed.
 """
 
 from __future__ import annotations
 
-from base64 import urlsafe_b64decode
 import logging
-import re
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import STREAM_MAIN, STREAM_SUB
-from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError, async_get_host
+from .playback_route import (
+    PlaybackRouteError,
+    Recording,
+    async_open_playback_stream,
+)
+from .redact import scrub_credentials
+from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
 
 _LOGGER = logging.getLogger(__name__)
 
-# The recorder's own stream selector: 1 is the sub stream, 0 the main one.
-PLAYBACK_STREAM_TYPE = {STREAM_SUB: 1, STREAM_MAIN: 0}
-
-# What must never be quoted back out of an error. The NVR playback route authenticates
-# with the recorder's own username and password in the query string, and ffmpeg repeats
-# the whole URL in its complaints — which end up in the log, the panel and diagnostics.
-# Tokens too: shorter-lived, but a live one is a live one.
-_CREDENTIALS = re.compile(r"\b(user|password|token)=[^&\s'\"]+")
-
-
-def scrub_credentials(text: str) -> str:
-    """Blank credential query parameters out of text bound for a log or a report."""
-    return _CREDENTIALS.sub(r"\1=***", text)
-
-
-# Generous: the recorder sends at roughly real time, so a long clip takes a long time.
-# The browser closing the connection is what normally ends it.
-STREAM_TIMEOUT = ClientTimeout(total=None, sock_connect=15, sock_read=60)
+FLV_PREFIX = "/api/reolink_stamina/flv"
 
 _CHUNK = 65536
 
@@ -63,85 +51,15 @@ def async_flv_path(
     seek: int,
 ) -> str:
     """Return the unsigned path for streaming one recording."""
-    from base64 import urlsafe_b64encode
-
-    encoded = urlsafe_b64encode(filename.encode()).decode()
-    return (
-        f"/api/reolink_stamina/flv/{entry_id}/{channel}/{stream}"
-        f"/{encoded}/{start_id}/{playback_id}/{max(0, int(seek))}"
-    )
-
-
-async def async_playback_source(
-    hass: HomeAssistant,
-    entry_id: str,
-    channel: int,
-    stream: str,
-    filename: str,
-    start_id: str,
-    playback_id: str,
-    seek: int,
-) -> str:
-    """Build the recorder's playback URL, as its own web player builds it.
-
-    Two device families, two endpoints, and they do not overlap.
-
-    An NVR serves playback from its `/flv` endpoint, where the recording is named by its
-    file name — for an NVR that is the synthetic name reolink_aio minted from
-    PlaybackTime, and the same string goes back — and `seek` is seconds into it. It does
-    not implement `cmd=Playback` at all: it answers 404 for every recording on every
-    channel however the request is phrased, which reads exactly like a wrong timestamp
-    and is not one. (Measured against an RLN16-410: every combination of local and UTC
-    for every time parameter 404s, while the `/flv` route plays and seeks.)
-
-    An IP camera is the reverse: `cmd=Playback` is its playback endpoint. There, every
-    parameter matters. `start` is StartTime while `playbackTime` is the same instant in
-    UTC, and both are required; `type` selects the resolution numerically; `channel` and
-    `seek` are mandatory even at offset zero. Omitting any one of them makes the camera
-    answer 404 or drop the connection — and reolink_aio's own PLAYBACK URL omits four of
-    them, so on this path only its base address and token can be borrowed.
-
-    A Home Hub takes the camera path: it answers `cmd=Playback` the way the cameras do,
-    which is also the route Home Assistant's own Reolink integration takes for hubs.
-    """
-    from reolink_aio.enums import VodRequestType
-
-    api = async_get_host(hass, entry_id).api
-
-    if api.is_nvr and not api.is_hub:
-        # The library's FLV URL is complete — scheme, ports, stream type, credentials —
-        # except that it pins `seek=0`. Substituted as text rather than parsed and
-        # rebuilt: the library sends the password deliberately unencoded because these
-        # endpoints reject a percent-encoded one, and a round-trip through
-        # parse_qs/urlencode would encode it.
-        _mime, template = await api.get_vod_source(channel, filename, stream, VodRequestType.FLV)
-        offset = max(0, int(seek))
-        url, replaced = re.subn(r"(?<=[?&])seek=0(?=&|$)", f"seek={offset}", template, count=1)
-        if not replaced:
-            # The library stopped pinning it, so there is nothing to substitute and
-            # the parameter still has to be said.
-            url = f"{url}{'&' if '?' in url else '?'}seek={offset}"
-        return url
-
-    # Borrow a library-built URL for its base address and freshly minted token, so
-    # authentication and renewal stay the library's problem.
-    _mime, template = await api.get_vod_source(channel, filename, stream, VodRequestType.PLAYBACK)
-    parts = urlsplit(template)
-    token = parse_qs(parts.query).get("token", [""])[0]
-
-    query: dict[str, Any] = {
-        "cmd": "Playback",
-        "channel": channel,
-        "type": PLAYBACK_STREAM_TYPE.get(stream, 1),
-        "start": start_id,
-        "seek": max(0, int(seek)),
-        "source": filename,
-        "playbackTime": playback_id,
-    }
-    if token:
-        query["token"] = token
-
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+    return Recording(
+        entry_id=entry_id,
+        channel=channel,
+        stream=stream,
+        filename=filename,
+        start_id=start_id,
+        playback_id=playback_id,
+        seek=max(0, int(seek)),
+    ).path(FLV_PREFIX)
 
 
 class ReolinkStaminaFlvView(HomeAssistantView):
@@ -150,7 +68,7 @@ class ReolinkStaminaFlvView(HomeAssistantView):
     # Everything is in the path rather than the query string, so the whole URL can be
     # signed by the panel without ambiguity about what was covered by the signature.
     url = (
-        "/api/reolink_stamina/flv/{entry_id}/{channel}/{stream}"
+        f"{FLV_PREFIX}/{{entry_id}}/{{channel}}/{{stream}}"
         "/{filename}/{start_id}/{playback_id}/{seek}"
     )
     name = "api:reolink_stamina:flv"
@@ -171,42 +89,25 @@ class ReolinkStaminaFlvView(HomeAssistantView):
         hass: HomeAssistant = request.app["hass"]
 
         try:
-            name = urlsafe_b64decode(filename.encode()).decode()
-            channel_no = int(channel)
-            seek_seconds = max(0, int(seek))
+            recording = Recording.from_path(
+                entry_id, channel, stream, filename, start_id, playback_id, seek
+            )
         except (ValueError, UnicodeDecodeError):
             return web.Response(status=400, text="Malformed recording reference")
 
         try:
-            source = await async_playback_source(
-                hass,
-                entry_id,
-                channel_no,
-                stream,
-                name,
-                start_id,
-                playback_id,
-                seek_seconds,
-            )
+            upstream, _route, _url = await async_open_playback_stream(hass, recording)
         except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
             return web.Response(status=404, text=str(err))
+        except PlaybackRouteError as err:
+            # Already scrubbed where the message was built, and scrubbed again here
+            # because this is the last place the text passes before a browser sees it.
+            return web.Response(status=502, text=scrub_credentials(str(err)))
         except Exception as err:
-            _LOGGER.debug("Could not resolve a playback URL", exc_info=True)
-            return web.Response(status=502, text=f"Could not open the recording: {err}")
-
-        session = async_get_clientsession(hass)
-        try:
-            upstream = await session.get(source, timeout=STREAM_TIMEOUT)
-        except Exception as err:
-            # Scrubbed because aiohttp's errors can quote the URL, and on the NVR route
-            # the URL carries the recorder's credentials.
+            _LOGGER.debug("Could not open a playback stream", exc_info=True)
             return web.Response(
-                status=502, text=f"The device did not answer: {scrub_credentials(str(err))}"
+                status=502, text=f"Could not open the recording: {scrub_credentials(str(err))}"
             )
-
-        if upstream.status != 200:
-            upstream.release()
-            return web.Response(status=502, text=f"The device answered HTTP {upstream.status}")
 
         response = web.StreamResponse(
             status=200,

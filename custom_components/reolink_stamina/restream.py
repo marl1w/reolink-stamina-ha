@@ -39,7 +39,6 @@ already queued one per recorder.
 from __future__ import annotations
 
 import asyncio
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections import deque
 import contextlib
 from dataclasses import dataclass
@@ -60,7 +59,13 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .ffmpeg import async_ffmpeg_binary
-from .flv_proxy import async_playback_source, scrub_credentials
+from .playback_route import (
+    PlaybackRouteError,
+    Recording,
+    async_playback_secrets,
+    async_playback_source,
+)
+from .redact import scrub_credentials
 from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
 
 _LOGGER = logging.getLogger(__name__)
@@ -174,6 +179,8 @@ _HARDWARE_ENCODERS: Final = (
 # Hardware encoders not worth trying at all without a render node present.
 _NEEDS_DRI: Final = frozenset({"h264_qsv", "h264_vaapi"})
 
+RESTREAM_PREFIX: Final = "/api/reolink_stamina/restream"
+
 
 def async_restream_path(
     entry_id: str,
@@ -186,11 +193,15 @@ def async_restream_path(
     mode: str = MODE_COPY,
 ) -> str:
     """Return the unsigned path that serves one recording as fragmented MP4."""
-    encoded = urlsafe_b64encode(filename.encode()).decode()
-    return (
-        f"/api/reolink_stamina/restream/{mode}/{entry_id}/{channel}/{stream}"
-        f"/{encoded}/{start_id}/{playback_id}/{max(0, int(seek))}"
-    )
+    return Recording(
+        entry_id=entry_id,
+        channel=channel,
+        stream=stream,
+        filename=filename,
+        start_id=start_id,
+        playback_id=playback_id,
+        seek=max(0, int(seek)),
+    ).path(f"{RESTREAM_PREFIX}/{mode}")
 
 
 def async_hls_path(token: str) -> str:
@@ -741,6 +752,7 @@ class _Stream:
         label: str,
         encoder: Encoder,
         mode: str = MODE_COPY,
+        secrets: tuple[str, ...] = (),
     ) -> None:
         """Start draining stderr immediately, so a full pipe cannot stall ffmpeg."""
         self.process = process
@@ -749,6 +761,9 @@ class _Stream:
         # Carried so a failure can be reported against the rung that produced it: the same
         # message means different things for a remux and for a re-encode.
         self.mode = mode
+        # The credential values in the URL this ffmpeg was given, so its output can be
+        # scrubbed exactly long after that URL has gone out of scope.
+        self._secrets = secrets
         self._stderr = bytearray()
         self._drain = asyncio.create_task(self._async_read_stderr())
 
@@ -771,15 +786,18 @@ class _Stream:
         What gets classified. All of it, because the line that explains a failure is very
         often not among the first few — see `_without_hwaccel_probe` for how that went.
 
-        Scrubbed of credentials before anything else sees it: ffmpeg repeats the input
-        URL in its complaints, and on the NVR route that URL carries the recorder's
-        username and password.
+        Scrubbed before anything else sees it: ffmpeg repeats the input URL in its
+        complaints, and on the `/flv` route that URL carries the recorder's own username
+        and password. `secrets` are the literal values, captured when the stream was
+        started, so a password the pattern would have to guess the extent of is still
+        removed exactly.
         """
         return scrub_credentials(
             _without_hwaccel_probe(
                 self._stderr.decode(errors="replace").strip(),
                 requested=_devices_requested(self.encoder),
-            )
+            ),
+            secrets=self._secrets,
         )
 
     @property
@@ -819,9 +837,10 @@ class _HlsStream(_Stream):
         token: str,
         directory: Path,
         mode: str = MODE_COPY,
+        secrets: tuple[str, ...] = (),
     ) -> None:
         """Start the idle watchdog along with the stream."""
-        super().__init__(process, label, encoder, mode)
+        super().__init__(process, label, encoder, mode, secrets)
         self.hass = hass
         self.token = token
         self.directory = directory
@@ -1125,11 +1144,19 @@ async def async_start_hls(
     a URL it can give straight to a video element — an iPhone hands playback to the system
     player, which will not follow anything more elaborate.
     """
-    source = await async_playback_source(
-        hass, entry_id, channel, stream, filename, start_id, playback_id, seek
+    recording = Recording(
+        entry_id=entry_id,
+        channel=channel,
+        stream=stream,
+        filename=filename,
+        start_id=start_id,
+        playback_id=playback_id,
+        seek=max(0, int(seek)),
     )
+    source = await async_playback_source(hass, recording)
+    credentials = async_playback_secrets(hass, entry_id)
     token = secrets.token_urlsafe(24)
-    label = f"{entry_id}/{channel}/{stream}@{seek}s hls"
+    label = f"{recording.label} hls"
     directory = Path(
         await hass.async_add_executor_job(lambda: tempfile.mkdtemp(prefix=SESSION_PREFIX))
     )
@@ -1147,7 +1174,7 @@ async def async_start_hls(
         await hass.async_add_executor_job(lambda: shutil.rmtree(directory, ignore_errors=True))
         raise
 
-    session = _HlsStream(hass, process, label, encoder, token, directory, mode)
+    session = _HlsStream(hass, process, label, encoder, token, directory, mode, credentials)
     await async_get_manager(hass).async_claim(session)
     return token
 
@@ -1159,7 +1186,7 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
     """Serve a recording as fragmented MP4, repackaged or re-encoded."""
 
     url = (
-        "/api/reolink_stamina/restream/{mode}/{entry_id}/{channel}/{stream}"
+        f"{RESTREAM_PREFIX}/{{mode}}/{{entry_id}}/{{channel}}/{{stream}}"
         "/{filename}/{start_id}/{playback_id}/{seek}"
     )
     name = "api:reolink_stamina:restream"
@@ -1186,23 +1213,26 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
             return web.Response(status=400, text="Unknown conversion mode")
 
         try:
-            name = urlsafe_b64decode(filename.encode()).decode()
-            channel_no = int(channel)
-            seek_seconds = max(0, int(seek))
+            recording = Recording.from_path(
+                entry_id, channel, stream, filename, start_id, playback_id, seek
+            )
         except (ValueError, UnicodeDecodeError):
             return web.Response(status=400, text="Malformed recording reference")
 
         try:
-            source = await async_playback_source(
-                hass, entry_id, channel_no, stream, name, start_id, playback_id, seek_seconds
-            )
+            source = await async_playback_source(hass, recording)
         except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
             return web.Response(status=404, text=str(err))
+        except PlaybackRouteError as err:
+            return web.Response(status=502, text=scrub_credentials(str(err)))
         except Exception as err:
             _LOGGER.debug("Could not resolve a playback URL", exc_info=True)
-            return web.Response(status=502, text=f"Could not open the recording: {err}")
+            return web.Response(
+                status=502, text=f"Could not open the recording: {scrub_credentials(str(err))}"
+            )
 
-        label = f"{entry_id}/{channel_no}/{stream}@{seek_seconds}s mp4"
+        credentials = async_playback_secrets(hass, entry_id)
+        label = f"{recording.label} mp4"
         manager = async_get_manager(hass)
 
         try:
@@ -1215,7 +1245,7 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
             _LOGGER.debug("Could not start ffmpeg", exc_info=True)
             return web.Response(status=502, text=f"Could not start the conversion: {err}")
 
-        active = _Stream(process, label, encoder, mode)
+        active = _Stream(process, label, encoder, mode, credentials)
         await manager.async_claim(active)
 
         # Wait for the first bytes before answering, so a conversion that fails outright is

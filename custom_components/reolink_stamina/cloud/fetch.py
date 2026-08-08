@@ -29,7 +29,7 @@ import shutil
 
 from homeassistant.core import HomeAssistant
 
-from ..flv_proxy import scrub_credentials
+from ..redact import scrub_credentials
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -142,8 +142,8 @@ async def async_cut_with_ffmpeg(
         raise FetchError(f"ffmpeg did not finish within {deadline:.0f}s") from err
 
     if process.returncode != 0:
-        # Scrubbed because ffmpeg quotes the input URL, which on the NVR playback route
-        # carries the recorder's credentials.
+        # Scrubbed because ffmpeg quotes the input URL, which on the `/flv` playback route
+        # carries the recorder's own username and password.
         detail = scrub_credentials(stderr.decode(errors="replace")[:300].strip())
         raise FetchError(f"ffmpeg failed: {detail or f'exit {process.returncode}'}")
     if not stdout:
