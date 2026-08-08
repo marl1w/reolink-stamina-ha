@@ -34,8 +34,14 @@
         }
       },
       "signals": {
-        "title": "What else should count?",
-        "description": "Relevance already counts the time of day, how long a detection lasted and which camera fired before it. Anything you add here is counted alongside them, so \"a person on the drive while nobody is in\" becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leave them empty if you would rather not — the time of day is most of the value on its own."
+        "title": "Marking, and what else to count",
+        "description": "Relevance already counts the time of day, how long a detection lasted, which camera fired before it, and what each camera reports about itself — its floodlight, its siren, and its day/night state, which is the camera telling you it switched to infrared. Those are found automatically and attached to the camera they belong to.\n\nAdd anything here that is true of the whole property rather than of one lens: whether anybody is in, whether the alarm is set, whether the gate is locked. \"A person on the drive while nobody is home\" then becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leaving them empty is fine.",
+        "data": {
+          "relevance_sensitivity": "How much to mark"
+        },
+        "data_description": {
+          "relevance_sensitivity": "A row is marked when it is unusual for its camera and unusual at all. This moves the second of those. Measured across nine cameras, the three choices came out at roughly 1.6, 4 and 9 marks a day for the whole property. Change it whenever — nothing is recounted, the line just moves."
+        }
       },
       "player": {
         "title": "The player",
@@ -82,6 +88,13 @@
         "doorbell": "Doorbell",
         "crying": "Crying",
         "motion": "Motion (noisy)"
+      }
+    },
+    "relevance_sensitivity": {
+      "options": {
+        "few": "Only the strangest",
+        "balanced": "Balanced",
+        "many": "More, including borderline ones"
       }
     }
   },

@@ -22,9 +22,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.start import async_at_started
 
-from ..const import DOMAIN
+from ..const import DEFAULT_RELEVANCE_SENSITIVITY, DOMAIN
 from .analysis import Analysis
-from .backfill import async_backfill
+from .backfill import async_backfill, async_backfill_signals
 from .journal import Journal
 from .watcher import TransitionWatcher
 
@@ -47,6 +47,7 @@ async def async_start(
     *,
     include_all_devices: bool = False,
     signals: dict[str, list[str]] | None = None,
+    sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY,
 ) -> RelevanceRuntime:
     """Open the journal and begin recording.
 
@@ -63,7 +64,7 @@ async def async_start(
     watcher = TransitionWatcher(
         hass, journal, include_all_devices=include_all_devices, signals=signals
     )
-    analysis = Analysis(hass, journal)
+    analysis = Analysis(hass, journal, sensitivity=sensitivity)
     runtime = RelevanceRuntime(journal=journal, watcher=watcher, analysis=analysis)
 
     async def _begin(_hass: HomeAssistant) -> None:
@@ -71,7 +72,13 @@ async def async_start(
         analysis.async_schedule()
         entry.async_create_background_task(
             hass,
-            _async_catch_up(hass, journal, analysis, include_all_devices=include_all_devices),
+            _async_catch_up(
+                hass,
+                journal,
+                analysis,
+                include_all_devices=include_all_devices,
+                signals=signals or {},
+            ),
             name=f"{DOMAIN}_journal_backfill",
         )
 
@@ -80,15 +87,26 @@ async def async_start(
 
 
 async def _async_catch_up(
-    hass: HomeAssistant, journal: Journal, analysis: Analysis, *, include_all_devices: bool
+    hass: HomeAssistant,
+    journal: Journal,
+    analysis: Analysis,
+    *,
+    include_all_devices: bool,
+    signals: dict[str, list[str]],
 ) -> None:
     """Import history if there is any to import, then learn from everything held.
 
-    One background task rather than two, because the order matters: building a model before
+    One background task rather than three, because the order matters: building a model before
     the import lands would learn from a fraction of the history and then wait until three in
-    the morning to notice the rest.
+    the morning to notice the rest. The signals go between the two for the same reason — they
+    are stamped onto transitions, so they have to be stamped before anything counts them.
+
+    Both imports are cheap when there is nothing to do, which is what makes this safe to run
+    on every reload. That matters: changing the configuration reloads the entry, and somebody
+    who has just chosen a signal should not have to wait until tomorrow to see it.
     """
     await async_backfill(hass, journal, include_all_devices=include_all_devices)
+    await async_backfill_signals(hass, journal, signals, include_all_devices=include_all_devices)
     await analysis.async_rebuild()
 
 

@@ -73,6 +73,19 @@ export class StaminaApi {
     });
   }
 
+  /**
+   * What one camera has learned, as distributions rather than as a verdict on one event.
+   *
+   * The counterpart of `relevance` above, and arguably the more useful half: that one says
+   * why an event stood out, this one says what it stood out from.
+   */
+  async relevanceProfile(targets) {
+    return this.hass.callWS({
+      type: `${DOMAIN}/relevance_profile`,
+      targets: targets.map(({ entryId, channel }) => ({ entry_id: entryId, channel })),
+    });
+  }
+
   async detections({ entryId, channel, start, end }) {
     return this.hass.callWS({
       type: `${DOMAIN}/detections`,

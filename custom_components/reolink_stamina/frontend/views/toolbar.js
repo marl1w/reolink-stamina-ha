@@ -185,13 +185,27 @@ const STYLES = /* css */ `
 .check .icon { --mdc-icon-size: 13px; width: 13px; height: 13px; }
 .pop__foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rv-line); display: flex; }
 
+/*
+ * On a phone the toolbar gives its height back to the list.
+ *
+ * Nothing is removed — the fold on scroll already does that, and this is about what is left
+ * when it is open. The padding, the gap between rows and the gap inside a row were all sized
+ * for a desktop where vertical space is cheap; on a 390px screen those three together were
+ * costing about a row and a half of events before a single control had been drawn.
+ */
 @media (max-width: 700px) {
-  .bar { padding: 10px 12px; }
+  .bar { padding: 7px 10px; gap: 7px; }
+  .line { gap: 5px; }
   .collapse--presets { order: 3; width: 100%; }
   /* Scrolled sideways rather than wrapped, and without a bar of its own: a scrollbar that
      appears across the toolbar of a panel with nothing else to scroll reads as a fault. */
   .presets { overflow-x: auto; scrollbar-width: none; }
   .presets::-webkit-scrollbar { display: none; }
+  /* The presets are a whole row of their own on a phone, so their padding is a whole row's
+     worth of height. They scroll sideways rather than wrapping, so nothing here can make one
+     of them unreachable. */
+  .preset { padding: 4px 10px; font-size: 0.8rem; }
+  .fresh { font-size: 0.72rem; }
 }
 
 /*
@@ -346,6 +360,25 @@ export class StaminaToolbar extends HTMLElement {
       this._camsLabel,
       icon("mdi:menu-down")
     );
+    // What everything selected normally does, as opposed to what one camera does. Only
+    // present with the beta on, and only worth offering for more than one camera — for a
+    // single one the picker's own button says the same thing about the same data.
+    this._learned = el(
+      "button",
+      {
+        class: "icon-btn",
+        title: "What these cameras have learned",
+        "aria-label": "What these cameras have learned",
+        onclick: (event) => {
+          event.currentTarget.blur();
+          this.dispatchEvent(
+            new CustomEvent("show-learned-all", { bubbles: true, composed: true })
+          );
+        },
+      },
+      icon("mdi:chart-box-outline")
+    );
+
     this._camsPop = el("div", { class: "pop pop--right", hidden: true });
     const camsAnchor = el("div", { class: "anchor" }, this._camsBtn, this._camsPop);
 
@@ -359,6 +392,7 @@ export class StaminaToolbar extends HTMLElement {
       el("div", { class: "spacer" }),
       this._fresh,
       this._refresh,
+      this._learned,
       camsAnchor
     );
 
@@ -389,6 +423,10 @@ export class StaminaToolbar extends HTMLElement {
 
   _update() {
     const store = this._store;
+
+    // Nothing learned means nothing to show, and for one camera the picker already offers it
+    // against the same data.
+    this._learned.hidden = !store.relevanceEnabled || store.cameras.length < 2;
 
     // Date label
     this._dateLabel.textContent = store.isSingleDay

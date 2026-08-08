@@ -19,6 +19,7 @@ import time
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 
+from ..const import DEFAULT_RELEVANCE_SENSITIVITY, RELEVANCE_SENSITIVITY_FLOORS
 from .events import Event, derive
 from .journal import Journal
 from .rates import Model, build
@@ -31,14 +32,30 @@ _LOGGER = logging.getLogger(__name__)
 _REBUILD_HOUR = 3
 _REBUILD_MINUTE = 17
 
+# How far behind a window to read, so the first event in it has a predecessor. An hour is
+# generous for a doorway and still a small read; where nothing fired in that hour, "nothing
+# fired before this" is the honest answer rather than an artefact of where the window starts.
+_LEAD_IN = 3600.0
+
 
 class Analysis:
     """The current model, and the events it was built from."""
 
-    def __init__(self, hass: HomeAssistant, journal: Journal) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        journal: Journal,
+        *,
+        sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY,
+    ) -> None:
         """Prepare an analysis, without building anything yet."""
         self._hass = hass
         self._journal = journal
+        # The word the user chose, resolved here rather than stored as a number: retuning what
+        # "balanced" means then reaches everybody who picked it, on the next rebuild.
+        self._floor = RELEVANCE_SENSITIVITY_FLOORS.get(
+            sensitivity, RELEVANCE_SENSITIVITY_FLOORS[DEFAULT_RELEVANCE_SENSITIVITY]
+        )
         self._model = Model()
         self._events: list[Event] = []
         self._cancel: CALLBACK_TYPE | None = None
@@ -80,7 +97,7 @@ class Analysis:
         now = time.time()
         events = derive(self._hass, transitions)
         model = build(events, now=now)
-        calibrate(model, events)
+        calibrate(model, events, floor=self._floor)
 
         self._model, self._events = model, events
         _LOGGER.debug(
@@ -111,7 +128,7 @@ class Analysis:
             return {"days": 0.0, "events": 0}
         return {"days": round(profile.days, 1), "events": profile.events}
 
-    def window(
+    async def async_window(
         self,
         *,
         since: float,
@@ -122,19 +139,30 @@ class Analysis:
     ) -> list[tuple[Event, Score]]:
         """Score the events in a window, oldest first.
 
-        The whole list is walked rather than a slice of it, because the predecessor term needs
-        what came before — and for the first event in any window, that is something outside
-        it. Slicing first would tell every window that nothing fired before it began, which is
-        a strong signal and a wrong one.
+        Read from the journal rather than from the events the model was built from. The two
+        are not the same thing and the difference is a whole day wide: the model is rebuilt
+        overnight, so anything that happened since — this afternoon's detections, and every
+        signal switched on this morning — was invisible until the next rebuild. What the
+        panel shows must be what the journal holds *now*; only the rates it is compared
+        against are allowed to be a night old, and those genuinely want a night of settling.
+
+        The read reaches back past `since`, because the predecessor term needs whatever fired
+        before the window opened. Slicing at the boundary would tell every window that nothing
+        preceded it, which is a strong signal and a wrong one.
 
         Answers even while a camera is still collecting. The scores are meaningless then and
         `unusual` is false for all of them, but *what was collected* is not meaningless at all:
         showing it is what makes the feature worth installing on the first day rather than in
         a fortnight.
         """
+        # Every camera, not just the one asked about: the predecessor term is "what fired
+        # before this, anywhere", and a camera-filtered read would answer a different question.
+        transitions = await self._journal.async_transitions(since=since - _LEAD_IN, until=until)
+        events = derive(self._hass, transitions)
+
         found: list[tuple[Event, Score]] = []
         previous: Event | None = None
-        for event in self._events:
+        for event in events:
             if since <= event.started_at < until and (camera is None or event.camera == camera):
                 found.append(
                     (

@@ -13,8 +13,11 @@ months of history instead of invalidating it.
 
 Merging is per camera and kind, not per entity. Reolink reports the same person through
 several sensors — `person`, `crossline_person`, `intrusion_person` — and they map to one
-subject on purpose. An event is open while *any* of them is on, and closes once they are all
-clear and stay clear.
+subject on purpose, so an arrival is one event however many of them report it.
+
+How long it lasted is measured from the sensor that opened it, though, and not from the last
+of them to clear. `linger_person` and its siblings stay on for as long as something lingers,
+which turns a car parking in a garage into an event lasting hours. See `_runs`.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import datetime as dt
 import json
 import logging
 
-from homeassistant.const import STATE_ON, SUN_EVENT_SUNSET
+from homeassistant.const import STATE_ON, SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
@@ -34,6 +37,9 @@ from ..const import EVENT_MAX_SECONDS, EVENT_MERGE_SECONDS
 from .journal import Transition
 
 _LOGGER = logging.getLogger(__name__)
+
+# How far either side of sunrise or sunset still counts as twilight, for the phrase alone.
+TWILIGHT_MINUTES = 30
 
 _MINUTES_PER_DAY = 1440
 _HALF_DAY_MINUTES = _MINUTES_PER_DAY // 2
@@ -56,6 +62,10 @@ class Event:
     # Assistant has no location. What captures darkness, which the clock cannot: 18:00 is
     # daylight in June and night in December.
     solar_offset: int | None
+    # "dawn", "day", "dusk", "night", or None where the offset is None. Carried beside the
+    # offset rather than derived from it, because the offset alone cannot tell morning from
+    # evening: 07:00 and 21:00 are both hours away from sunset.
+    solar_phase: str | None
     is_weekend: bool
     # The configured signals as they stood when this began, or None where none are set up.
     # Raw states: what a value means is a question for whoever reads it back.
@@ -71,10 +81,16 @@ def _wrap(minutes: float) -> int:
 
 
 class SolarClock:
-    """Sunset for a date, remembered.
+    """Where the sun was, remembered per date.
 
     Astral is cheap and a year of events is not, so each date is worked out once. Local
     dates, because that is what a household's evening is measured against.
+
+    Two answers rather than one, and they do different jobs. The *offset* from sunset is what
+    the model counts: it is continuous, it wraps, and it tracks the season in a way the clock
+    cannot — 18:00 is daylight in June and night in December. The *phase* is what a person
+    reads, because "8h 53m before sunset" is arithmetically correct and means nothing; the
+    honest way to say it is "in daylight".
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -82,24 +98,45 @@ class SolarClock:
         self._hass = hass
         # Per instance rather than an `lru_cache` on the method, which would key on `self`
         # and quietly keep every Home Assistant it had ever been asked about alive.
-        self._sunsets: dict[dt.date, dt.datetime | None] = {}
+        self._events: dict[tuple[str, dt.date], dt.datetime | None] = {}
 
-    def _sunset(self, day: dt.date) -> dt.datetime | None:
-        """Return sunset on a local date, or None where there is none to have."""
-        if day not in self._sunsets:
+    def _event(self, name: str, day: dt.date) -> dt.datetime | None:
+        """Return a solar event on a local date, or None where there is none to have."""
+        key = (name, day)
+        if key not in self._events:
             try:
-                self._sunsets[day] = get_astral_event_date(self._hass, SUN_EVENT_SUNSET, day)
+                self._events[key] = get_astral_event_date(self._hass, name, day)
             except (ValueError, TypeError):
                 # No location configured, or a latitude where the sun does not set today.
-                self._sunsets[day] = None
-        return self._sunsets[day]
+                self._events[key] = None
+        return self._events[key]
 
     def offset(self, moment: dt.datetime) -> int | None:
         """Return minutes from that day's sunset, negative before it."""
-        sunset = self._sunset(moment.date())
+        sunset = self._event(SUN_EVENT_SUNSET, moment.date())
         if sunset is None:
             return None
         return _wrap((moment - sunset).total_seconds() / 60.0)
+
+    def phase(self, moment: dt.datetime) -> str | None:
+        """Return "dawn", "day", "dusk" or "night" — what somebody would call it.
+
+        Twilight is claimed by whichever edge it is nearer, within a fixed half hour either
+        side. Not civil twilight, which varies from twenty minutes to never depending on the
+        latitude and would make the same phrase mean different things in different houses.
+        """
+        day = moment.date()
+        sunrise = self._event(SUN_EVENT_SUNRISE, day)
+        sunset = self._event(SUN_EVENT_SUNSET, day)
+        if sunrise is None or sunset is None:
+            return None
+
+        edge = dt.timedelta(minutes=TWILIGHT_MINUTES)
+        if abs(moment - sunrise) <= edge:
+            return "dawn"
+        if abs(moment - sunset) <= edge:
+            return "dusk"
+        return "day" if sunrise < moment < sunset else "night"
 
 
 def _signals(raw: str | None) -> tuple[tuple[str, str], ...]:
@@ -133,11 +170,25 @@ def _detecting(transition: Transition) -> bool:
 def _runs(
     transitions: list[Transition], *, window: float, longest: float
 ) -> Iterator[tuple[float, float | None, str | None]]:
-    """Yield the start, end and opening context of each merged run of detection."""
+    """Yield the start, end and opening context of each merged run of detection.
+
+    A run belongs to the sensor that opened it, and ends when *that* sensor clears.
+
+    It used to stay open while any sensor of the same kind was on, which is defensible right
+    up until you look at what Reolink actually publishes. `vehicle`, `crossline_vehicle` and
+    `linger_vehicle` all map to one subject on purpose — but `linger_vehicle` stays on for as
+    long as something lingers, so a car pulling into a garage held the whole event open behind
+    it. Measured on a real installation: three transitions in isolation derive to 10.9
+    seconds; add one same-kind sensor bouncing nearby and the same arrival becomes 288.2.
+
+    Everything a companion sensor does *inside* an open run is still swallowed, which is the
+    part worth keeping: one arrival remains one event however many sensors report it. It
+    simply no longer decides when that event finished.
+    """
     start: float | None = None
     end: float | None = None
     context: str | None = None
-    active: set[str] = set()
+    opener: str | None = None
 
     for row in transitions:
         if _detecting(row):
@@ -148,19 +199,36 @@ def _runs(
             if start is None:
                 start = row.at
                 end = None
+                opener = row.entity_id
                 # The signals as they were when it *began*, not when it cleared: what was
                 # true at the start is what the event happened against.
                 context = row.context
-            active.add(row.entity_id)
-        else:
-            active.discard(row.entity_id)
-            if not active and start is not None:
-                # Provisional: another detection inside the window will reopen this.
-                end = row.at
+            elif row.entity_id == opener:
+                # The same sensor flickering back on inside the window: one detection, still
+                # running, so whatever end it had recorded was premature.
+                end = None
+        elif start is not None and end is None and row.entity_id == opener:
+            # The *first* clear ends it. Provisional only in that the same sensor firing again
+            # inside the window reopens it, above.
+            #
+            # `end is None` is the whole guard, and leaving it out is how a seven-second animal
+            # detection came to last five minutes. A run is not yielded until something opens
+            # the next one, so a later redundant clear — a second `off`, an `unavailable` when
+            # the recorder reboots — used to land here and drag the end along with it, with
+            # nothing on this path checking the merge window. The cap then trimmed the result
+            # to exactly `EVENT_MAX_SECONDS`, which is why every one of these was 300 seconds
+            # to the millisecond: the giveaway that it was arithmetic rather than a detection.
+            end = row.at
 
         if start is not None and row.at - start >= longest:
-            yield start, end if end is not None else row.at, context
-            start, end, context, active = None, None, None, set()
+            # Cut at the limit, not at whenever the next transition happened to arrive.
+            #
+            # This yielded `row.at`, so a sensor that stuck on and went quiet produced an
+            # event as long as the silence: a real installation had vehicle detections
+            # lasting two and a quarter hours, which then read as the rarest duration that
+            # camera had ever seen and pushed the event over the line on its own.
+            yield start, min(end if end is not None else row.at, start + longest), context
+            start, end, context, opener = None, None, None, None
 
     if start is not None:
         yield start, end, context
@@ -199,6 +267,7 @@ def derive(
                     duration=None if ended_at is None else round(ended_at - started_at, 3),
                     minute_of_day=local.hour * 60 + local.minute,
                     solar_offset=clock.offset(local),
+                    solar_phase=clock.phase(local),
                     is_weekend=local.weekday() >= 5,
                     context=_signals(context),
                 )

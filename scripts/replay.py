@@ -107,6 +107,7 @@ def _event(camera: str, kind: str, started_at: float, ended_at: float | None) ->
         duration=None if ended_at is None else round(ended_at - started_at, 3),
         minute_of_day=moment.hour * 60 + moment.minute,
         solar_offset=None,
+        solar_phase=None,
         is_weekend=moment.weekday() >= 5,
     )
 

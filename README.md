@@ -16,7 +16,7 @@ It is a companion to the official [Reolink integration][reolink], not a replacem
 | --- | --- |
 | **[One timeline across every device →](docs/timeline.md)** | Every camera's detections in a single list, whatever recorder they hang off, with the clip one click away and the playhead already at the event. |
 | **[An off-site copy of what mattered →](docs/cloud-sync.md)** | A clip of each detection uploaded to your own cloud storage, event by event, so the evidence outlives the recorder it was written on. |
-| **[Learning what is normal →](docs/relevance.md)** | A record of what each camera usually sees and when, so the handful of events worth opening can be told from the hundreds that are not. Beta. |
+| **[Learning what is normal →](docs/relevance.md)** | A record of what each camera usually sees and when, so the handful of events worth opening can be told from the hundreds that are not — and a view of what it has actually learned. Beta. |
 
 ## What you need
 

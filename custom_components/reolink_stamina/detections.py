@@ -24,6 +24,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
+from .const import CAMERA_SIGNAL_KEYS
 from .reolink_registry import async_get_host
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +126,57 @@ def async_detection_entities(hass: HomeAssistant, entry_id: str, channel: int) -
     except Exception:
         _LOGGER.debug("Could not list detection sensors", exc_info=True)
     return found
+
+
+def async_camera_signal_entities(hass: HomeAssistant, entry_id: str, channel: int) -> list[str]:
+    """Return the entities a camera reports about *itself*, worth counting beside its events.
+
+    The same channel arithmetic as the detection sensors above, because these sit on the same
+    device and are addressed the same way — a camera's floodlight, its siren, and its day/night
+    state. Discovered rather than configured, exactly as the detections are: a camera added to
+    a recorder brings its own along on the next reload.
+
+    Day/night is the one that earns its place. It is the camera saying whether it has switched
+    to infrared, which is darkness as that particular lens experienced it — under a porch light,
+    behind a tree, facing east — rather than as an almanac calculated it for the whole property.
+    The solar term can only ever be the second of those.
+    """
+    found: list[str] = []
+    try:
+        api = async_get_host(hass, entry_id).api
+    except Exception:
+        return found
+    channel_for_uid = getattr(api, "channel_for_uid", None)
+
+    try:
+        ent_reg = er.async_get(hass)
+        for entity in er.async_entries_for_config_entry(ent_reg, entry_id):
+            if entity.disabled_by is not None:
+                continue
+            parts = entity.unique_id.split("_")
+            if len(parts) < 3:
+                continue
+
+            token = parts[1]
+            resolved: int | None = None
+            if token.isdigit():
+                resolved = int(token)
+            elif token.startswith("ch") and token[2:].isdigit():
+                resolved = int(token[2:])
+            elif channel_for_uid is not None:
+                try:
+                    resolved = channel_for_uid(token)
+                except Exception:
+                    resolved = None
+            if resolved != channel:
+                continue
+
+            key = "_".join(parts[2:]).lower()
+            if (entity.domain, key) in CAMERA_SIGNAL_KEYS:
+                found.append(entity.entity_id)
+    except Exception:
+        _LOGGER.debug("Could not list a camera's own signal entities", exc_info=True)
+    return sorted(found)
 
 
 async def _async_history(

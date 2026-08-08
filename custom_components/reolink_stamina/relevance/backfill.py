@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 from typing import Any
 
+from homeassistant.const import STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
@@ -35,10 +37,11 @@ from ..const import (
     JOURNAL_BACKFILL_DAYS_DEFAULT,
     JOURNAL_BACKFILL_DAYS_MAX,
     JOURNAL_META_BACKFILLED,
+    JOURNAL_META_SIGNALS,
     JOURNAL_SOURCE_BACKFILL,
 )
 from .journal import Journal, Transition
-from .watcher import async_detection_map
+from .watcher import async_detection_map, async_signal_map
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -172,3 +175,100 @@ async def async_backfill(
         "Imported %s detection transitions from %s days of Home Assistant history", imported, days
     )
     return imported
+
+
+def _state_at(timeline: list[tuple[float, str]], at: float) -> str:
+    """Return what an entity read at a moment, from its history.
+
+    The last state that had already begun. Before the history starts there is nothing to know,
+    and `unknown` is what the live watcher writes for an entity it cannot see — so an event
+    older than the recorder's retention says the same thing either way.
+    """
+    low, high = 0, len(timeline)
+    while low < high:
+        middle = (low + high) // 2
+        if timeline[middle][0] <= at:
+            low = middle + 1
+        else:
+            high = middle
+    return timeline[low - 1][1] if low else STATE_UNKNOWN
+
+
+async def async_backfill_signals(
+    hass: HomeAssistant,
+    journal: Journal,
+    signals: dict[str, list[str]],
+    *,
+    include_all_devices: bool = False,
+) -> int:
+    """Reconstruct what the configured signals said, and stamp it onto history.
+
+    Signals are snapshotted when a transition is written, which is right for everything the
+    live watcher sees and useless for everything that happened first. Somebody who adds "is
+    anybody home" after a month of collecting would otherwise be told to wait another week
+    before it counted for anything — while Home Assistant has the answer for that whole month
+    sitting in the recorder.
+
+    Runs when the set of signals changes, and does nothing when it has not: the marker records
+    which entities were stamped, so a reload is free and adding one signal re-reads history
+    for all of them, which is the only way the snapshots stay consistent with each other.
+
+    Returns how many transitions were stamped.
+    """
+    # The same map the live watcher uses, so a reconstructed snapshot and a recorded one hold
+    # the same entities. Two readers disagreeing here would surface only as counts that do
+    # not add up, months later.
+    wanted = async_signal_map(hass, signals, include_all_devices=include_all_devices)
+    # Keyed on the signals themselves rather than on "done": adding one has to re-stamp
+    # everything, because a snapshot missing an entity is not the same as one recording it
+    # as absent, and the two must not end up mixed together in one history.
+    fingerprint = json.dumps({camera: sorted(ids) for camera, ids in sorted(wanted.items())})
+    if await journal.async_get_meta(JOURNAL_META_SIGNALS) == fingerprint:
+        return 0
+
+    if not wanted:
+        # Every signal removed. Recording that is what stops the next reload doing this again.
+        await journal.async_set_meta(JOURNAL_META_SIGNALS, fingerprint)
+        return 0
+
+    # Read the rows first, because they define the window to ask the recorder about. The
+    # nightly rebuild already holds every transition at once, so this is a footprint the
+    # feature is paying anyway rather than a new one.
+    held = {camera: await journal.async_transitions(camera=camera) for camera in wanted}
+    moments = [row.at for rows in held.values() for row in rows]
+    if not moments:
+        return 0
+
+    entity_ids = sorted({entity_id for entities in wanted.values() for entity_id in entities})
+    start = dt_util.utc_from_timestamp(min(moments))
+    end = dt_util.utc_from_timestamp(max(moments))
+    states = await _async_history(hass, start, end, entity_ids)
+
+    timelines: dict[str, list[tuple[float, str]]] = {}
+    for entity_id in entity_ids:
+        found = []
+        for state in states.get(entity_id) or ():
+            changed = getattr(state, "last_changed", None)
+            if changed is not None:
+                found.append((changed.timestamp(), state.state))
+        found.sort()
+        timelines[entity_id] = found
+
+    stamps: list[tuple[str, float, str]] = []
+    for camera, entities in wanted.items():
+        for row in held[camera]:
+            snapshot = {
+                entity_id: _state_at(timelines.get(entity_id) or [], row.at)
+                for entity_id in entities
+            }
+            stamps.append((row.entity_id, row.at, json.dumps(snapshot, separators=(",", ":"))))
+        # Between cameras: the rows are already in memory, but the writes are not free and a
+        # reload should not be felt.
+        await asyncio.sleep(0)
+
+    stamped = await journal.async_stamp_context(stamps)
+    await journal.async_set_meta(JOURNAL_META_SIGNALS, fingerprint)
+    _LOGGER.info(
+        "Reconstructed %s signals across %s transitions of history", len(entity_ids), stamped
+    )
+    return stamped

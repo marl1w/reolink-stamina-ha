@@ -36,6 +36,8 @@ from .flv_proxy import async_flv_path
 from .fragments import FragmentsUnsupportedError, async_fragment_path
 from .relevance.journal import camera_key
 from .relevance.score import SCORE_MIN_DAYS, SCORE_MIN_EVENTS
+from .relevance.shapes import profile_payload
+from .relevance.watcher import async_signal_map
 from .reolink_registry import (
     DeviceUnavailableError,
     ReolinkIncompatibleError,
@@ -157,6 +159,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_stream_url)
     websocket_api.async_register_command(hass, ws_detections)
     websocket_api.async_register_command(hass, ws_relevance)
+    websocket_api.async_register_command(hass, ws_relevance_profile)
     websocket_api.async_register_command(hass, ws_clip_url)
     websocket_api.async_register_command(hass, ws_playback_failure)
 
@@ -811,8 +814,8 @@ def _camera_names(hass: HomeAssistant, include_all_devices: bool) -> dict[str, s
         vol.Required("end"): cv.string,
     }
 )
-@callback
-def ws_relevance(
+@websocket_api.async_response
+async def ws_relevance(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
@@ -849,7 +852,7 @@ def ws_relevance(
         for entities in (data.options.relevance_signals or {}).values()
         for entity_id in entities
     }
-    scored = analysis.window(
+    scored = await analysis.async_window(
         since=start.timestamp(),
         until=end.timestamp(),
         camera=camera,
@@ -889,6 +892,81 @@ def ws_relevance(
                 }
                 for event, result in scored
             ],
+        },
+    )
+
+
+# --------------------------------------------------------- what a camera learned
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/relevance_profile",
+        vol.Required("targets"): vol.All(cv.ensure_list, [TARGET_SCHEMA]),
+    }
+)
+@callback
+def ws_relevance_profile(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return what one camera has learned, as distributions the panel can draw.
+
+    The counterpart of the per-event breakdown, and arguably the more useful half: that one
+    says why *this* event stood out, and this one says what it stood out from. It is also the
+    only way to see that a camera has learned something wrong — a week of scaffolding outside,
+    a sensor that flapped for a fortnight — which is otherwise invisible until it silently
+    stops marking anything.
+
+    Straight off the nightly model. Nothing is computed here that scoring does not already
+    compute, so this stays a lookup no matter how much history is behind it.
+    """
+    data = _access(hass, connection, msg)
+    if data is None:
+        return
+    if data.relevance is None:
+        connection.send_result(msg["id"], {"enabled": False})
+        return
+
+    analysis = data.relevance.analysis
+    cameras = [camera_key(t["entry_id"], t["channel"]) for t in msg["targets"]]
+    if not cameras:
+        connection.send_error(
+            msg["id"], websocket_api.const.ERR_INVALID_FORMAT, "No cameras asked about"
+        )
+        return
+    names = _camera_names(hass, data.options.beta_all_devices)
+    # Every signal on this camera, chosen or discovered — the floodlight and the day/night
+    # state are attached automatically and would otherwise show as bare entity ids.
+    watched = async_signal_map(
+        hass,
+        data.options.relevance_signals or {},
+        include_all_devices=data.options.beta_all_devices,
+    )
+    labels = {
+        entity_id: (state.name if (state := hass.states.get(entity_id)) else entity_id)
+        for camera in cameras
+        for entity_id in watched.get(camera, ())
+    }
+
+    # Across several cameras the state is the *least* ready of them, and the coverage is the
+    # longest span with every camera's events in it. Reporting the best of them would say the
+    # overview is active while half of what it draws is still a fortnight of nothing.
+    order = ("collecting", "too_few_events", "active")
+    states = [analysis.state(camera) for camera in cameras]
+    coverages = [analysis.coverage(camera) for camera in cameras]
+
+    connection.send_result(
+        msg["id"],
+        {
+            "enabled": True,
+            "state": min(states, key=order.index),
+            "coverage": {
+                "days": max((c["days"] for c in coverages), default=0.0),
+                "events": sum(c["events"] for c in coverages),
+            },
+            **profile_payload(analysis.model, cameras, names=names, labels=labels),
         },
     )
 

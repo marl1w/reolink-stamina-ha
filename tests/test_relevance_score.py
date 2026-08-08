@@ -49,6 +49,7 @@ def _event(started_at: float, minute: int, kind: str, *, duration: float = 8.0) 
         duration=duration,
         minute_of_day=minute,
         solar_offset=None,
+        solar_phase=None,
         is_weekend=False,
     )
 
@@ -65,11 +66,22 @@ def _history(days: int = 180) -> list[Event]:
     return events
 
 
-def _model():
-    """Return a model trained on the boring household, already calibrated."""
+def _model(*, floor: float = 0.0):
+    """Return a model trained on the boring household, already calibrated.
+
+    Calibrated with no floor by default, and that is a statement about what these tests are
+    for. Most of them ask whether the *ranking* is right and whether a camera is compared with
+    itself — the floor is a separate claim, tested on its own below, and letting it into every
+    fixture would mean a change to one number quietly rewriting what forty tests assert.
+
+    The synthetic household here is also far smaller than a real one, so its surprisals are
+    compressed: a person at 01:00 scores 0.65 nats against a few hundred invented events where
+    the same event on a real installation clears 2. Tuning the shipped floor to make this
+    fixture pass would be fitting a constant to a fixture.
+    """
     events = _history()
     model = build(events, now=_NOW)
-    calibrate(model, events)
+    calibrate(model, events, floor=floor)
     return model, events
 
 
@@ -248,7 +260,7 @@ def test_the_odd_ones_out_are_what_gets_marked():
     events = sorted([*events, *intruders], key=lambda item: item.started_at)
 
     model = build(events, now=_NOW)
-    calibrate(model, events)
+    calibrate(model, events, floor=0.0)
 
     previous = None
     marked = []
@@ -259,6 +271,54 @@ def test_the_odd_ones_out_are_what_gets_marked():
 
     assert len(marked) <= len(events) * 0.05
     assert all(event in marked for event in intruders)
+
+
+def test_a_negative_threshold_cannot_mark_anything_on_its_own():
+    """The floor, and the bug it exists for.
+
+    A quantile always cuts somewhere, however ordinary the history behind it — so a camera
+    whose life is entirely predictable still marks its top few percent. Measured on a real
+    installation, the per-camera thresholds at the 0.95 quantile ran from -0.63 to 0.45: a
+    negative threshold marks events that were *more* likely than chance, which is how a person
+    seen for the seventh time in ten days came to be called unusual.
+    """
+    events = _history()
+    model = build(events, now=_NOW)
+    calibrate(model, events, share=0.95, floor=1.4)
+
+    assert model.thresholds[_CAMERA] < 1.4, "this fixture is the case worth guarding"
+
+    # Comfortably the strangest thing this household has ever produced, and still short of the
+    # floor on a synthetic history this small.
+    odd = score(_event(_NOW, 60, "person"), model, previous=None)
+    assert odd.total > model.thresholds[_CAMERA], "it clears the camera's own line"
+    assert odd.unusual is False, "and is not marked, because it does not clear the floor"
+    assert odd.threshold == 1.4, "the panel is shown the line actually measured against"
+
+
+def test_the_floor_is_what_the_sensitivity_setting_moves():
+    """Three words, three floors — and the mark count has to follow them."""
+    events = _history()
+    intruders = [_event(_NOW - day * _DAY + 3 * 3600, 3 * 60, "person") for day in (5, 40, 90)]
+    events = sorted([*events, *intruders], key=lambda item: item.started_at)
+
+    counts = []
+    for floor in (0.0, 1.0, 3.0):
+        model = build(events, now=_NOW)
+        calibrate(model, events, floor=floor)
+        previous = None
+        marked = 0
+        for event in events:
+            if score(event, model, previous=previous).unusual:
+                marked += 1
+            previous = event
+        counts.append(marked)
+
+    # Non-increasing rather than strictly decreasing: this household produces exactly three
+    # strange events, so the first two floors both find the same three. What must never happen
+    # is a higher floor finding *more*.
+    assert counts == sorted(counts, reverse=True), f"a higher floor cannot mark more: {counts}"
+    assert counts[0] > 0 and counts[-1] == 0, "and a high enough floor marks nothing at all"
 
 
 # -------------------------------------------------------------------- the words
@@ -315,6 +375,7 @@ def _with_signal(started_at: float, minute: int, kind: str, home: str) -> Event:
         duration=8.0,
         minute_of_day=minute,
         solar_offset=None,
+        solar_phase=None,
         is_weekend=False,
         context=(("binary_sensor.someone_home", home),),
     )
@@ -386,6 +447,7 @@ def test_history_from_before_a_signal_existed_is_not_a_hole():
             duration=item.duration,
             minute_of_day=item.minute_of_day,
             solar_offset=item.solar_offset,
+            solar_phase=item.solar_phase,
             is_weekend=item.is_weekend,
             context=(),
         )

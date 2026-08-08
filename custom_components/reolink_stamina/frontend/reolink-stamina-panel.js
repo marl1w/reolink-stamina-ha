@@ -25,6 +25,7 @@ import {
 } from "./split.js";
 import { forgetRoutesFromEarlierRelease } from "./playback/routes.js";
 import "./views/device-picker.js";
+import "./views/learned.js";
 import "./views/toolbar.js";
 import "./views/event-list.js";
 import "./views/player.js";
@@ -68,6 +69,13 @@ const STYLES = /* css */ `
   z-index: 4;
 }
 .app-header__title { font-size: 1.15rem; font-weight: 500; margin-left: 8px; }
+/* Shorter on a phone, where the header is competing with the toolbar underneath it for the
+   space the list wanted. Home Assistant's own default is 56px and it sets the variable, so
+   this only ever narrows what it was given. */
+@media (max-width: 700px) {
+  .app-header { height: 44px; padding-right: 4px; }
+  .app-header__title { font-size: 1.02rem; margin-left: 4px; }
+}
 .app-header .icon-btn { color: inherit; }
 /* The menu button only exists on narrow screens, so it takes the space the header's
    own left padding was holding rather than adding to it. */
@@ -233,6 +241,11 @@ class ReolinkStaminaPanel extends HTMLElement {
 
   set panel(panel) {
     this._panel = panel;
+    // Home Assistant sets `hass` and `panel` in whichever order it likes, and the version
+    // lives on this one while the introduction is triggered by the other. Whichever lands
+    // second has to be the one that asks, or the check runs against an undefined version,
+    // decides there is nothing to say, and records this release as already seen.
+    this._maybeIntroduce();
 
     // The integration's own version, handed over with the panel registration. Anything this
     // browser learned about how a recording reaches it was learned from a different build's
@@ -247,6 +260,7 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._store.addEventListener("changed", () => this._render());
     this._build();
     await this._store.init();
+    this._storeReady = true;
     this._render();
     this._maybeIntroduce();
   }
@@ -259,6 +273,12 @@ class ReolinkStaminaPanel extends HTMLElement {
    */
   _maybeIntroduce() {
     const version = this._panel?.config?.version;
+    // Both halves have to be here. Without the store there is nothing to compare against;
+    // without the version there is nothing to compare — and answering early would answer
+    // "no" and then remember having done so.
+    if (!this._storeReady || !version || this._introduced) return;
+    this._introduced = true;
+
     if (!shouldIntroduce(this._store.seenVersion, version, this._store.returning)) {
       // Nothing to say, but remember where this browser got to — otherwise the *next*
       // release would look like a first install and stay silent for ever.
@@ -340,9 +360,34 @@ class ReolinkStaminaPanel extends HTMLElement {
 
     // Setup view
     this._picker = el("reolink-device-picker", { class: "scroll", style: { overflow: "auto", flex: "1" } });
+    // Raised from a camera row rather than handled there: the picker knows which camera was
+    // asked about and nothing else, and the sheet needs the api the panel already holds.
+    this._picker.addEventListener("show-learned", (event) => {
+      this._learned.api = this._api;
+      this._learned.open({
+        title: event.detail.camera.name,
+        eyebrow: event.detail.device.name,
+        targets: [{ entryId: event.detail.device.entry_id, channel: event.detail.camera.channel }],
+      });
+    });
 
     // Main view
     this._toolbar = el("reolink-stamina-toolbar");
+    this._toolbar.addEventListener("show-learned-all", () => {
+      const cameras = this._store.cameras;
+      const names = new Map(
+        this._store.devices.flatMap((device) =>
+          device.cameras.map((camera) => [`${device.entry_id}|${camera.channel}`, camera.name])
+        )
+      );
+      this._learned.api = this._api;
+      this._learned.open({
+        title: `${cameras.length} cameras`,
+        eyebrow: "Everything selected",
+        targets: cameras.map((camera) => ({ entryId: camera.entry_id, channel: camera.channel })),
+        names,
+      });
+    });
     this._list = el("reolink-event-list", { class: "pane-list scroll" });
     this._player = el("reolink-event-player");
     this._playerPane = el("div", { class: "pane-player", hidden: true }, this._player);
@@ -382,6 +427,7 @@ class ReolinkStaminaPanel extends HTMLElement {
     // Built with the panel but only ever shown deliberately: it costs one element and one
     // listener, and lazily creating it would mean the toolbar's way back to it could open
     // nothing on a slow first click.
+    this._learned = el("reolink-learned-sheet");
     this._whatsNew = el("reolink-stamina-whats-new");
     this._whatsNew.addEventListener("seen", () => {
       this._store?.markIntroduced(this._panel?.config?.version);
@@ -390,7 +436,9 @@ class ReolinkStaminaPanel extends HTMLElement {
     this._main = el("div", { class: "content" }, this._toolbar, this._split, this._whatsNew);
 
     this._body = el("div", { class: "content" });
-    this.shadowRoot.append(header, this._body);
+    // Outside the swapped body: the picker replaces the main content, and a dialog that goes
+    // with it would be torn out of the tree the moment it was opened from.
+    this.shadowRoot.append(header, this._body, this._learned);
     this._built = true;
     this._syncMenuButton();
     // The panel may well have been measured before there was anything to lay out.

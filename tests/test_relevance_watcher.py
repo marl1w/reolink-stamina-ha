@@ -8,6 +8,7 @@ writes down and — as importantly — what it declines to.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from unittest.mock import patch
 
 import pytest
@@ -19,10 +20,11 @@ from custom_components.reolink_stamina.const import (
 )
 from custom_components.reolink_stamina.relevance.backfill import (
     async_backfill,
+    async_backfill_signals,
     async_retention_days,
 )
-from custom_components.reolink_stamina.relevance.journal import Journal
-from custom_components.reolink_stamina.relevance.watcher import TransitionWatcher
+from custom_components.reolink_stamina.relevance.journal import Journal, Transition
+from custom_components.reolink_stamina.relevance.watcher import TransitionWatcher, async_signal_map
 
 _SENSOR = "binary_sensor.drive_person"
 _MAP = {_SENSOR: ("entry1:0", "person")}
@@ -251,3 +253,186 @@ async def test_retention_falls_back_when_the_recorder_cannot_say(hass, keep_days
         return_value=instance,
     ):
         assert async_retention_days(hass) == JOURNAL_BACKFILL_DAYS_DEFAULT
+
+
+# ------------------------------------------------ reconstructing signal history
+
+
+class _Device:
+    """Shaped like what the Reolink registry hands back."""
+
+    def __init__(self, entry_id: str, channels: list[int]) -> None:
+        self.entry_id = entry_id
+        self.cameras = [type("Camera", (), {"channel": channel})() for channel in channels]
+
+
+def _signal_states(entity_id: str, moments: list[tuple[str, float]]):
+    class _State:
+        def __init__(self, state: str, at: float) -> None:
+            self.entity_id = entity_id
+            self.state = state
+            self.last_changed = dt.datetime.fromtimestamp(at, dt.UTC)
+
+    return {entity_id: [_State(state, at) for state, at in moments]}
+
+
+async def test_signals_are_reconstructed_onto_history_already_collected(hass, journal):
+    """Adding a signal must not mean another week of waiting before it counts.
+
+    Signals are snapshotted when a transition is written, so everything already in the journal
+    carries none. Home Assistant has been recording the same entity all along, though, and
+    reading it back is the difference between a signal that works today and one that works
+    next Tuesday.
+    """
+    signal = "binary_sensor.anyone_home"
+    await journal.async_add(
+        [
+            Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="on", at=1000.0),
+            Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="off", at=1010.0),
+            Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="on", at=5000.0),
+            Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="off", at=5010.0),
+        ]
+    )
+
+    with (
+        patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+            return_value=[_Device("entry1", [0])],
+        ),
+        patch(
+            "custom_components.reolink_stamina.relevance.backfill._async_history",
+            # Somebody went out between the two detections.
+            return_value=_signal_states(signal, [("on", 900.0), ("off", 3000.0)]),
+        ),
+    ):
+        stamped = await async_backfill_signals(hass, journal, {"entry1": [signal]})
+
+    assert stamped == 4
+    rows = await journal.async_transitions()
+    assert [json.loads(row.context)[signal] for row in rows] == ["on", "on", "off", "off"]
+
+
+async def test_reconstructing_signals_does_not_repeat_itself(hass, journal):
+    """A reload must be free, or every restart re-reads and rewrites the whole journal."""
+    signal = "binary_sensor.anyone_home"
+    await journal.async_add(
+        [Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="on", at=1000.0)]
+    )
+
+    def _run():
+        return patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+            return_value=[_Device("entry1", [0])],
+        ), patch(
+            "custom_components.reolink_stamina.relevance.backfill._async_history",
+            return_value=_signal_states(signal, [("on", 900.0)]),
+        )
+
+    first, second = _run()
+    with first, second:
+        assert await async_backfill_signals(hass, journal, {"entry1": [signal]}) == 1
+    first, second = _run()
+    with first, second:
+        assert await async_backfill_signals(hass, journal, {"entry1": [signal]}) == 0
+
+
+async def test_adding_a_signal_restamps_all_of_them(hass, journal):
+    """A snapshot missing an entity is not the same fact as one recording it as absent."""
+    await journal.async_add(
+        [Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="on", at=1000.0)]
+    )
+    devices = patch(
+        "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+        return_value=[_Device("entry1", [0])],
+    )
+
+    with (
+        devices,
+        patch(
+            "custom_components.reolink_stamina.relevance.backfill._async_history",
+            return_value=_signal_states("binary_sensor.one", [("on", 900.0)]),
+        ),
+    ):
+        await async_backfill_signals(hass, journal, {"entry1": ["binary_sensor.one"]})
+
+    with (
+        patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+            return_value=[_Device("entry1", [0])],
+        ),
+        patch(
+            "custom_components.reolink_stamina.relevance.backfill._async_history",
+            return_value={
+                **_signal_states("binary_sensor.one", [("on", 900.0)]),
+                **_signal_states("binary_sensor.two", [("off", 900.0)]),
+            },
+        ),
+    ):
+        stamped = await async_backfill_signals(
+            hass, journal, {"entry1": ["binary_sensor.one", "binary_sensor.two"]}
+        )
+
+    assert stamped == 1, "the row already stamped is stamped again, with both signals"
+    rows = await journal.async_transitions()
+    assert json.loads(rows[0].context) == {"binary_sensor.one": "on", "binary_sensor.two": "off"}
+
+
+async def test_a_signal_older_than_the_history_reads_as_unknown(hass, journal):
+    """A hole would silently shift every count that mentions it; `unknown` is a state."""
+    await journal.async_add(
+        [Transition(camera="entry1:0", entity_id=_SENSOR, kind="person", state="on", at=1000.0)]
+    )
+
+    with (
+        patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+            return_value=[_Device("entry1", [0])],
+        ),
+        patch(
+            "custom_components.reolink_stamina.relevance.backfill._async_history",
+            # The recorder only reaches back to well after the detection.
+            return_value=_signal_states("binary_sensor.late", [("on", 9000.0)]),
+        ),
+    ):
+        await async_backfill_signals(hass, journal, {"entry1": ["binary_sensor.late"]})
+
+    rows = await journal.async_transitions()
+    assert json.loads(rows[0].context) == {"binary_sensor.late": "unknown"}
+
+
+async def test_a_cameras_own_signals_go_to_that_camera_and_no_other(hass, journal):
+    """Thirteen cameras must not each carry thirteen day/night sensors.
+
+    A floodlight belongs to one lens. What the user picks is per recorder, because "is anybody
+    home" is true of the property; what the camera reports about itself is per camera, and is
+    discovered rather than chosen — the same way its detection sensors are.
+    """
+    own = {
+        ("entry1", 0): ["light.drive_floodlight", "sensor.drive_day_night_state"],
+        ("entry1", 1): ["light.gate_floodlight", "sensor.gate_day_night_state"],
+    }
+
+    with (
+        patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_discover_devices",
+            return_value=[_Device("entry1", [0, 1])],
+        ),
+        patch(
+            "custom_components.reolink_stamina.relevance.watcher.async_camera_signal_entities",
+            side_effect=lambda _hass, entry_id, channel: own[(entry_id, channel)],
+        ),
+    ):
+        found = async_signal_map(hass, {"entry1": ["person.someone"]})
+
+    assert found == {
+        "entry1:0": [
+            "light.drive_floodlight",
+            "person.someone",
+            "sensor.drive_day_night_state",
+        ],
+        "entry1:1": [
+            "light.gate_floodlight",
+            "person.someone",
+            "sensor.gate_day_night_state",
+        ],
+    }

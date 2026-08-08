@@ -147,6 +147,18 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   transition: background 140ms var(--rv-ease);
 }
 .icon-btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
+
+/*
+ * Smaller on a phone, where every control is in a row that costs the list its height.
+ *
+ * 36px rather than 40 — still comfortably past the 24px minimum target size the accessibility
+ * guidance asks for, and the buttons sit in rows with gaps around them, so the *tappable* area
+ * is larger than the button. Four pixels off each of three rows is a row of events back.
+ */
+@media (max-width: 700px) {
+  .icon-btn { width: 36px; height: 36px; }
+  .btn { padding: 7px 13px; font-size: 0.86rem; }
+}
 /* inline-flex would otherwise beat the browser's own [hidden] rule */
 .icon-btn[hidden] { display: none; }
 

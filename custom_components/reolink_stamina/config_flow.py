@@ -12,8 +12,8 @@ from homeassistant.config_entries import (
     OptionsFlow,
     SubentryFlowResult,
 )
-from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, entity_registry as er, selector
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 import voluptuous as vol
 
@@ -30,6 +30,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SENSITIVITY,
     CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
     CONF_REQUIRE_ADMIN,
@@ -49,6 +50,7 @@ from .const import (
     DEFAULT_HIDE_TIMER,
     DEFAULT_PRE_ROLL,
     DEFAULT_QUOTA_GB,
+    DEFAULT_RELEVANCE_SENSITIVITY,
     DEFAULT_REMOTE_FOLDER,
     DEFAULT_REQUIRE_ADMIN,
     DEFAULT_SPLIT_MINUTES,
@@ -58,13 +60,135 @@ from .const import (
     DEFAULT_VERIFY_TLS,
     DOMAIN,
     PANEL_TITLE,
+    RELEVANCE_SENSITIVITY_FLOORS,
     RELEVANCE_SIGNAL_DOMAINS,
+    RELEVANCE_SIGNAL_ENUM_DOMAINS,
     STREAM_MAIN,
     STREAM_SUB,
     SUBENTRY_TYPE_SYNC,
     SYNC_KIND_CHOICES,
 )
+from .relevance.watcher import async_detection_map, async_signal_map
 from .reolink_registry import async_discover_devices, async_has_configured_nvr
+
+# Device classes that describe a device's own health rather than anything happening in the
+# house. Smoke, gas and carbon monoxide are deliberately absent: they are rare by definition,
+# which is exactly what this feature is for.
+_SELF_REPORTING = frozenset(
+    {
+        "battery",
+        "battery_charging",
+        "connectivity",
+        "problem",
+        "running",
+        "tamper",
+        "update",
+    }
+)
+
+
+def _async_unhelpful_signals(hass: HomeAssistant) -> list[str]:
+    """Entities the signal picker should not offer.
+
+    The picker opens onto every binary sensor in the house, and most of them are noise in the
+    literal sense: a Reolink NVR alone contributes a dozen per camera. Two families are worth
+    hiding rather than leaving somebody to scroll past.
+
+    **The cameras' own detection sensors.** These *are* the detections. Counting `person` on
+    the drive as a signal against an event that is a person on the drive teaches the model that
+    a person is usually accompanied by a person, and every event scores as ordinary. It is not
+    a subtle mistake, but nothing in the picker warns of it.
+
+    Only the detection sensors, though — the rest of what Reolink publishes is some of the best
+    material there is. A floodlight that came on, a siren that fired, and above all the day/night
+    state, which is the camera saying whether it switched to infrared: darkness as this lens
+    actually experienced it, rather than as an almanac calculated it for the whole property.
+
+    **An alarm panel's own children.** An alarm exposes its arming state and, beside it, a
+    sensor per zone, per fault and per tamper. The state is the useful signal; the zones are
+    the same door contacts a camera is already pointed at, and picking twenty of them makes
+    every event carry twenty terms saying "the hall was quiet".
+
+    **Equipment talking about itself.** Home Assistant already marks these `diagnostic`: an
+    add-on's "running", a printer's firmware check, a satellite dish's "motors stuck". On the
+    installation this was measured against they were a quarter of everything on offer.
+
+    **Entities Home Assistant has disabled.** They have no state and no history, so picking one
+    contributes a term that is permanently unknown. Entities merely *hidden* stay: hiding is a
+    decision about dashboards, and on that same installation it is the alarm panels that are
+    hidden — the single most useful signal in the house.
+
+    Anything that cannot be resolved is left in the list. A picker that hides something the
+    user wanted is worse than one that offers something they will not pick.
+    """
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+
+    # This integration's own entities, and the detection sensors the model already counts.
+    # Deliberately not every Reolink entity: see above.
+    ours = {
+        entry.entry_id for entry in hass.config_entries.async_entries() if entry.domain == DOMAIN
+    }
+    detections = set(async_detection_map(hass, include_all_devices=True))
+    # And whatever each camera already contributes about itself. Those are attached to their
+    # own camera automatically, so offering them here would only let somebody attach one
+    # camera's floodlight to all of them.
+    automatic = {
+        entity_id
+        for entities in async_signal_map(hass, {}, include_all_devices=True).values()
+        for entity_id in entities
+    }
+
+    # Devices carrying an alarm panel. Their other entities are that panel's parts.
+    alarms = {
+        entry.device_id
+        for entry in entities.entities.values()
+        if entry.domain == "alarm_control_panel" and entry.device_id is not None
+    }
+    # A wired system usually models each zone as its own device hanging off the panel, so the
+    # children are found through `via_device` rather than by sharing one. Deliberately not by
+    # area: an alarm's area is the house, and that would hide everything in it.
+    alarm_children = {
+        device.id
+        for device in devices.devices.values()
+        if device.via_device_id is not None and device.via_device_id in alarms
+    }
+
+    parts = alarms | alarm_children
+    hidden: list[str] = []
+    for entry in entities.entities.values():
+        if entry.domain not in (*RELEVANCE_SIGNAL_DOMAINS, *RELEVANCE_SIGNAL_ENUM_DOMAINS):
+            continue
+        if entry.disabled_by is not None:
+            hidden.append(entry.entity_id)
+            continue
+        # The panel's own state is the signal worth having — it is only its parts that are not.
+        if entry.domain == "alarm_control_panel":
+            continue
+        # Enum entities are exempt: the filter already admits only those, and Reolink marks
+        # its day/night state as diagnostic — which is fair from a camera's point of view and
+        # wrong from here, since it is the best signal the camera has.
+        if entry.entity_category is not None and entry.domain not in RELEVANCE_SIGNAL_ENUM_DOMAINS:
+            hidden.append(entry.entity_id)
+            continue
+        # The state as well as the registry: an integration that sets its device class at
+        # runtime rather than at registration leaves the registry's copy empty, and Starlink's
+        # "update" and "connectivity" walked straight through a registry-only check.
+        state = hass.states.get(entry.entity_id)
+        device_class = (
+            entry.device_class
+            or entry.original_device_class
+            or (state.attributes.get("device_class") if state else None)
+        )
+        if device_class in _SELF_REPORTING:
+            hidden.append(entry.entity_id)
+            continue
+        if entry.config_entry_id in ours or entry.entity_id in (detections | automatic):
+            hidden.append(entry.entity_id)
+            continue
+        if entry.device_id is not None and entry.device_id in parts:
+            hidden.append(entry.entity_id)
+    return hidden
 
 
 class ReolinkStaminaConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -149,6 +273,10 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         options = self.config_entry.options
         return self.async_show_form(
             step_id="init",
+            # Home Assistant labels the button "Submit" unless it is told the flow continues.
+            # Three pages all saying Submit read as three chances to finish, and somebody who
+            # pressed the first one had no reason to expect two more forms.
+            last_step=False,
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -204,6 +332,8 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="player",
+            # Last unless Relevance is on, in which case its signals page follows.
+            last_step=not self._pending.get(CONF_BETA_RELEVANCE),
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -284,21 +414,59 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                 for name, entry_id in by_name.items()
                 if user_input.get(name)
             }
-            return self.async_create_entry(data={**self._pending, CONF_RELEVANCE_SIGNALS: chosen})
+            return self.async_create_entry(
+                data={
+                    **self._pending,
+                    CONF_RELEVANCE_SIGNALS: chosen,
+                    CONF_RELEVANCE_SENSITIVITY: user_input.get(
+                        CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY
+                    ),
+                }
+            )
 
         if not by_name:
             return self.async_create_entry(data=self._pending)
 
+        unhelpful = _async_unhelpful_signals(self.hass)
+        # Two filters rather than one list of domains, because `sensor` is admitted only for
+        # the enum entities in it. Home Assistant ORs them.
+        allowed = [
+            selector.EntityFilterSelectorConfig(domain=list(RELEVANCE_SIGNAL_DOMAINS)),
+            selector.EntityFilterSelectorConfig(
+                domain=list(RELEVANCE_SIGNAL_ENUM_DOMAINS), device_class="enum"
+            ),
+        ]
         return self.async_show_form(
             step_id="signals",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(name, default=current.get(entry_id, [])): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain=list(RELEVANCE_SIGNAL_DOMAINS), multiple=True
+                    **{
+                        vol.Optional(
+                            name, default=current.get(entry_id, [])
+                        ): selector.EntitySelector(
+                            selector.EntitySelectorConfig(
+                                filter=allowed,
+                                multiple=True,
+                                exclude_entities=unhelpful,
+                            )
                         )
-                    )
-                    for name, entry_id in by_name.items()
+                        for name, entry_id in by_name.items()
+                    },
+                    # Words rather than the quantile behind them. "0.95" is meaningful to
+                    # whoever wrote the scorer and to nobody else, and the question somebody
+                    # actually has is whether they are seeing too many of these or too few.
+                    vol.Required(
+                        CONF_RELEVANCE_SENSITIVITY,
+                        default=self._pending.get(
+                            CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(RELEVANCE_SENSITIVITY_FLOORS),
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key="relevance_sensitivity",
+                        )
+                    ),
                 }
             ),
         )

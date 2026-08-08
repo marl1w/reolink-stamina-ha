@@ -106,12 +106,33 @@ async def test_scoring_a_window_walks_the_whole_history_for_context(hass, journa
 
     analysis = Analysis(hass, journal)
     await analysis.async_rebuild()
-    scored = analysis.window(since=_NOW - 2 * _DAY, until=_NOW, names={_CAMERA: "Drive"})
+    scored = await analysis.async_window(
+        since=_NOW - 2 * _DAY, until=_NOW, names={_CAMERA: "Drive"}
+    )
 
     assert scored
     assert len(scored) < len(analysis.events), "the window should be a slice, not everything"
-    assert scored[0][0] is not analysis.events[0], "context must come from outside the window"
+    assert scored[0][0].started_at != analysis.events[0].started_at, (
+        "context must come from outside the window"
+    )
     assert all("Drive" in result.reason for _, result in scored)
+
+
+async def test_a_window_sees_detections_recorded_since_the_last_rebuild(hass, journal):
+    """The panel shows the journal as it stands, not as the nightly rebuild left it.
+
+    A detection at teatime, or a signal switched on this morning, used to be invisible until
+    03:17 the following night — which reads as the feature simply not working.
+    """
+    await journal.async_add(_pair(_NOW - 3 * _DAY))
+    analysis = Analysis(hass, journal)
+    await analysis.async_rebuild()
+
+    # Recorded after the model was built, exactly as a live detection is.
+    await journal.async_add(_pair(_NOW - 60))
+
+    scored = await analysis.async_window(since=_NOW - _DAY, until=_NOW + 1)
+    assert [event.started_at for event, _ in scored] == [_NOW - 60]
 
 
 async def test_rebuilding_picks_up_new_transitions(hass, journal):

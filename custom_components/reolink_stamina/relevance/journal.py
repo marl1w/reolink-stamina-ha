@@ -295,6 +295,36 @@ class Journal:
         self._connection.commit()
         return int(cursor.rowcount or 0)
 
+    async def async_stamp_context(self, stamps: list[tuple[str, float, str]]) -> int:
+        """Attach signal snapshots to transitions already written, returning how many changed.
+
+        The one place a row is rewritten rather than appended, and it exists because signals
+        are snapshotted at write time. Without this, adding a signal means it says nothing
+        about anything until enough new detections accumulate to learn from — a week at best,
+        on a camera nobody walks past. Home Assistant has been recording those same entities
+        all along, so the honest thing is to reconstruct what they said and stamp it on.
+
+        Still not interpretation: what gets written is the raw state the recorder holds for
+        that instant, exactly what the live watcher would have written had the signal been
+        configured at the time.
+        """
+        if not stamps:
+            return 0
+        async with self._lock:
+            if self._connection is None:
+                return 0
+            return await self._hass.async_add_executor_job(self._stamp, stamps)
+
+    def _stamp(self, stamps: list[tuple[str, float, str]]) -> int:
+        """Rewrite the context of known rows. Runs in the executor."""
+        assert self._connection is not None
+        cursor = self._connection.executemany(
+            "UPDATE transitions SET context = ? WHERE entity_id = ? AND at = ?",
+            [(context, entity_id, at) for entity_id, at, context in stamps],
+        )
+        self._connection.commit()
+        return int(cursor.rowcount or 0)
+
     async def async_checkpoint(self) -> None:
         """Fold the write-ahead log back into the database file.
 

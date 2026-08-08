@@ -214,6 +214,10 @@ JOURNAL_BACKFILL_CHUNK_HOURS: Final = 24
 
 # Set once the initial import has run, so it does not repeat on every restart.
 JOURNAL_META_BACKFILLED: Final = "backfilled_at"
+# The signal entities whose history has been stamped onto the transitions already held. The
+# value is the set itself rather than a flag, because adding one signal has to re-stamp every
+# row: a snapshot missing an entity and one recording it as absent are different facts.
+JOURNAL_META_SIGNALS: Final = "signals_backfilled"
 JOURNAL_META_SCHEMA: Final = "schema_version"
 
 # Entities whose state is snapshotted onto every detection, as {reolink_entry_id: [entity]}.
@@ -233,7 +237,54 @@ RELEVANCE_SIGNAL_DOMAINS: Final = (
     "input_select",
     "sun",
     "calendar",
+    # A camera's own floodlight and siren, and the gates and door locks around it. All of
+    # them say something a detection cannot: a person on the drive with the gate unlocked is
+    # an arrival, and the same person with it locked is somebody who climbed over.
+    "light",
+    "lock",
+    "siren",
 )
+
+# One more domain, admitted only for the entities in it that hold a fixed set of values.
+# `sensor` as a whole is thousands of numbers, and a number this model cannot bucket is a term
+# that never repeats; an enum sensor is a category by construction, which is exactly the shape
+# the counting wants. Reolink's own "Day night state" is one, and it is the best signal on the
+# camera: it knows whether the picture is infrared, which is darkness as the camera sees it
+# rather than as an almanac calculates it.
+RELEVANCE_SIGNAL_ENUM_DOMAINS: Final = ("sensor",)
+
+# What a camera reports about itself, counted beside its own detections without anybody
+# choosing it — discovered exactly as the detection sensors are. `(domain, reolink key)`,
+# because the key alone is ambiguous and the domain alone is far too broad.
+CAMERA_SIGNAL_KEYS: Final = frozenset(
+    {
+        ("light", "floodlight"),
+        ("siren", "siren"),
+        ("sensor", "day_night_state"),
+    }
+)
+
+CONF_RELEVANCE_SENSITIVITY: Final = "relevance_sensitivity"
+# How rare an event has to be before it is marked, offered as three words rather than a number.
+#
+# The word chooses a *floor*, in nats, and not the quantile — which is the opposite of how this
+# started, and the measurement is why. On a real installation of nine cameras over a fortnight,
+# 5,659 events: with a floor in place, moving the quantile from 0.90 to 0.99 changed the number
+# of marks from 54 to 44. The quantile had stopped being the thing that decided.
+#
+# A floor is also the more honest control. It says "at least this much rarer than chance",
+# which is a statement about the event; a quantile says "the top few percent of this camera",
+# which marks something however ordinary a week has been.
+#
+#   0.7 nats — twice as rare as chance      measured: 125 marks, ~9 a day
+#   1.4 nats — four times                   measured:  54 marks, ~4 a day
+#   2.1 nats — eight times                  measured:  23 marks, ~1.6 a day
+RELEVANCE_SENSITIVITY_FLOORS: Final = {
+    "few": 2.1,
+    "balanced": 1.4,
+    "many": 0.7,
+}
+DEFAULT_RELEVANCE_SENSITIVITY: Final = "balanced"
 
 # A signal with more distinct values than this is noise wearing a signal's clothes: with six
 # months of history behind it, forty categories hold a handful of events each.
@@ -248,15 +299,25 @@ JOURNAL_SOURCE_BACKFILL: Final = "backfill"
 # each is a decision that can be changed later and re-applied to history already collected.
 # They are first guesses; `scripts/replay.py` is how they get chosen properly.
 
-# A detection that clears and fires again inside this is one event, not two. Reolink sensors
-# flap, and a person walks in and out of frame — counting each flicker separately would
-# inflate the very rates this exists to keep honest. Cloud sync settles for twenty seconds
-# before deciding a clip is finished, for the same reason and against the same hardware.
-EVENT_MERGE_SECONDS: Final = 20.0
+# A detection that clears and fires again inside this is one event, not two: Reolink sensors
+# bounce, and counting each flicker separately would inflate the very rates this exists to
+# keep honest.
+#
+# Three seconds, measured rather than guessed. Across 5,187 detections on real hardware the
+# quiet gap between one ending and the next starting was 3.2s at the first quartile and 10.5s
+# at the median — so genuine bounce is under three seconds and anything longer is a separate
+# thing happening. The twenty seconds this started at was borrowed from cloud sync, where a
+# generous window only costs a slightly long clip; here it merged 63% of all gaps, and since
+# each merge extends the run rather than closing it, a car manoeuvring became one event that
+# ran until it hit the cap below. That is where the two-hour vehicle detections came from,
+# and why a row saying "Person (4)" opened a sheet offering two.
+EVENT_MERGE_SECONDS: Final = 3.0
 
 # A sensor stuck on would otherwise hold one event open for ever, and an event of unbounded
-# length poisons the duration term for everything else on that camera.
-EVENT_MAX_SECONDS: Final = 10 * 60.0
+# length poisons the duration term for everything else on that camera. The longest any sensor
+# was genuinely on across those ten days was 81 seconds, so this is a guard against something
+# broken rather than a bound on anything real.
+EVENT_MAX_SECONDS: Final = 5 * 60.0
 
 # --------------------------------------------------------------- rate tables
 #
@@ -312,6 +373,9 @@ SCORE_LAG_BUCKETS: Final = (10.0, 30.0, 120.0)
 # ranked those anomalies within a place or two of each other. What decides whether they are
 # marked is where the line sits, not how the number is built.
 SCORE_QUANTILE: Final = 0.95
+
+# The default floor, in nats, matching "balanced" above. Four times rarer than chance.
+SCORE_FLOOR: Final = 1.4
 
 # Nothing is scored until a camera has this much behind it. Before that the panel says it is
 # still collecting, which is true and better than being wrong.

@@ -44,8 +44,21 @@ export const FEATURES = [
       "Marks the handful of events that are unusual for a camera — not by recognising " +
       "anything, but by counting. The cat that crosses at one in the morning every night " +
       "is ordinary; a person doing it is not. Nothing is recorded until you switch it on, " +
-      "and it needs a fortnight or so before it can say anything.",
+      "and it needs a week or so before it can say anything.",
     where: "Reolink Stamina → <b>Configure</b> → Learn what is normal.",
+  },
+  {
+    tone: "motion",
+    icon: "mdi:chart-box-outline",
+    title: "See what a camera has learned",
+    beta: true,
+    text:
+      "The chart button on any camera opens what it has actually counted: when it sees each " +
+      "kind of thing, how long they last, what fired before them, and what your signals were " +
+      "doing at the time. The toolbar has one for every camera at once, where which camera " +
+      "becomes a distribution of its own. It is also how you spot a camera that has learned " +
+      "something wrong.",
+    where: "The chart button beside a camera, or in the toolbar.",
   },
   {
     tone: "animal",

@@ -32,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from itertools import combinations
 import json
 from pathlib import Path
 import random
@@ -55,6 +56,7 @@ from custom_components.reolink_stamina.relevance.score import (  # noqa: E402
     ready,
     score,
 )
+from custom_components.reolink_stamina.relevance.shapes import profile_payload  # noqa: E402
 
 # Everything, by default.
 #
@@ -350,6 +352,7 @@ def _model(detections):
                 # Skipped rather than faked: sunset needs a location, and inventing one would
                 # put a number in the breakdown that means nothing.
                 solar_offset=None,
+                solar_phase=None,
                 is_weekend=local.weekday() >= 5,
                 context=_context(local, entry_id),
             )
@@ -447,6 +450,38 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
             "events": [],
         }
 
+    # What each camera has learned, shaped by the very same function the websocket command
+    # calls. Not a second implementation: a preview that renders different words from the real
+    # panel is worse than no preview, because it is trusted.
+    labels = signal_labels()
+    profiles = {
+        key: {
+            "enabled": True,
+            "state": relevance[key]["state"],
+            "coverage": relevance[key]["coverage"],
+            **profile_payload(model, [key], names=names, labels=labels),
+        }
+        for key in names
+    }
+
+    # And the same for every set of cameras the panel could ask about at once. Six cameras is
+    # 63 subsets, each a handful of table additions — cheap enough to precompute and much
+    # simpler than teaching the harness to do the arithmetic itself.
+    order = ("collecting", "too_few_events", "active")
+    combined: dict[str, dict] = {}
+    for size in range(2, len(names) + 1):
+        for chosen in combinations(sorted(names), size):
+            states = [relevance[key]["state"] for key in chosen]
+            combined[",".join(chosen)] = {
+                "enabled": True,
+                "state": min(states, key=order.index),
+                "coverage": {
+                    "days": max(relevance[key]["coverage"]["days"] for key in chosen),
+                    "events": sum(relevance[key]["coverage"]["events"] for key in chosen),
+                },
+                **profile_payload(model, list(chosen), names=names, labels=labels),
+            }
+
     previous = None
     for event in events:
         result = score(event, model, previous=previous, names=names, labels=signal_labels())
@@ -505,6 +540,8 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
         ],
         "buckets": rows,
         "relevance": relevance,
+        "profiles": profiles,
+        "combined": combined,
         "summary": {
             "detections": len(events),
             "marked": marked,
@@ -717,6 +754,21 @@ HARNESS = """<!doctype html>
           }),
         };
       }
+      if (type === "relevance_profile") {
+        const targets = msg.targets || [];
+        if (targets.length === 1) {
+          const only = key(targets[0].entry_id, targets[0].channel);
+          return fixtures.profiles[only] || { enabled: false };
+        }
+        // Several cameras: the harness asks the generator for a combined profile rather than
+        // adding the tables in JavaScript, so the preview is drawing the same arithmetic the
+        // integration would.
+        const wanted = targets
+          .map((t) => key(t.entry_id, t.channel))
+          .sort()
+          .join(",");
+        return fixtures.combined[wanted] || { enabled: false };
+      }
       if (type === "detections") {
         // The moments inside the row, which is what puts the markers on the scrub bar.
         const known = fixtures.relevance[key(msg.entry_id, msg.channel)];
@@ -863,20 +915,41 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
 
     def _send(self, body: bytes, content_type: str) -> None:
-        """Write one generated response."""
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        # Nothing here may be cached: the whole point is seeing an edit immediately.
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        """Write one generated response.
+
+        A reload while the fixtures are still being written closes the socket underneath this,
+        which is normal and not worth a page of traceback over a preview server. Caught here
+        rather than left to the base class, which prints the lot.
+        """
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            # Nothing here may be cached: the whole point is seeing an edit immediately.
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def end_headers(self) -> None:
         """Stop the browser caching the panel's modules between edits."""
         if self.path.startswith("/frontend/") or self.path in ("/", "/index.html"):
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def handle_one_request(self) -> None:
+        """Serve one request, treating a closed socket as ordinary.
+
+        A reload mid-response, a cancelled range request, a tab closed while the sample clip
+        is still playing: all of them land as a broken pipe, all of them are normal, and the
+        base class prints a full traceback for each. On a page that reloads constantly, that
+        buries whatever the preview was actually trying to tell you.
+        """
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args) -> None:
         """Quieter than the default, which logs every module on every reload."""

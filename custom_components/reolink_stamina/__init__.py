@@ -40,6 +40,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SENSITIVITY,
     CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
     CONF_REQUIRE_ADMIN,
@@ -60,6 +61,7 @@ from .const import (
     DEFAULT_INCLUDE_UNLABELLED,
     DEFAULT_PRE_ROLL,
     DEFAULT_QUOTA_GB,
+    DEFAULT_RELEVANCE_SENSITIVITY,
     DEFAULT_REMOTE_FOLDER,
     DEFAULT_REQUIRE_ADMIN,
     DEFAULT_SPLIT_MINUTES,
@@ -128,6 +130,9 @@ class StaminaOptions:
     beta_relevance: bool = DEFAULT_BETA_RELEVANCE
     # Per recorder: {reolink_entry_id: [entity_id, ...]}. Empty until somebody picks some.
     relevance_signals: dict[str, list[str]] = field(default_factory=dict)
+    # A word, not the quantile it maps to. Stored as chosen so the mapping can be retuned
+    # without rewriting what anybody picked.
+    relevance_sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> StaminaOptions:
@@ -150,6 +155,9 @@ class StaminaOptions:
             beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
             beta_relevance=bool(options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE)),
             relevance_signals=dict(options.get(CONF_RELEVANCE_SIGNALS) or {}),
+            relevance_sensitivity=str(
+                options.get(CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY)
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -169,6 +177,7 @@ class StaminaOptions:
             "beta_all_devices": self.beta_all_devices,
             "beta_relevance": self.beta_relevance,
             "relevance_signals": self.relevance_signals,
+            "relevance_sensitivity": self.relevance_sensitivity,
         }
 
 
@@ -219,6 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry,
             include_all_devices=options.beta_all_devices,
             signals=options.relevance_signals,
+            sensitivity=options.relevance_sensitivity,
         )
 
     # Unconditional rather than gated on the beta being on: what was left behind was left

@@ -26,6 +26,7 @@ import math
 
 from ..const import (
     RATE_BINS,
+    SCORE_FLOOR,
     SCORE_MIN_DAYS,
     SCORE_MIN_EVENTS,
     SCORE_QUANTILE,
@@ -90,8 +91,25 @@ def _clock_time(minute: int) -> str:
     return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
-def _solar_phrase(offset: int) -> str:
-    """Render minutes from sunset as something a person would say."""
+# What each phase is called in a sentence. The model still counts minutes from sunset — a
+# continuous, seasonal number is what makes the term worth having — but nobody reads a number
+# measured from an event nine hours away, and "8h 53m before sunset" for a lunchtime detection
+# is how a correct model comes to look broken.
+_SOLAR_PHRASES = {
+    "dawn": "around sunrise",
+    "day": "in daylight",
+    "dusk": "around sunset",
+    "night": "after dark",
+}
+
+
+def _solar_phrase(phase: str | None, offset: int) -> str:
+    """Render where the sun was as something a person would say."""
+    named = _SOLAR_PHRASES.get(phase or "")
+    if named is not None:
+        return named
+    # No location configured, or a latitude where the sun does not rise or set that day. The
+    # offset is all there is, so it is what gets said.
     if offset == 0:
         return "at sunset"
     hours, minutes = divmod(abs(offset), 60)
@@ -157,7 +175,7 @@ def _terms(
         terms.append(
             Term(
                 name="solar",
-                label=_solar_phrase(offset),
+                label=_solar_phrase(event.solar_phase, offset),
                 contribution=_surprisal(
                     blend(lambda p: p.solar.probability(offset % 1440)), RATE_BINS
                 ),
@@ -262,10 +280,14 @@ def score(
     terms = _terms(event, previous, model, names, labels)
     summed = sum(term.contribution for term in terms)
     threshold = model.thresholds.get(event.camera)
+    # The stricter of the two, and reported as such: the panel draws the line it was actually
+    # measured against, so a gauge showing a score just past its camera's threshold but short
+    # of the floor does not look like a mark that failed to appear.
+    against = None if threshold is None else max(threshold, model.floor)
     return Score(
         total=summed,
-        threshold=threshold,
-        unusual=threshold is not None and summed > threshold,
+        threshold=against,
+        unusual=against is not None and summed > against,
         terms=tuple(terms),
         reason=_reason(event, terms, model.profile(event.camera, event.kind), names),
     )
@@ -323,12 +345,26 @@ def _phrase(term: Term) -> str:
     return f"with {term.label}"
 
 
-def calibrate(model: Model, events: list[Event], *, share: float = SCORE_QUANTILE) -> None:
-    """Work out, per camera, how high a score has to be before it is worth marking.
+def calibrate(
+    model: Model,
+    events: list[Event],
+    *,
+    share: float = SCORE_QUANTILE,
+    floor: float = SCORE_FLOOR,
+) -> None:
+    """Work out how high a score has to be before it is worth marking.
 
-    A quantile of that camera's own history rather than an absolute number: the same figure
-    means different things on a camera with two hundred events and one with twenty thousand,
-    so a constant fitted to one installation would be meaningless on another.
+    Two numbers, and an event has to clear both.
+
+    The *quantile* is per camera, over that camera's own history, because surprisal is not on
+    a portable scale: the same figure means different things on a camera with two hundred
+    events and one with twenty thousand. It stops a chatty camera flooding the list.
+
+    The *floor* is absolute, and it is the one that says a mark means something. Measured on a
+    real installation — nine cameras, a fortnight, 5,659 events — the per-camera thresholds at
+    the 0.95 quantile ran from -0.63 to 0.45, median 0.05. A negative threshold marks events
+    that were *more* likely than chance, which is how a person seen for the seventh time in
+    ten days came to be called unusual. Only 4.6% of all events scored above zero at all.
 
     Cameras without enough behind them get no threshold at all, which is what the panel reads
     as "still collecting" — deliberately not the same as a threshold of zero.
@@ -344,3 +380,4 @@ def calibrate(model: Model, events: list[Event], *, share: float = SCORE_QUANTIL
         for camera, values in scores.items()
         if ready(model.per_camera.get(camera, Profile()))
     }
+    model.floor = floor

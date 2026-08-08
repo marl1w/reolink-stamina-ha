@@ -114,6 +114,19 @@ const STYLES = /* css */ `
  */
 .chip[data-unusual="true"] .icon { color: var(--rv-tone-alert); }
 
+/*
+ * On a phone the chips lose their words and keep their icons.
+ *
+ * Four chips of text is most of the row's width, and it is the least of what the row says:
+ * the time, the camera and the mark are what somebody scans for. The icon and the tone carry
+ * the same identity in a fifth of the space, and the count stays because no icon can say it.
+ * The label is still in the accessible name and still in the sheet.
+ */
+@media (max-width: 700px) {
+  .chips .chip { padding: 4px 7px; gap: 4px; }
+  .chips .chip__label { display: none; }
+}
+
 /* ------------------------------------------------- learning what is normal
  *
  * Only the outliers are marked, and nothing says "common".
@@ -150,7 +163,9 @@ const STYLES = /* css */ `
   flex: 0 0 auto;
 }
 .odd:hover { background: color-mix(in srgb, var(--rv-tone-alert) 26%, transparent); }
-.odd .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; }
+/* Blocked, not inline: an inline icon sits on the text baseline, which inside a pill
+   with no text puts it a pixel or two below the middle of its own background. */
+.odd .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; display: block; }
 
 /*
  * The way in to the numbers, on every row and always visible.
@@ -160,21 +175,26 @@ const STYLES = /* css */ `
  * you can only find by hovering is one most people never find at all. Dim rather than
  * hidden — quiet enough not to compete with the row, present enough to be discovered.
  */
+/* Exactly the box the unusual mark occupies, down to the border, because the two stand in
+   the same
+   place and one being two pixels smaller reads as a mistake rather than as a difference.
+   A transparent border rather than none: a zero border makes the button 2px narrower than
+   the pill beside it, which is the whole of the discrepancy. */
 .why {
   display: inline-flex;
   align-items: center;
-  border: 0;
+  justify-content: center;
+  border: 1px solid transparent;
   background: none;
-  padding: 2px;
+  padding: 4px;
   border-radius: 50%;
   color: color-mix(in srgb, var(--rv-text-dim) 75%, transparent);
   cursor: pointer;
   transition: color 120ms var(--rv-ease);
+  flex: 0 0 auto;
 }
 .why:hover, .why:focus-visible { color: var(--rv-text); }
-.why .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; }
-/* Same box as the mark it stands in for, so the chips beside it do not shift. */
-.why { padding: 4px; }
+.why .icon { --mdc-icon-size: 14px; width: 14px; height: 14px; display: block; }
 
 /* ---------------------------------------------- the numbers behind a row
  *
@@ -209,6 +229,31 @@ const STYLES = /* css */ `
    */
 .sheet[open] { display: flex; flex-direction: column; }
 .sheet::backdrop { background: rgba(0, 0, 0, 0.42); }
+/* The dialog takes focus itself so the close button does not open with a ring around it.
+   Safari then draws the ring around the whole modal, which is never useful: a dialog is not
+   a control, and everything inside it that is keeps its own. */
+.sheet:focus, .sheet:focus-visible { outline: none; }
+
+/*
+ * Full-screen on a phone. A dialog inset by fourteen pixels on a 390px screen is a box with a
+ * sliver of dimmed panel around it — the inset reads as an accident rather than as a frame,
+ * and it costs the width the content actually wanted.
+ */
+@media (max-width: 700px) {
+  .sheet {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    /* Fixed rather than covering the screen by size alone: a modal dialog is centred by the
+       browser, and one exactly as tall as the viewport still moves when the keyboard opens. */
+    padding-bottom: var(--rv-safe-bottom, 0px);
+  }
+}
+
 .sheet__scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -523,6 +568,11 @@ export class EventList extends HTMLElement {
       "dialog",
       {
         class: "sheet",
+        // `showModal` focuses the first focusable thing it finds, which is the close button,
+        // and a pointer-opened dialog then opens with a focus ring around its X. Taking focus
+        // on the dialog itself leaves the ring for whoever tabs to the button on purpose.
+        tabindex: "-1",
+        autofocus: true,
         // Left and right page through a segment that holds several detections, because
         // reaching for a footer button to compare two of them is the wrong amount of work.
         onkeydown: (event) => {
@@ -1139,7 +1189,10 @@ export class EventList extends HTMLElement {
               dataset: { tone: info.tone, unusual: String(odd.has(trigger)) },
             },
             icon(info.icon),
-            count > 1 ? `${info.label} (${count})` : info.label
+            el("span", { class: "chip__label", text: info.label }),
+            // Outside the label, so it survives the phone: the icon says what was detected
+            // and the count says how many, and only the first of those is redundant.
+            ...(count > 1 ? [el("span", { class: "chip__count", text: `(${count})` })] : [])
           )
         );
       }

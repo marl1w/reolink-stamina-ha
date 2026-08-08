@@ -30,7 +30,7 @@ from homeassistant.core import (
 from homeassistant.helpers.event import async_track_state_change_event
 
 from ..const import JOURNAL_SOURCE_LIVE
-from ..detections import async_detection_entities
+from ..detections import async_camera_signal_entities, async_detection_entities
 from ..reolink_registry import async_discover_devices
 from .journal import Journal, Transition, camera_key
 
@@ -54,6 +54,39 @@ def async_detection_map(
             entities = async_detection_entities(hass, device.entry_id, camera.channel)
             for entity_id, kind in entities.items():
                 found[entity_id] = (key, kind)
+    return found
+
+
+def async_signal_map(
+    hass: HomeAssistant,
+    signals: dict[str, list[str]],
+    *,
+    include_all_devices: bool = False,
+) -> dict[str, list[str]]:
+    """Map every camera onto the entities whose state is recorded alongside its detections.
+
+    Two sources, and they answer different questions. What the user chose is *per recorder*,
+    because that is the granularity at which a household fact is true: whether anybody is in
+    says the same thing about every camera on the property.
+
+    What the camera reports about itself is *per camera*, and is not configured at all. A
+    floodlight belongs to one lens, and asking somebody to pick thirteen day/night sensors
+    from a list — then attaching all thirteen to all thirteen cameras, so every event carried
+    twelve terms about other rooms — would be a worse answer than discovering them, which is
+    already how the detection sensors themselves are found.
+
+    One function, used by the live watcher and by the import that reconstructs history. Two
+    readers disagreeing about which signals belong to a camera would show up only as counts
+    that do not add up.
+    """
+    found: dict[str, list[str]] = {}
+    for device in async_discover_devices(hass, include_all_devices=include_all_devices):
+        chosen = signals.get(device.entry_id) or []
+        for camera in device.cameras:
+            own = async_camera_signal_entities(hass, device.entry_id, camera.channel)
+            together = sorted({*chosen, *own})
+            if together:
+                found[camera_key(device.entry_id, camera.channel)] = together
     return found
 
 
@@ -100,15 +133,9 @@ class TransitionWatcher:
         self._entities = async_detection_map(
             self._hass, include_all_devices=self._include_all_devices
         )
-        self._watching = {
-            camera_key(entry_id, camera.channel): list(entities)
-            for entry_id, entities in self._signals.items()
-            for device in async_discover_devices(
-                self._hass, include_all_devices=self._include_all_devices
-            )
-            if device.entry_id == entry_id
-            for camera in device.cameras
-        }
+        self._watching = async_signal_map(
+            self._hass, self._signals, include_all_devices=self._include_all_devices
+        )
         if not self._entities:
             _LOGGER.debug("No Reolink detection sensors found; the journal has nothing to watch")
             return

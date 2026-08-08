@@ -200,6 +200,13 @@ class Model:
     # One threshold per camera, because surprisal is not on a portable scale. Empty for a
     # camera with too little behind it, which is what "still collecting" means.
     thresholds: dict[str, float] = field(default_factory=dict)
+    # The absolute minimum a score must clear, in nats, whatever the per-camera threshold says.
+    #
+    # Without one, a camera whose life is entirely predictable still marks its top few percent
+    # — and on a real installation those thresholds were *negative*, so events more likely than
+    # chance were being called unusual. A threshold answers "unusual for this camera"; the
+    # floor answers "unusual at all", and a mark needs both to mean anything.
+    floor: float = 0.0
 
     def profile(self, camera: str, kind: str) -> Profile:
         """Return what is known about this camera and kind, possibly nothing."""

@@ -8,10 +8,14 @@ as separate detections would inflate every rate built on top by a factor nobody 
 
 from __future__ import annotations
 
+import datetime as dt
+
+from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
 
-from custom_components.reolink_stamina.relevance.events import Event, derive
+from custom_components.reolink_stamina.relevance.events import Event, SolarClock, derive
 from custom_components.reolink_stamina.relevance.journal import Transition
 
 _CAMERA = "entry1:0"
@@ -77,7 +81,58 @@ async def test_sensors_reporting_the_same_subject_merge(hass: HomeAssistant):
     )
 
     assert len(events) == 1
-    assert events[0].duration == 18.0
+    # Ten, not eighteen: the companion sensor is part of the same detection but does not get
+    # to say when it ended. See the next test for why that distinction is the whole point.
+    assert events[0].duration == 10.0
+
+
+async def test_a_lingering_companion_sensor_does_not_hold_an_event_open(hass: HomeAssistant):
+    """A car parking in a garage lasts seconds, not the minutes it then sits there.
+
+    `linger_vehicle` maps to the same subject as `vehicle` and stays on for as long as
+    something lingers. While a run stayed open for whichever same-kind sensor cleared last,
+    one arrival on a real installation derived to 288 seconds instead of 11 — which then read
+    as the rarest duration that camera had ever seen and marked the event on its own.
+    """
+    events = derive(
+        hass,
+        [
+            _row(100.0, "on", entity="binary_sensor.drive_vehicle", kind="vehicle"),
+            _row(102.0, "on", entity="binary_sensor.drive_linger_vehicle", kind="vehicle"),
+            _row(111.0, "off", entity="binary_sensor.drive_vehicle", kind="vehicle"),
+            # Still parked, five minutes later.
+            _row(400.0, "off", entity="binary_sensor.drive_linger_vehicle", kind="vehicle"),
+        ],
+        window=3.0,
+    )
+
+    assert len(events) == 1, "still one arrival, however many sensors reported it"
+    assert events[0].duration == 11.0
+
+
+async def test_a_second_clear_does_not_drag_the_end_along_with_it(hass: HomeAssistant):
+    """The first clear ends a run. A later one is not a longer detection.
+
+    A run is not yielded until something opens the next one, so a redundant clear — a second
+    `off`, or an `unavailable` when the recorder reboots — used to land on the closing path
+    and move the end with it, and nothing on that path checked the merge window. The cap then
+    trimmed the result to exactly the maximum, which is why a real installation reported a
+    seven-second animal detection as five minutes to the millisecond.
+    """
+    events = derive(
+        hass,
+        [
+            _row(100.0, "on"),
+            _row(107.6, "off"),
+            # Half an hour later, the same sensor reports itself clear again.
+            _row(1900.0, "off"),
+            _row(1901.0, "unavailable"),
+        ],
+        window=3.0,
+        longest=300.0,
+    )
+
+    assert [event.duration for event in events] == [7.6]
 
 
 async def test_different_kinds_stay_separate(hass: HomeAssistant):
@@ -169,6 +224,36 @@ async def test_solar_offset_is_measured_against_that_day(hass: HomeAssistant):
     assert offsets[0] != offsets[1]
 
 
+async def test_the_solar_phase_names_the_part_of_the_day(hass: HomeAssistant):
+    """Midday is "in daylight", not "eight hours before sunset".
+
+    The offset is measured from sunset alone, which is the right thing to count and the wrong
+    thing to read: it makes every lunchtime detection report a distance to an event nine hours
+    away, and it cannot tell morning from evening at all.
+    """
+    # Asked of the same clock the code uses, rather than assumed: the test installation's
+    # location is not this test's business, and a hardcoded 05:50 would only be dawn in one.
+    clock = SolarClock(hass)
+    day = dt.date(2026, 7, 15)
+    sunrise = get_astral_event_date(hass, SUN_EVENT_SUNRISE, day)
+    sunset = get_astral_event_date(hass, SUN_EVENT_SUNSET, day)
+    assert sunrise is not None and sunset is not None
+
+    def _phase(moment: dt.datetime) -> str | None:
+        return clock.phase(dt_util.as_local(moment))
+
+    noon = sunrise + (sunset - sunrise) / 2
+    assert _phase(noon) == "day"
+    assert _phase(sunset + dt.timedelta(hours=3)) == "night"
+    assert _phase(sunrise + dt.timedelta(minutes=10)) == "dawn"
+    assert _phase(sunset - dt.timedelta(minutes=10)) == "dusk"
+
+    # And it reaches an Event, which is the only reason the clock exists.
+    at = (noon).timestamp()
+    found = derive(hass, [_row(at, "on"), _row(at + 5, "off")], window=1.0)
+    assert found[0].solar_phase == "day"
+
+
 def test_an_event_is_hashable_and_frozen():
     """They are keys and cache entries downstream, so nothing may mutate one."""
     event = Event(
@@ -179,6 +264,27 @@ def test_an_event_is_hashable_and_frozen():
         duration=1.0,
         minute_of_day=60,
         solar_offset=-30,
+        solar_phase="dusk",
         is_weekend=False,
     )
     assert hash(event)
+
+
+async def test_a_stuck_sensor_is_cut_at_the_limit_not_at_the_next_transition(hass: HomeAssistant):
+    """A sensor that sticks on and goes quiet must not invent an event as long as the silence.
+
+    It used to end the run wherever the next transition happened to land, so a real
+    installation recorded vehicle detections lasting two and a quarter hours — which then
+    scored as the rarest duration that camera had ever seen.
+    """
+    events = derive(
+        hass,
+        # On, then nothing at all for three hours, then off.
+        [_row(0.0, "on"), _row(10_800.0, "off")],
+        longest=600.0,
+    )
+
+    assert events
+    assert all(event.duration is not None and event.duration <= 600.0 for event in events), (
+        f"durations ran past the limit: {[event.duration for event in events]}"
+    )

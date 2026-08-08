@@ -22,22 +22,33 @@ Beside each bar is the figure and the count it came from: *seen 122×* is a fact
 
 That detail view **works from the first day**, before anything can be marked. It is the honest answer to "is this doing anything?" — you can watch what it is collecting long before it has enough to have an opinion.
 
-It marks roughly **one event in twenty** on each camera — measured against that camera's own history, so a busy gate and a quiet garden both get a handful rather than the gate drowning you.
+**How much it marks is yours to set** — *Only the strangest*, *Balanced*, or *More, including borderline ones*. Two things have to be true before a row is marked: the event has to be unusual **for that camera**, and it has to be unusual **at all**.
+
+The second one is not a technicality. A quantile always cuts somewhere, however ordinary the week behind it, so a camera whose life is entirely predictable would still mark its top few percent. On a real installation of nine cameras those per-camera cuts came out *negative* — events more likely than chance were being marked, which is how a person seen for the seventh time in ten days ended up flagged. The setting moves an absolute floor instead, and on that same installation the three choices produced about 1.6, 4 and 9 marks a day across the whole property.
 
 **An *Unusual* chip** in the filter row narrows the list to just those rows. While a camera is still learning it reads *Learning…* and is not clickable, which is true and better than a filter that can only return nothing.
 
 **On the player's scrub bar**, a detection keeps the colour of what was detected and turns its dot red when the model marked it — two facts, two marks, neither displacing the other.
 
+## What each camera has learned
+
+Every camera row in the picker carries a small chart button, and the toolbar carries one for everything you have selected at once. Both open the same view: **when** that camera sees each kind of thing, hour by hour; **how long** those detections last; **what fired before them**; and **what every signal was doing** at the time. Across several cameras, *which camera* becomes a distribution of its own — on a property where one camera fires ten times more than the rest, that single row is usually the most useful thing on the screen.
+
+This is the counterpart of the per-event breakdown. That one says why *this* event stood out; this one says what it stood out from. It is also the only way to notice that a camera has learned something wrong — a fortnight of scaffolding outside, a sensor that flapped for a week — which is otherwise invisible until it quietly stops marking anything.
+
 ## Counting your own signals
 
 Point it at entities you already have and it counts them alongside the time and the duration, so *"a person on the drive while nobody is in"* becomes its own thing rather than just a person on the drive.
 
-*Reolink Stamina → **Configure*** — one list per recorder, on the last page. One Home Assistant often covers more than one property, and whether anybody is home at the first says nothing about the second.
+**Your cameras bring their own.** Each camera's floodlight, its siren and its day/night state are found automatically and attached to that camera — no picking, and none of them ends up counted against a camera on the other side of the house. Day/night earns its place: it is the camera saying it switched to infrared, which is darkness as that lens actually experienced it — under a porch light, behind a tree, facing east — rather than as an almanac calculated it for the whole property.
+
+*Reolink Stamina → **Configure*** — one list per recorder, on the last page, for anything true of the whole property: whether anybody is in, whether the alarm is set, whether the gate is locked. One Home Assistant often covers more than one property, and whether anybody is home at the first says nothing about the second.
 
 - **Nothing is assumed and nothing is pre-selected.** The model never interprets a signal; it counts the state as it finds it. So "is anyone home" works exactly as well as a named person, and which one suits your house is not this integration's business to guess.
 - **Skippable.** Time of day and duration are most of the value on their own.
 - **Only entities with states you could read aloud** are offered — presence, a door, an alarm mode, a calendar. A continuous number never repeats a value, so it could never be rare; those need bucketing before they can be counted, and that is not built yet.
-- **A signal added later is not a hole.** Events from before it existed record it as unknown, which is a value in its own right rather than a gap that would shift every count.
+- **A signal added later still gets its history.** Home Assistant has been recording that entity all along, so adding one reads back what it said and stamps it onto everything already collected. The alternative was being told to wait another week before a signal you just chose counted for anything.
+- **The list is filtered to what could plausibly be a signal.** Your cameras' own detection sensors are hidden (counting a person as a signal against an event that is a person teaches it that a person is usually accompanied by a person), along with an alarm panel's individual zones, anything Home Assistant marks as diagnostic, and anything it has disabled. On the installation this was measured against, that turned 607 entities on offer into 172.
 
 ## What it keeps
 
@@ -59,7 +70,7 @@ It also **does not depend on your recorder's retention**. Detections are read fr
 
 *Reolink Stamina → **Configure** → **Learn what is normal***.
 
-That is all there is to configure. There is nothing to tune and nothing to train — it starts collecting, and the detail view on any row shows you what it has.
+Switching it on adds a page to the end of that flow — **Marking, and what else to count** — holding how much to mark and any household signals you want counted. Both are optional — it starts collecting either way, and the detail view on any row shows you what it has.
 
 ## How long before it says anything
 
@@ -75,10 +86,12 @@ Worth saying plainly, because the obvious expectations are the wrong ones.
 - **Common is not safe.** It ranks by how rare something is, and makes no claim about risk. A burglar at three in the afternoon in a busy driveway is statistically unremarkable.
 - **It learns whatever it sees, including the bad.** A camera that has been firing on spiders every night for months has made spiders normal, and they will never be marked. That is correct behaviour, but it means its quality depends on your recorder's own detection quality.
 - **Something genuinely new will be marked for a while.** A new family car stands out daily for a fortnight and then stops. Self-healing, and mildly irritating in the meantime.
+- **It counts each signal separately, never in combination.** "A person" and "nobody home" are two facts added together, not one fact about the pair. That is deliberate — conditioning on three signals would cut six months of history into three weeks per bucket and the estimates would collapse — but it does mean it cannot learn that one particular *combination* is the strange one.
+- **A person walking past three cameras is three events.** Grouping them into one arrival is not built.
 
 ## Where it is going
 
 1. **The record.** ✅ The journal, and the one-off import of what Home Assistant already held.
 2. **Scoring and the mark.** ✅ The rate model, the mark on the row, the sentence saying why, the detail view and the filter chip.
-3. **Your own signals.** ✅ Pick entities per recorder and they are counted alongside everything else. Numeric sensors still need bucketing before they can be offered.
+3. **Your own signals.** ✅ Pick entities per recorder, and each camera's own floodlight, siren and day/night state are found without being asked for. History for a signal is read back from Home Assistant's recorder, so adding one counts immediately. Numeric sensors still need bucketing before they can be offered.
 4. **What the picture says.** Optional and behind its own switch: the coarse shape and position of what moved, so an unfamiliar vehicle at the gate can be told from a familiar one. This is the only part that will need ffmpeg.

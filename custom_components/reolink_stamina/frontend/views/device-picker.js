@@ -101,6 +101,21 @@ const STYLES = /* css */ `
 .cam__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .cam__name { font-size: 0.92rem; font-weight: 500; }
 .cam__ai { display: flex; gap: 5px; flex-wrap: wrap; }
+
+/* The pick target and the "what has this learned" button sit side by side, and the row is
+   the flex container rather than the button — a button inside a button is not markup a
+   browser will keep. */
+.cam-row { display: flex; align-items: center; gap: 2px; }
+.cam-row .cam { flex: 1; min-width: 0; }
+.learned {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; padding: 6px; border-radius: 50%;
+  border: 1px solid transparent; background: none; cursor: pointer;
+  color: var(--rv-text-dim);
+  transition: color 120ms var(--rv-ease), background 120ms var(--rv-ease);
+}
+.learned:hover { color: var(--rv-text); background: color-mix(in srgb, var(--rv-text) 10%, transparent); }
+.learned .icon { --mdc-icon-size: 17px; width: 17px; height: 17px; display: block; }
 .cam__ai span {
   font-size: 0.68rem;
   font-weight: 600;
@@ -414,7 +429,7 @@ export class DevicePicker extends HTMLElement {
     refs.name = el("span", { class: "cam__name truncate" });
     refs.ai = el("div", { class: "cam__ai" });
 
-    const row = el(
+    refs.pick = el(
       "button",
       {
         class: "cam",
@@ -425,6 +440,31 @@ export class DevicePicker extends HTMLElement {
       refs.check,
       el("div", { class: "cam__body" }, refs.name, refs.ai)
     );
+
+    // Only ever present when Relevance is on: with the beta off there is nothing learned to
+    // show, and a button that opens an explanation of why it cannot do anything is worse
+    // than no button.
+    refs.learned = el(
+      "button",
+      {
+        class: "learned",
+        title: "What this camera has learned",
+        "aria-label": "What this camera has learned",
+        onclick: (event) => {
+          event.currentTarget.blur();
+          this.dispatchEvent(
+            new CustomEvent("show-learned", {
+              bubbles: true,
+              composed: true,
+              detail: { device, camera },
+            })
+          );
+        },
+      },
+      icon("mdi:chart-box-outline")
+    );
+
+    const row = el("div", { class: "cam-row" }, refs.pick, refs.learned);
     row.__refs = refs;
     return row;
   }
@@ -435,9 +475,10 @@ export class DevicePicker extends HTMLElement {
 
     refs.name.textContent = camera.name;
     refs.check.dataset.state = selected ? "on" : "off";
-    row.setAttribute("aria-pressed", selected ? "true" : "false");
-    row.disabled = !camera.can_playback;
-    row.classList.toggle("cam--disabled", !camera.can_playback);
+    refs.pick.setAttribute("aria-pressed", selected ? "true" : "false");
+    refs.pick.disabled = !camera.can_playback;
+    refs.pick.classList.toggle("cam--disabled", !camera.can_playback);
+    refs.learned.hidden = !this._store.relevanceEnabled || !camera.can_playback;
 
     refs.ai.replaceChildren();
     if (!camera.can_playback) {
