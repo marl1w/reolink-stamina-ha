@@ -122,6 +122,11 @@ CONF_SYNC_LEAD: Final = "sync_lead"
 CONF_SYNC_TAIL: Final = "sync_tail"
 CONF_SYNC_STREAM: Final = "sync_stream"
 CONF_REMOTE_FOLDER: Final = "remote_folder"
+# A second admission rule, alongside the kinds above: upload anything the model marked as
+# unusual for its camera, whatever kind it was. The two are ORed, so a recorder can sync
+# people always and everything else only when it is out of the ordinary.
+CONF_SYNC_UNUSUAL: Final = "sync_unusual"
+CONF_SYNC_UNUSUAL_KINDS: Final = "unusual_kinds"
 
 DEFAULT_QUOTA_GB: Final = 15
 
@@ -136,6 +141,8 @@ DEFAULT_SYNC_KINDS: Final = ("person", "vehicle", "animal")
 DEFAULT_SYNC_LEAD: Final = 10
 DEFAULT_SYNC_TAIL: Final = 10
 DEFAULT_REMOTE_FOLDER: Final = "reolink"
+# Off, and while it is off nothing is scored and no extra sensor is watched.
+DEFAULT_SYNC_UNUSUAL: Final = False
 
 # Every detection type a Reolink camera can report, in the panel's own vocabulary. Offered
 # as the choice of what to sync; a camera simply never fires the ones it lacks.
@@ -150,14 +157,46 @@ SYNC_KIND_CHOICES: Final = (
     "motion",
 )
 
+# Which kinds the unusual rule may upload, when nothing is chosen. All of them: the point of
+# the rule is the kind you did *not* think worth syncing turning out to be worth seeing.
+DEFAULT_SYNC_UNUSUAL_KINDS: Final = SYNC_KIND_CHOICES
+
 # How long a camera must be quiet before its clip is considered finished. Several sensors
 # fire within a second of each other on one arrival, and a person walks in and out of
 # frame repeatedly; without this each would become its own upload of overlapping footage.
-SYNC_SETTLE_SECONDS: Final = 20.0
+#
+# Fifteen seconds, and the number comes from the same measurement the relevance merge window
+# was chosen from: across 5,187 detections on real hardware, the quiet gap between one
+# detection ending and the next starting was 3.2s at the first quartile and 10.5s at the
+# median. So this comfortably absorbs sensor bounce and somebody stepping out of frame,
+# while the twenty seconds it started at was buying very little and every clip paid it — it
+# is the largest single term in how long an upload takes to appear.
+SYNC_SETTLE_SECONDS: Final = 15.0
 
 # The recorder needs a moment before a new recording is findable at all. Measured on an
 # RLN8-410: a detection at 19:50:10 became searchable 20 seconds later.
+#
+# Measured from the *detection*, which is what it is applied to: waiting this out from the
+# padded end of the window instead meant a recorder with a sixty-second tail waited eighty
+# seconds for a file that was findable after twenty.
 SYNC_WRITE_DELAY_SECONDS: Final = 20.0
+
+# How the search for a settled recording is paced. Short looks first, because the common case
+# is a file that is already there and already long enough — a flat ten-second poll charged
+# every clip for the worst case. The total budget is unchanged.
+SYNC_SEARCH_BACKOFF: Final = (
+    2.0,
+    3.0,
+    5.0,
+    8.0,
+    *(10.0,) * 10,
+)
+
+# Two looks have to be this far apart before "the file stopped growing" means anything. The
+# exact test — the recording already reaches the end of the window — needs no such spacing
+# and is what usually ends the search; this only governs the fallback for a recording that
+# ended early, where two samples two seconds apart would call a live file finished.
+SYNC_STABLE_SPACING_SECONDS: Final = 10.0
 
 # A detection sensor that sticks on would otherwise hold its clip open for ever, so a window
 # is closed at this length and flagged as the first part of something longer.
@@ -166,6 +205,32 @@ SYNC_MAX_WINDOW_SECONDS: Final = 10 * 60.0
 # A clip is assembled in memory on its way to the cloud, so this bounds what one event can
 # cost. Comfortably above any sane lead+tail at full resolution.
 SYNC_MAX_CLIP_BYTES: Final = 200 * 1024 * 1024
+
+# ------------------------------------------------------- how much to do at once
+#
+# One person crossing three cameras is three clips on one recorder, and handling them strictly
+# one after another means the third waits out the first two entirely. They are overlapped
+# instead — but only as far as the machine can actually take, because a clip is held in memory
+# from the moment it is fetched until the upload finishes. Memory is the constraint that
+# matters: overlapping is precisely what makes a slow link go faster, while a Pi that runs out
+# of memory takes Home Assistant with it. See `cloud/capacity.py`.
+
+# What share of the memory the machine has free may be spent on clips in flight.
+SYNC_MEMORY_SHARE: Final = 0.25
+# And never more than this, however much the machine has. Past a handful of clips the recorder
+# lock and the link are the limits anyway, so a bigger budget buys nothing.
+SYNC_MEMORY_CEILING: Final = 512 * 1024 * 1024
+# Never more than this many at once whatever the arithmetic says. A continuously recording
+# camera's clip is cut by an ffmpeg of its own, so this is a CPU bound as much as anything.
+SYNC_MAX_CONCURRENT_CLIPS: Final = 4
+# What one clip is assumed to cost before any have been measured. Deliberately pessimistic —
+# roughly a minute of main stream — so a machine earns its concurrency by uploading small
+# clips rather than being granted it and finding out.
+SYNC_ASSUMED_CLIP_BYTES: Final = 32 * 1024 * 1024
+# How many recent clips the estimate is taken from. The largest of them, not the average: the
+# budget has to hold the next clip, and clips vary by an order of magnitude between a doorbell
+# press and a car manoeuvring.
+SYNC_CLIP_SAMPLES: Final = 10
 
 # --------------------------------------------------------------------- relevance
 

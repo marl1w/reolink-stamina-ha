@@ -94,6 +94,13 @@ SENSORS: tuple[SyncSensor, ...] = (
         value=lambda status: status.uploaded,
     ),
     SyncSensor(
+        key="unusual_uploaded",
+        translation_key="unusual_uploaded",
+        name="Unusual uploads since restart",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value=lambda status: status.unusual_uploaded,
+    ),
+    SyncSensor(
         key="last_upload",
         translation_key="last_upload",
         name="Last upload",

@@ -20,12 +20,17 @@ from custom_components.reolink_stamina.const import (
     CONF_PRE_ROLL,
     CONF_REMOTE_FOLDER,
     CONF_SPLIT_MINUTES,
+    CONF_SYNC_KINDS,
+    CONF_SYNC_UNUSUAL,
+    CONF_SYNC_UNUSUAL_KINDS,
     DEFAULT_REMOTE_FOLDER,
+    DEFAULT_SYNC_KINDS,
     DOMAIN,
     ISSUE_INCOMPATIBLE,
     PANEL_TITLE,
     PANEL_URL_PATH,
     SUBENTRY_TYPE_SYNC,
+    SYNC_KIND_CHOICES,
 )
 
 from .conftest import FakeApi, FakeHost
@@ -271,6 +276,63 @@ async def test_cloud_sync_offers_the_nvr_and_a_folder_named_after_it(hass: HomeA
     assert result["type"] == "form"
     assert _schema_default(result, CONF_NVR_ENTRY) == reolink.entry_id
     assert _schema_default(result, CONF_REMOTE_FOLDER) == f"{DEFAULT_REMOTE_FOLDER}/Backyard NVR"
+
+
+async def test_cloud_sync_offers_the_unusual_rule_off_and_covering_everything(
+    hass: HomeAssistant,
+) -> None:
+    """The second admission rule: off, and — once switched on — covering every kind.
+
+    Every kind rather than the synced ones, because the point of the rule is the kind you did
+    *not* think worth uploading turning out to be worth seeing.
+    """
+    entry = await _setup(hass)
+    _loaded_reolink(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SYNC), context={"source": "user"}
+    )
+
+    assert _schema_default(result, CONF_SYNC_UNUSUAL) is False
+    assert _schema_default(result, CONF_SYNC_UNUSUAL_KINDS) == list(SYNC_KIND_CHOICES)
+    # And the rule it sits beside is untouched: person, vehicle, animal.
+    assert _schema_default(result, CONF_SYNC_KINDS) == list(DEFAULT_SYNC_KINDS)
+
+
+async def test_reconfiguring_a_syncer_keeps_the_unusual_rule_it_was_given(
+    hass: HomeAssistant,
+) -> None:
+    """Both new fields have to survive a trip through the reconfigure form.
+
+    They are added to the shared schema, so a field offered when adding and forgotten when
+    reconfiguring would silently reset itself the first time anything else was changed.
+    """
+    reolink = _loaded_reolink(hass)
+    entry = await _setup(
+        hass,
+        subentries=[
+            ConfigSubentryData(
+                data={
+                    CONF_NVR_ENTRY: reolink.entry_id,
+                    CONF_SYNC_UNUSUAL: True,
+                    CONF_SYNC_UNUSUAL_KINDS: ["motion", "vehicle"],
+                },
+                subentry_type=SUBENTRY_TYPE_SYNC,
+                title="Cloud sync Backyard NVR",
+                unique_id=reolink.entry_id,
+            )
+        ],
+    )
+    subentry = next(iter(entry.subentries.values()))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SYNC),
+        context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
+    )
+
+    assert result["type"] == "form"
+    assert _schema_default(result, CONF_SYNC_UNUSUAL) is True
+    assert _schema_default(result, CONF_SYNC_UNUSUAL_KINDS) == ["motion", "vehicle"]
 
 
 async def test_a_recorder_that_already_syncs_is_not_offered_twice(hass: HomeAssistant) -> None:

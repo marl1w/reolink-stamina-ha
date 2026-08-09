@@ -36,6 +36,8 @@ from .const import (
     CONF_SYNC_LEAD,
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
+    CONF_SYNC_UNUSUAL,
+    CONF_SYNC_UNUSUAL_KINDS,
     CONF_VERIFY_TLS,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
@@ -51,6 +53,8 @@ from .const import (
     DEFAULT_SYNC_KINDS,
     DEFAULT_SYNC_LEAD,
     DEFAULT_SYNC_TAIL,
+    DEFAULT_SYNC_UNUSUAL,
+    DEFAULT_SYNC_UNUSUAL_KINDS,
     DEFAULT_VERIFY_TLS,
     DOMAIN,
     PANEL_TITLE,
@@ -461,6 +465,24 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
                     selector.SelectSelectorConfig(
                         options=list(SYNC_KIND_CHOICES),
                         multiple=True,
+                        translation_key=CONF_SYNC_KINDS,
+                    )
+                ),
+                # The second admission rule. Kept next to the first, because it is the same
+                # question — what is worth uploading — asked the other way round.
+                vol.Required(
+                    CONF_SYNC_UNUSUAL,
+                    default=current.get(CONF_SYNC_UNUSUAL, DEFAULT_SYNC_UNUSUAL),
+                ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_SYNC_UNUSUAL_KINDS,
+                    default=list(current.get(CONF_SYNC_UNUSUAL_KINDS, DEFAULT_SYNC_UNUSUAL_KINDS)),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(SYNC_KIND_CHOICES),
+                        multiple=True,
+                        # The same labels as the list above: a kind must not be called two
+                        # different things on one form.
                         translation_key=CONF_SYNC_KINDS,
                     )
                 ),

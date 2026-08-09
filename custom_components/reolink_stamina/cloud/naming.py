@@ -6,6 +6,9 @@ syncer was configured with.
 
     Reolink/Main NVR/260804_084512_main-nvr_South Side.mp4
 
+A clip that was uploaded because the model found it unusual ends `_u`, so the handful worth
+looking at are visible in a plain file listing without opening anything.
+
 Both destinations seen so far reject the characters Windows rejects, and a clip whose name
 came straight from a camera called "Front / Gate" would be refused on upload rather
 than at configuration time — so names are sanitised here, once.
@@ -36,14 +39,20 @@ def safe_part(text: str, *, fallback: str = "unknown") -> str:
     return cleaned
 
 
-def clip_filename(when: dt.datetime, nvr: str, camera: str) -> str:
+def clip_filename(when: dt.datetime, nvr: str, camera: str, *, unusual: bool = False) -> str:
     """Name one clip after the moment it starts, its recorder and its camera.
 
     Date first, so a plain alphabetical listing is chronological — which is what makes the
     oldest clip easy to find when the quota is full, in any file browser as well as here.
+
+    `unusual` appends `_u`. In the name rather than in a folder of its own, so it survives
+    somebody moving the file, and so a search for it works in any cloud client.
     """
     stamp = when.strftime("%y%m%d_%H%M%S")
-    return f"{stamp}_{safe_part(nvr, fallback='nvr')}_{safe_part(camera, fallback='camera')}.mp4"
+    mark = "_u" if unusual else ""
+    return (
+        f"{stamp}_{safe_part(nvr, fallback='nvr')}_{safe_part(camera, fallback='camera')}{mark}.mp4"
+    )
 
 
 def remote_path(folder: str, filename: str) -> str:

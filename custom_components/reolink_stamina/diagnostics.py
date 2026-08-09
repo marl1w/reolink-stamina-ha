@@ -180,8 +180,41 @@ async def async_get_config_entry_diagnostics(
         # the arithmetic was at fault.
         "playback_samples": data.cache.sample_files() if data is not None else [],
         "temporary_space": await hass.async_add_executor_job(_temporary_space),
+        "cloud_sync": _cloud_sync(data),
         "relevance": await _relevance(hass, data),
     }
+
+
+def _cloud_sync(data: Any) -> list[dict[str, Any]]:
+    """Return what each recorder's syncer is doing, and how fast it is allowed to do it.
+
+    `concurrency` is the answer to "why is this slow": how many clips this machine was judged
+    able to hold at once, and the measurement behind that judgement. A syncer pinned to one
+    clip on a machine with plenty of memory means the clips themselves are large, which is a
+    resolution setting rather than a fault.
+
+    No recorder is named — the syncer's own subentry id is what ties a line here to the device.
+    """
+    if data is None or not data.syncers:
+        return []
+    return [
+        {
+            "subentry_id": subentry_id,
+            "accepting": syncer.accepting,
+            "cameras_watched": len(syncer.camera_names),
+            "concurrency": syncer.status.concurrency,
+            "capacity": syncer.status.capacity,
+            "queued": syncer.status.queued,
+            "pending_windows": syncer.status.pending_windows,
+            "uploaded": syncer.status.uploaded,
+            "unusual_uploaded": syncer.status.unusual_uploaded,
+            "clips_held": syncer.status.clips,
+            "quota_used": syncer.status.used,
+            "quota": syncer.status.quota,
+            "last_error": syncer.status.last_error,
+        }
+        for subentry_id, syncer in data.syncers.items()
+    ]
 
 
 async def _relevance(hass: HomeAssistant, data: Any) -> dict[str, Any]:

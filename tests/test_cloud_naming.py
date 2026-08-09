@@ -67,6 +67,25 @@ def test_a_folder_of_nothing_still_lands_somewhere_sensible() -> None:
     assert remote_path("   ", "clip.mp4") == "Reolink/clip.mp4"
 
 
+def test_an_unusual_clip_says_so_in_its_name() -> None:
+    """The handful worth looking at have to be visible in a plain file listing.
+
+    In the name rather than a folder of its own, so it survives somebody moving the file and
+    can be searched for in any cloud client.
+    """
+    import datetime as dt
+
+    from custom_components.reolink_stamina.cloud.naming import clip_filename
+
+    when = dt.datetime(2026, 8, 4, 3, 11, 2)
+
+    assert clip_filename(when, "Main NVR", "Drive") == "260804_031102_Main NVR_Drive.mp4"
+    assert (
+        clip_filename(when, "Main NVR", "Drive", unusual=True)
+        == "260804_031102_Main NVR_Drive_u.mp4"
+    )
+
+
 def test_a_growing_recording_is_only_complete_when_it_stops() -> None:
     """An event camera extends its recording while it still sees something.
 

@@ -108,6 +108,8 @@
             "destination_entry_id": "Cloud account",
             "quota_gb": "Storage quota",
             "kinds": "Detections to upload",
+            "sync_unusual": "Also upload unusual events",
+            "unusual_kinds": "Kinds that count as unusual",
             "sync_stream": "Resolution",
             "sync_lead": "Seconds before the event",
             "sync_tail": "Seconds after the event",
@@ -118,6 +120,8 @@
             "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
             "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
             "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
+            "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
+            "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
             "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
             "sync_lead": "How much footage to keep before the first detection.",
             "sync_tail": "How much to keep after the last detection clears.",
@@ -131,6 +135,8 @@
             "destination_entry_id": "Cloud account",
             "quota_gb": "Storage quota",
             "kinds": "Detections to upload",
+            "sync_unusual": "Also upload unusual events",
+            "unusual_kinds": "Kinds that count as unusual",
             "sync_stream": "Resolution",
             "sync_lead": "Seconds before the event",
             "sync_tail": "Seconds after the event",
@@ -140,6 +146,8 @@
             "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
             "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
             "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
+            "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
+            "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
             "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
             "sync_lead": "How much footage to keep before the first detection.",
             "sync_tail": "How much to keep after the last detection clears.",
@@ -176,6 +184,9 @@
       },
       "uploaded": {
         "name": "Uploads since restart"
+      },
+      "unusual_uploaded": {
+        "name": "Unusual uploads since restart"
       },
       "last_upload": {
         "name": "Last upload"

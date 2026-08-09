@@ -17,7 +17,10 @@ than about events:
   hard maximum regardless.
 * Whether an event is taken on at all is decided **once, as it opens**. A window that opened
   while clips were being accepted belongs to the cloud however the switch stands when it
-  finally settles, which is the better part of a minute later.
+  finally settles, which is the better part of a minute later. The reverse holds just as
+  firmly: a window that opened while they were *not* being accepted cannot become an
+  ordinary upload because the switch came back on halfway through it. That is what
+  `admitted` records.
 
 Deliberately pure: it holds no timers and talks to nothing, so the rules can be tested by
 moving a clock by hand rather than by waiting.
@@ -41,6 +44,8 @@ class OpenWindow:
     active: set[str] = field(default_factory=set)
     kinds: set[str] = field(default_factory=set)
     truncated: bool = False
+    # Whether the switch was on at the moment this opened.
+    admitted: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -54,6 +59,10 @@ class ClipWindow:
     # True when the window was closed by the safety limit rather than by the camera going
     # quiet, so the caller can say the clip is the first part of something longer.
     truncated: bool = False
+    # Whether this camera's switch was on when the event opened. False for a window gathered
+    # only because that recorder uploads unusual events regardless of the switch — such a
+    # window may only ever become an unusual upload, never an ordinary one.
+    admitted: bool = True
 
     @property
     def seconds(self) -> float:
@@ -89,6 +98,25 @@ class WindowCollector:
         window = self._open.get(key)
         return bool(window and window.active)
 
+    def next_due(self) -> dt.datetime | None:
+        """Return the earliest moment any open window could become collectable.
+
+        What a caller uses to look again at exactly the right time instead of sweeping. A
+        window with nothing on any more is due when its tail elapses; one still holding a
+        sensor on can only be closed by the maximum, so that is when it is worth looking.
+
+        None when nothing is open, which means there is nothing to wait for.
+        """
+        if not self._open:
+            return None
+        due: list[dt.datetime] = []
+        for window in self._open.values():
+            if window.active:
+                due.append(window.first + dt.timedelta(seconds=self._maximum))
+            else:
+                due.append(window.last_activity + dt.timedelta(seconds=self._settle))
+        return min(due)
+
     def record_on(
         self,
         key: str,
@@ -97,6 +125,7 @@ class WindowCollector:
         moment: dt.datetime,
         *,
         accepting: bool = True,
+        admitted: bool | None = None,
     ) -> bool:
         """Note that a detection sensor turned on; return whether it was taken on.
 
@@ -107,12 +136,21 @@ class WindowCollector:
         Asking again when the window closes is what used to lose an arrival: the clip settles
         some forty seconds after the first detection, by which time the alarm has been
         disarmed and the switch turned off, and the footage of the arrival was dropped.
+
+        `admitted` separates "gather this" from "the switch was on", which are the same
+        question only for a recorder that syncs nothing but the kinds it was given. A recorder
+        that also uploads unusual events gathers whatever the switch says and sorts it out
+        later, and defaults to `accepting` for everyone else.
         """
         window = self._open.get(key)
         if window is None:
             if not accepting:
                 return False
-            window = OpenWindow(first=moment, last_activity=moment)
+            window = OpenWindow(
+                first=moment,
+                last_activity=moment,
+                admitted=accepting if admitted is None else admitted,
+            )
             self._open[key] = window
         window.first = min(window.first, moment)
         window.last_activity = max(window.last_activity, moment)
@@ -158,6 +196,7 @@ class WindowCollector:
                     # Ordered so a name or a log line reads the same way twice.
                     kinds=tuple(sorted(window.kinds)),
                     truncated=overdue,
+                    admitted=window.admitted,
                 )
             )
         return ready
@@ -178,6 +217,7 @@ class WindowCollector:
                     end=max(window.last_activity, now) + dt.timedelta(seconds=self._tail),
                     kinds=tuple(sorted(window.kinds)),
                     truncated=bool(window.active),
+                    admitted=window.admitted,
                 )
             )
         return ready

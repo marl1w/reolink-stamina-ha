@@ -209,3 +209,40 @@ def test_shutdown_keeps_what_it_has() -> None:
     assert ready[0].truncated is True
     assert ready[0].end == at(40)
     assert windows.pending == 0
+
+
+def test_nothing_open_is_never_due() -> None:
+    """A syncer with no event gathering has nothing to set a timer for."""
+    assert collector().next_due() is None
+
+
+def test_a_quiet_window_is_due_when_its_tail_elapses() -> None:
+    """What lets the syncer look at exactly the right moment rather than sweeping.
+
+    The sweep runs every five seconds, so every clip was paying an average of two and a half
+    seconds before it was even queued.
+    """
+    windows = collector(settle=15.0)
+    windows.record_on(CAMERA, "person", "person", at(0))
+    windows.record_off(CAMERA, "person", at(4))
+
+    assert windows.next_due() == at(19), "fifteen seconds after the camera went quiet"
+
+
+def test_a_window_with_something_still_in_frame_is_due_at_the_ceiling() -> None:
+    """Nothing can close it before then, so looking earlier would find nothing."""
+    windows = collector(settle=15.0, maximum=600.0)
+    windows.record_on(CAMERA, "person", "person", at(0))
+
+    assert windows.next_due() == at(600)
+
+
+def test_the_earliest_of_several_cameras_is_what_is_returned() -> None:
+    """One timer serves every open window, so it has to be set for the first of them."""
+    windows = collector(settle=15.0)
+    windows.record_on("main|1", "person", "person", at(0))
+    windows.record_off("main|1", "person", at(30))
+    windows.record_on("main|2", "person", "person", at(0))
+    windows.record_off("main|2", "person", at(5))
+
+    assert windows.next_due() == at(20), "the camera that went quiet first"

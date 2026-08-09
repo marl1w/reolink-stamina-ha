@@ -34,7 +34,9 @@ export const FEATURES = [
     text:
       "A clip of each detection uploaded to your own OneDrive, event by event, so the " +
       "footage outlives the recorder it was written on. One per NVR, each with its own " +
-      "quota and its own switch to automate.",
+      "quota and its own switch to automate. It can also keep the odd one out: anything " +
+      "marked unusual goes up too, even when its kind is not on your list, and its file " +
+      "name ends <b>_u</b>.",
     where: "Settings → Devices & services → Reolink Stamina → <b>Add cloud sync</b>.",
   },
   {
