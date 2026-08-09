@@ -15,27 +15,21 @@
     "step": {
       "init": {
         "title": "Reolink Stamina",
-        "description": "What is switched on. The next pages cover the player, and anything a switched-on feature needs.",
+        "description": "What is switched on. The next pages cover the player, and what the counting should watch.",
         "data": {
           "hide_timer": "Show detections only",
           "require_admin": "Restrict the panel to administrators",
-          "verify_tls": "Verify the recorder's HTTPS certificate",
-          "beta_restream": "Adaptive playback (beta)",
-          "beta_all_devices": "Show hubs and standalone cameras (beta)",
-          "beta_relevance": "Learn what is normal (beta)"
+          "verify_tls": "Verify the recorder's HTTPS certificate"
         },
         "data_description": {
           "hide_timer": "On: person, vehicle and animal, with motion as a filter. Off also brings back scheduled and unlabelled recordings, which dominate a 24/7 recorder.",
           "require_admin": "Recordings can be sensitive. Off lets non-admin users open the panel.",
-          "verify_tls": "Off suits the self-signed certificate Reolink ships, which no verification can pass. On only if you installed one this Home Assistant trusts.",
-          "beta_restream": "Converts a recording when the browser cannot play it — H.265 on Chrome or Firefox, or anything on an iPhone. Needs ffmpeg.",
-          "beta_all_devices": "Lists Home Hubs and cameras with their own SD card. Untested hardware, hence beta.",
-          "beta_relevance": "Marks the events that are unusual for a camera, by counting what it normally sees. Nothing is recorded until you turn this on, it stays on this machine, and removing the integration deletes it."
+          "verify_tls": "Off suits the self-signed certificate Reolink ships, which no verification can pass. On only if you installed one this Home Assistant trusts."
         }
       },
       "signals": {
         "title": "Marking, and what else to count",
-        "description": "Relevance already counts the time of day, how long a detection lasted, which camera fired before it, and what each camera reports about itself — its floodlight, its siren, and its day/night state, which is the camera telling you it switched to infrared. Those are found automatically and attached to the camera they belong to.\n\nAdd anything here that is true of the whole property rather than of one lens: whether anybody is in, whether the alarm is set, whether the gate is locked. \"A person on the drive while nobody is home\" then becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leaving them empty is fine.",
+        "description": "Relevance already counts the time of day, how long a detection lasted, which camera fired before it, and what each camera reports about itself — its floodlight, its siren, and its day/night state, which is the camera telling you it switched to infrared. Those are found automatically and attached to the camera they belong to.\n\nAdd anything here that is true of the whole property rather than of one lens: whether anybody is in, whether the alarm is set, whether the gate is locked. \"A person on the drive while nobody is home\" then becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leaving them empty is fine.\n\nWhat is counted stays on this machine, is never sent anywhere, and removing the integration deletes it.",
         "data": {
           "relevance_sensitivity": "How much to mark"
         },

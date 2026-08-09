@@ -74,8 +74,7 @@ def ws_events(
 
     # Resolve camera metadata once; needed for names and pre-roll marker placement.
     devices = {
-        device.entry_id: device
-        for device in async_discover_devices(hass, include_all_devices=options.beta_all_devices)
+        device.entry_id: device for device in async_discover_devices(hass, include_all_devices=True)
     }
 
     primary = options.browse_stream

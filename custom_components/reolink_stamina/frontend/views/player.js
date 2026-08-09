@@ -284,11 +284,6 @@ export class EventPlayer extends HTMLElement {
     if (this._source) this._source.api = api;
   }
 
-  /** Whether the beta that allows server-side conversion is switched on. */
-  get _adaptive() {
-    return Boolean(this._store?.options?.beta_restream);
-  }
-
   /** Load an event, or clear the player when given null. */
   setEvent(event) {
     const sameEvent = this._event && event && this._event.id === event.id;
@@ -447,13 +442,12 @@ export class EventPlayer extends HTMLElement {
    *
    * Low is the default for good reason: it is H.264 on every Reolink device seen so far and
    * starts far faster, while high is often H.265 at 4608x1728 — slow to open, slow to
-   * decode, and undecodable outside Safari. With the adaptive beta on, high resolution can
-   * be made to play anywhere, so the choice is offered again and remembered while the panel
-   * is open; without it, low is all there is.
+   * decode, and undecodable outside Safari. Converting makes high resolution play anywhere,
+   * so the choice is offered and remembered while the panel is open.
    */
   _preferredStream(event) {
     const streams = this._availableStreams(event);
-    if (this._adaptive && this._chosenStream && streams.includes(this._chosenStream)) {
+    if (this._chosenStream && streams.includes(this._chosenStream)) {
       return this._chosenStream;
     }
     if (streams.includes("sub")) return "sub";
@@ -483,9 +477,7 @@ export class EventPlayer extends HTMLElement {
     // The two resolutions are separate encodings and need not share an aspect ratio, so a
     // zoom carried across them would land somewhere other than where it was left.
     this._zoom.reset();
-    // With the beta off, changing resolution must not also change route: the panel has
-    // always simply reloaded whatever route was playing.
-    this._source.reset({ event: this._event, stream, keepRoute: !this._adaptive });
+    this._source.reset({ event: this._event, stream });
     this._overlay.show("mdi:video-switch-outline", announce, { spinner: true });
     this._source.open({ seek: Math.floor(position), quiet: true });
     this._renderChrome();
@@ -556,7 +548,6 @@ export class EventPlayer extends HTMLElement {
     this._source = new PlaybackSource({
       video: this._video,
       overlay: this._overlay,
-      isAdaptive: () => this._adaptive,
       onRouteChange: () => this._renderChrome(),
       onGiveUp: (detail) => this._offerDownloadInstead(detail),
     });
@@ -601,8 +592,8 @@ export class EventPlayer extends HTMLElement {
     this._savePop = el("div", { class: "pop", hidden: true });
     this._saveAnchor = el("div", { class: "anchor" }, this._saveBtn, this._savePop);
 
-    // Offered only with the adaptive beta on, because that is what makes high resolution
-    // watchable outside Safari. Without it the panel plays low resolution and says so.
+    // Worth offering because converting is what makes high resolution watchable outside
+    // Safari; hidden for a row that only exists in one resolution.
     this._qualitySelect = el("select", {
       class: "select quality",
       title: "Playback resolution",
@@ -885,16 +876,6 @@ export class EventPlayer extends HTMLElement {
       return;
     }
 
-    // The one case worth its own wording, because there is something the user can do about
-    // it that is better than downloading every clip.
-    if (decodeFailure && !this._adaptive) {
-      this._offerDownloadInstead(
-        null,
-        "This browser cannot decode this recording — Reolink encodes it as H.265, which most browsers refuse. Turning on “Adaptive playback” in this integration's options has Home Assistant convert it instead."
-      );
-      return;
-    }
-
     // Name what failed. An identical message for every different cause made separate faults
     // look like one unfixed bug.
     const detail = [
@@ -1030,11 +1011,11 @@ export class EventPlayer extends HTMLElement {
   /**
    * Offer the resolutions this clip exists in.
    *
-   * Only with the adaptive beta on: without it, high resolution is H.265 that most browsers
-   * will not decode, and offering it was mostly a way to make playback worse.
+   * Worth offering because a high-resolution stream this browser cannot decode is converted
+   * rather than left as the black window it used to be.
    */
   _renderQuality() {
-    const streams = this._adaptive ? this._availableStreams(this._event) : [];
+    const streams = this._availableStreams(this._event);
     this._qualitySelect.hidden = streams.length < 2;
     if (this._qualitySelect.hidden) return;
 

@@ -3,7 +3,7 @@
 The contract worth pinning down is that this answers *while a camera is still collecting*.
 Scores mean nothing then and nothing is marked — but what was collected about each detection
 does mean something, and showing it is the only way somebody who does not read Python can
-tell whether the beta is working at all.
+tell whether it is working at all.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
-from custom_components.reolink_stamina.const import CONF_BETA_RELEVANCE, DOMAIN
+from custom_components.reolink_stamina.const import DOMAIN
 from custom_components.reolink_stamina.relevance.journal import Transition
 
 from .conftest import FakeApi, FakeHost
@@ -28,7 +28,7 @@ _DAY = 86400.0
 
 @pytest.fixture
 async def setup_stamina(hass: HomeAssistant):
-    """Set up Stamina with the relevance beta on, alongside a fake Reolink NVR."""
+    """Set up Stamina alongside a fake Reolink NVR."""
     assert await async_setup_component(hass, "http", {})
 
     api = FakeApi(channels=[0])
@@ -37,9 +37,7 @@ async def setup_stamina(hass: HomeAssistant):
     reolink.runtime_data = SimpleNamespace(host=FakeHost(api))
     reolink.mock_state(hass, ConfigEntryState.LOADED)
 
-    entry = MockConfigEntry(
-        domain=DOMAIN, title="Reolink Events", options={CONF_BETA_RELEVANCE: True}
-    )
+    entry = MockConfigEntry(domain=DOMAIN, title="Reolink Events")
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -62,18 +60,20 @@ async def _ask(hass, client, entry_id, *, days_back: float = 1.0):
     return await client.receive_json()
 
 
-async def test_it_says_so_plainly_when_the_beta_is_off(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+async def test_it_says_so_plainly_when_there_is_no_model(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ):
-    """The panel must be able to tell "off" from "nothing to report"."""
-    assert await async_setup_component(hass, "http", {})
-    entry = MockConfigEntry(domain=DOMAIN, title="Reolink Events")
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    client = await hass_ws_client(hass)
-    response = await _ask(hass, client, "whatever")
+    """The panel must be able to tell "not running" from "nothing to report"."""
+    # The journal is opened at setup, so the only way here is it having gone away — which
+    # the panel still has to be able to distinguish from a camera with nothing to say. Put
+    # back afterwards, because unloading is what cancels the nightly rebuild it holds.
+    runtime = hass.data[DOMAIN].relevance
+    hass.data[DOMAIN].relevance = None
+    try:
+        client = await hass_ws_client(hass)
+        response = await _ask(hass, client, "whatever")
+    finally:
+        hass.data[DOMAIN].relevance = runtime
 
     assert response["success"]
     assert response["result"] == {"enabled": False}
@@ -95,7 +95,7 @@ async def test_a_fresh_camera_reports_that_it_is_collecting(
 async def test_what_was_collected_is_returned_before_anything_can_be_scored(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ):
-    """The point of the beta: useful on the first day, not only in a fortnight."""
+    """The point of the feature: useful on the first day, not only in a fortnight."""
     runtime = hass.data[DOMAIN].relevance
     camera = f"{setup_stamina.reolink.entry_id}:0"
     at = dt_util.utcnow().timestamp() - 3600.0

@@ -17,7 +17,7 @@ from homeassistant.setup import async_setup_component
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.reolink_stamina.const import CONF_BETA_RESTREAM, DOMAIN
+from custom_components.reolink_stamina.const import DOMAIN
 from custom_components.reolink_stamina.diagnostics import async_get_config_entry_diagnostics
 from custom_components.reolink_stamina.restream import Diagnosis, async_get_manager
 
@@ -26,7 +26,7 @@ from .conftest import FakeApi, FakeHost
 
 @pytest.fixture
 async def entry(hass: HomeAssistant) -> MockConfigEntry:
-    """Set up Stamina with the beta on, alongside a fake recorder."""
+    """Set up Stamina alongside a fake recorder."""
     assert await async_setup_component(hass, "http", {})
 
     reolink = MockConfigEntry(domain="reolink", title="Backyard NVR")
@@ -34,9 +34,7 @@ async def entry(hass: HomeAssistant) -> MockConfigEntry:
     reolink.runtime_data = SimpleNamespace(host=FakeHost(FakeApi(channels=[0])))
     reolink.mock_state(hass, ConfigEntryState.LOADED)
 
-    stamina = MockConfigEntry(
-        domain=DOMAIN, title="Reolink Events", options={CONF_BETA_RESTREAM: True}
-    )
+    stamina = MockConfigEntry(domain=DOMAIN, title="Reolink Events")
     stamina.add_to_hass(hass)
     assert await hass.config_entries.async_setup(stamina.entry_id)
     await hass.async_block_till_done()
@@ -49,7 +47,6 @@ async def test_diagnostics_answer_with_nothing_having_run(
     """The state every bug report is filed from: no conversion running, nothing probed."""
     report = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert report["adaptive_playback"]["enabled"] is True
     assert report["adaptive_playback"]["failures"] == []
     assert report["adaptive_playback"]["encoder"] == "not yet probed"
     # The number that says whether sessions are being abandoned, which is the leak this is

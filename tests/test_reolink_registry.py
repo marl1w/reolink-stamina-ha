@@ -280,11 +280,11 @@ async def test_dual_lens_label_is_applied_when_available(hass: HomeAssistant) ->
     assert names == ["Cam 0 (lens 0)", "Cam 1 (lens 1)"]
 
 
-# ------------------------------------------------------- the every-device beta
+# ------------------------------------------------ hubs and standalone cameras
 
 
 async def test_hubs_and_cameras_are_listed_only_when_asked_for(hass: HomeAssistant) -> None:
-    """The beta is opt-in, and the default has to stay exactly as strict as it was."""
+    """The panel asks for everything; cloud sync and the DHCP suggestion do not."""
     _reolink_entry(hass, SimpleNamespace(host=FakeHost(FakeApi(is_hub=True))))
 
     assert async_discover_devices(hass) == []
@@ -335,7 +335,7 @@ async def test_a_camera_already_on_an_nvr_is_not_listed_twice(hass: HomeAssistan
 
 
 async def test_a_camera_on_no_recorder_is_still_listed(hass: HomeAssistant) -> None:
-    """Deduplication must not become a reason to hide the device the beta is for."""
+    """Deduplication must not become a reason to hide a camera on no recorder."""
 
     class Recorder(FakeApi):
         def camera_uid(self, channel):
@@ -446,7 +446,7 @@ async def test_an_enabled_channel_still_hides_the_direct_camera(hass: HomeAssist
 
 
 async def test_deduplication_survives_a_library_without_camera_uid(hass: HomeAssistant) -> None:
-    """An older reolink_aio costs the duplicate check, not the whole beta."""
+    """An older reolink_aio costs the duplicate check, not the whole device list."""
     _reolink_entry(hass, SimpleNamespace(host=FakeHost(MinimalApi())))
     camera = MinimalApi()
     camera.is_nvr = False

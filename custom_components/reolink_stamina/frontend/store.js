@@ -69,7 +69,7 @@ export class StaminaStore extends EventTarget {
     this._resubscribeTimer = null;
 
     /**
-     * What the "learn what is normal" beta knows, keyed by `entry_id:channel`.
+     * What "learn what is normal" knows, keyed by `entry_id:channel`.
      *
      * `{ state, coverage, detections: [...] }`, where each detection is one thing the
      * camera saw rather than one row: a five-minute segment can hold several, which is why

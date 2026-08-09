@@ -300,8 +300,8 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     """The options the panel's behaviour depends on, gathered over the pages they live on.
 
     Three pages rather than one form of twelve fields: what is switched on, how the player
-    behaves, and — only when it is switched on — what Relevance should count alongside a
-    detection. Walking them here is the only place the chaining is exercised.
+    behaves, and what the counting should watch alongside a detection. Walking them here is
+    the only place the chaining is exercised.
     """
     entry = await _setup(hass)
 
@@ -309,22 +309,16 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     assert result["type"] == "form"
     assert result["step_id"] == "init"
 
-    # Page one: what is on. Relevance stays off, so the third page must not be asked for.
+    # Page one: what is on.
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {
-            "hide_timer": False,
-            "require_admin": False,
-            "verify_tls": False,
-            "beta_restream": False,
-            "beta_all_devices": False,
-            "beta_relevance": False,
-        },
+        {"hide_timer": False, "require_admin": False, "verify_tls": False},
     )
     assert result["type"] == "form"
     assert result["step_id"] == "player"
 
-    # Page two: the player. With no beta on, this is the last of them.
+    # Page two: the player. No recorder is set up here, so there is nothing to pick signals
+    # for and the third page has nothing to ask.
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -348,22 +342,15 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     assert entry.options["clip_tail"] == 25
 
 
-async def test_switching_relevance_on_asks_about_signals(hass: HomeAssistant) -> None:
-    """The third page appears only for the feature that needs it."""
+async def test_the_signals_page_is_offered_for_each_recorder(hass: HomeAssistant) -> None:
+    """The third page asks what else to count, once there is a recorder to count for."""
     _loaded_reolink(hass)
     entry = await _setup(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {
-            "hide_timer": True,
-            "require_admin": True,
-            "verify_tls": False,
-            "beta_restream": False,
-            "beta_all_devices": False,
-            "beta_relevance": True,
-        },
+        {"hide_timer": True, "require_admin": True, "verify_tls": False},
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -380,12 +367,11 @@ async def test_switching_relevance_on_asks_about_signals(hass: HomeAssistant) ->
     assert result["type"] == "form"
     assert result["step_id"] == "signals"
 
-    # Skippable, and it opens empty: the feature is worth having on time alone.
+    # Skippable, and it opens empty: the counting is worth having on time alone.
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     await hass.async_block_till_done()
 
     assert result["type"] == "create_entry"
-    assert entry.options["beta_relevance"] is True
     assert entry.options["relevance_signals"] == {}
 
 

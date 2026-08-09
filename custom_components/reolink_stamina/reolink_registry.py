@@ -75,9 +75,9 @@ class CameraInfo:
         }
 
 
-# What a Reolink config entry turns out to be. Only the first is in scope by default; the
-# other two are the beta, and are named so the panel can say which is which rather than
-# calling a doorbell an NVR.
+# What a Reolink config entry turns out to be. Named so the panel can say which is which
+# rather than calling a doorbell an NVR: the timeline lists all three, while cloud sync and
+# the DHCP suggestion are about recorders alone.
 KIND_NVR: Final = "nvr"
 KIND_HUB: Final = "hub"
 KIND_CAMERA: Final = "camera"
@@ -87,7 +87,7 @@ KIND_CAMERA: Final = "camera"
 # an entry that is simply absent from the panel, with nothing anywhere saying why, is
 # what made issue #4 unanswerable without screenshots.
 EXCLUDED_DISABLED: Final = "disabled_in_home_assistant"
-EXCLUDED_NOT_A_RECORDER: Final = "not_a_recorder_and_the_beta_is_off"
+EXCLUDED_NOT_A_RECORDER: Final = "not_a_recorder_and_recorders_only_was_asked_for"
 EXCLUDED_ON_RECORDER: Final = "already_a_channel_on_a_recorder"
 EXCLUDED_UNREADABLE: Final = "kind_could_not_be_read"
 
@@ -122,7 +122,7 @@ class DeviceInfo:
     connected: bool = False
     has_storage: bool = False
     reports_triggers: bool = True
-    # An NVR unless the beta that includes hubs and standalone cameras is on.
+    # An NVR unless discovery was asked for hubs and standalone cameras too.
     kind: str = KIND_NVR
     cameras: list[CameraInfo] = field(default_factory=list)
 
@@ -197,11 +197,11 @@ def async_get_host(hass: HomeAssistant, entry_id: str) -> Any:
 def async_has_configured_nvr(hass: HomeAssistant) -> bool:
     """Return True only if the Reolink integration holds a working NVR right now.
 
-    Deliberately about NVRs rather than devices, whatever the beta says: this gates whether
-    the panel is *offered* to someone who has not set it up, and a hub or a camera is not
-    yet a reason to suggest it. Strict for the same reason — an entry we could not read
-    might be any of the three, and guessing wrong offers the panel to someone it cannot
-    serve.
+    Deliberately about NVRs rather than devices, even though the timeline lists all three:
+    this gates whether the panel is *offered* to someone who has not set it up, and a hub or
+    a camera is not yet a reason to suggest it. Strict for the same reason — an entry we
+    could not read might be any of the three, and guessing wrong offers the panel to someone
+    it cannot serve.
     """
     return any(device.status == "ok" for device in async_discover_devices(hass))
 
@@ -362,8 +362,8 @@ def _async_device_kind(api: Any) -> str:
 def _async_channel_uids(hass: HomeAssistant) -> set[str]:
     """Return the UID of every camera attached to a recorder or a hub.
 
-    This is what keeps a camera from being listed twice when the beta includes standalone
-    devices: a camera on an NVR is very often *also* set up on its own in the Reolink
+    This is what keeps a camera from being listed twice once standalone devices are included:
+    a camera on an NVR is very often *also* set up on its own in the Reolink
     integration, and its recordings would then appear under both. The UID is Reolink's own
     identity for a camera and is what the Reolink integration keys its entities on, so it
     is the one thing that matches across the two.
@@ -386,7 +386,7 @@ def _async_channel_uids(hass: HomeAssistant) -> set[str]:
         except Exception:
             continue
         # Not in every reolink_aio version, and cosmetic to the NVR list, so a library
-        # without it costs deduplication rather than the whole beta.
+        # without it costs deduplication rather than the whole device list.
         camera_uid = getattr(api, "camera_uid", None)
         if camera_uid is None:
             continue
@@ -438,10 +438,11 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
     in the panel by design, and issue #4 showed that makes them impossible to reason about
     from a bug report.
 
-    `include_all_devices` is the beta: hubs and standalone cameras record to their own
-    storage and answer the same search API, so they are worth offering to someone willing
-    to report on whether it works. A camera that is already a channel on an NVR is left out
-    even then — it would be the same footage listed twice, under two names.
+    `include_all_devices` is what the timeline asks for: hubs and standalone cameras record
+    to their own storage and answer the same search API, so the panel lists them alongside
+    the recorders. A camera that is already a channel on an NVR is left out even then — it
+    would be the same footage listed twice, under two names. Cloud sync and the DHCP
+    suggestion ask without it, because both are about recorders in particular.
     """
     results: list[DeviceInfo] = []
     excluded: list[ExcludedEntry] = []
@@ -452,8 +453,8 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
         # Carding these as unavailable is what made issue #4 unreadable: eight disabled
         # camera entries showed as tiles because the status check runs before the
         # recorders-only filter, while the one working camera was filtered out — which
-        # reads as "standalone cameras are supported and mine is broken" when in fact the
-        # beta was simply off.
+        # reads as "standalone cameras are supported and mine is broken" when in fact
+        # nothing but recorders was being asked for.
         if entry.disabled_by is not None:
             excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_DISABLED))
             continue
@@ -487,8 +488,8 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
 
         api = host.api
 
-        # NVRs only, unless the beta says otherwise: hubs and standalone cameras record
-        # differently, and how differently is exactly what the beta is for finding out.
+        # NVRs only, unless the caller asked for everything: hubs and standalone cameras
+        # record to their own storage, which is the panel's business and not cloud sync's.
         try:
             kind = _async_device_kind(api)
         except Exception:
@@ -497,7 +498,7 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
             continue
         if kind != KIND_NVR and not include_all_devices:
             _LOGGER.debug(
-                "Skipping %s: it is a %s, and the every-device beta is off",
+                "Skipping %s: it is a %s, and only recorders were asked for",
                 entry.entry_id,
                 kind,
             )

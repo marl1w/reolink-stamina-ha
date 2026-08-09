@@ -9,9 +9,8 @@ import secrets
 import shutil
 import tempfile
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 
-from ..const import DOMAIN
 from ..ffmpeg import async_ffmpeg_binary
 from ..playback_route import (
     Recording,
@@ -38,13 +37,6 @@ from .sessions import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@callback
-def async_beta_enabled(hass: HomeAssistant) -> bool:
-    """Whether adaptive playback is switched on right now."""
-    data = hass.data.get(DOMAIN)
-    return bool(data is not None and data.options.beta_restream)
 
 
 class RestreamError(Exception):

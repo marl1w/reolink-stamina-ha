@@ -13,14 +13,13 @@ import { SHARED } from "../theme.js";
 /**
  * What a device is, when it is not a recorder.
  *
- * Only ever shown with the beta that lists them: everything else here has been tested
- * against a recorder, and a hub or a camera is worth labelling as the unknown quantity
- * it is.
+ * Everything else here has been tested against a recorder, so a hub or a camera is worth
+ * labelling as the unknown quantity it is.
  */
 const KIND_TEXT = {
-  hub: { label: "Home Hub (beta)", hint: "Hubs record to their own storage. Untested here — reports welcome." },
+  hub: { label: "Home Hub", hint: "Hubs record to their own storage. Untested here — reports welcome." },
   camera: {
-    label: "Camera (beta)",
+    label: "Camera",
     hint: "A standalone camera recording to its own SD card. Untested here — reports welcome.",
   },
 };
@@ -230,9 +229,7 @@ export class DevicePicker extends HTMLElement {
     this._intro.replaceChildren(
       el("h1", { class: "h1", text: "Choose what to review" }),
       el("p", {
-        text: store.options?.beta_all_devices
-          ? "These are the Reolink devices found through the Reolink integration — recorders, and, because the beta is on, hubs and standalone cameras too. Pick the cameras you want in your event timeline; you can change this at any time."
-          : "These are the Reolink recorders found through the Reolink integration. Pick the cameras you want in your event timeline — you can change this at any time.",
+        text: "These are the Reolink devices found through the Reolink integration — recorders, hubs and standalone cameras. Pick the cameras you want in your event timeline; you can change this at any time.",
       })
     );
 
@@ -270,9 +267,7 @@ export class DevicePicker extends HTMLElement {
           el("div", { class: "empty__title", text: "No Reolink NVR found" }),
           el("div", {
             class: "empty__body",
-            text: store.options?.beta_all_devices
-              ? "Set up a Reolink device in the official Reolink integration and it will appear here. With this beta on that includes Home Hubs and standalone cameras, not only recorders."
-              : "Set up an NVR in the official Reolink integration and it will appear here. Home Hubs and standalone cameras are only listed with the beta option for them switched on.",
+            text: "Set up a Reolink device in the official Reolink integration and it will appear here — Home Hubs and standalone cameras as well as recorders.",
           })
         )
       );
@@ -441,9 +436,8 @@ export class DevicePicker extends HTMLElement {
       el("div", { class: "cam__body" }, refs.name, refs.ai)
     );
 
-    // Only ever present when Relevance is on: with the beta off there is nothing learned to
-    // show, and a button that opens an explanation of why it cannot do anything is worse
-    // than no button.
+    // Only present once the model is running: with nothing learned to show, a button that
+    // opens an explanation of why it cannot do anything is worse than no button.
     refs.learned = el(
       "button",
       {

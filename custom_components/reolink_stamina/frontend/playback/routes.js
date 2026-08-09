@@ -4,8 +4,8 @@
  * Three routes, cheapest first. The panel walks down them and stops at the first that
  * actually draws a frame:
  *
- * 1. `stream` — the recorder's own FLV, demuxed in the browser. No server work at all,
- *    and what every install used before the adaptive beta existed.
+ * 1. `stream` — the recorder's own FLV, demuxed in the browser. No server work at all, and
+ *    what most clips on a desktop browser never leave.
  * 2. `remux` — ffmpeg changes the container and nothing else. This is what an iPhone needs
  *    for an H.264 recording: the phone's own decoder still does the work.
  * 3. `transcode` — the only route that re-encodes, for a codec the device itself cannot
@@ -133,8 +133,7 @@ export function nativeHls() {
 /**
  * The next route to try after this one failed, or null when there is nothing left.
  *
- * With the beta off there is nothing to try: the recorder's own stream either plays or it
- * does not. With it on, the two conversions follow it, cheapest first.
+ * The two conversions follow the recorder's own stream, cheapest first.
  *
  * `decodeFailure` skips the repackaging step, and the distinction it draws is the one that
  * matters most here: repackaging fixes a container the browser could not *read*, and can do
@@ -153,8 +152,7 @@ export function nativeHls() {
  * place. So where the browser has that second pipeline, a decode failure is a reason to try
  * repackaging, not a reason to skip it — the stalled decoder is the one being left behind.
  */
-export function nextRoute(current, { adaptive, decodeFailure = false } = {}) {
-  if (!adaptive) return null;
+export function nextRoute(current, { decodeFailure = false } = {}) {
   switch (current) {
     case ROUTE_STREAM:
       return decodeFailure && !nativeHls() ? ROUTE_TRANSCODE : ROUTE_REMUX;

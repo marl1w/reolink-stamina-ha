@@ -28,9 +28,6 @@ from .cloud.devices import async_entry_device_name, async_nvr_identifier, async_
 from .cloud.engine import NvrSyncer
 from .const import (
     BYTES_PER_GB,
-    CONF_BETA_ALL_DEVICES,
-    CONF_BETA_RELEVANCE,
-    CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
     CONF_CLIP_TAIL,
@@ -51,9 +48,6 @@ from .const import (
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
     CONF_VERIFY_TLS,
-    DEFAULT_BETA_ALL_DEVICES,
-    DEFAULT_BETA_RELEVANCE,
-    DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
     DEFAULT_CLIP_TAIL,
@@ -122,12 +116,6 @@ class StaminaOptions:
     clip_tail: int = DEFAULT_CLIP_TAIL
     # Off, and a recorder with its factory certificate needs it to stay that way. See tls.py.
     verify_tls: bool = DEFAULT_VERIFY_TLS
-    # Betas. Off is the behaviour this integration has always had.
-    beta_restream: bool = DEFAULT_BETA_RESTREAM
-    beta_all_devices: bool = DEFAULT_BETA_ALL_DEVICES
-    # Off, and while it is off no journal exists and nothing about the household is written
-    # down. Switching it on is the consent, which is why there is no quieter way to start it.
-    beta_relevance: bool = DEFAULT_BETA_RELEVANCE
     # Per recorder: {reolink_entry_id: [entity_id, ...]}. Empty until somebody picks some.
     relevance_signals: dict[str, list[str]] = field(default_factory=dict)
     # A word, not the quantile it maps to. Stored as chosen so the mapping can be retuned
@@ -151,9 +139,6 @@ class StaminaOptions:
             clip_lead=int(options.get(CONF_CLIP_LEAD, DEFAULT_CLIP_LEAD)),
             clip_tail=int(options.get(CONF_CLIP_TAIL, DEFAULT_CLIP_TAIL)),
             verify_tls=bool(options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS)),
-            beta_restream=bool(options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM)),
-            beta_all_devices=bool(options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES)),
-            beta_relevance=bool(options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE)),
             relevance_signals=dict(options.get(CONF_RELEVANCE_SIGNALS) or {}),
             relevance_sensitivity=str(
                 options.get(CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY)
@@ -173,9 +158,6 @@ class StaminaOptions:
             "clip_lead": self.clip_lead,
             "clip_tail": self.clip_tail,
             "verify_tls": self.verify_tls,
-            "beta_restream": self.beta_restream,
-            "beta_all_devices": self.beta_all_devices,
-            "beta_relevance": self.beta_relevance,
             "relevance_signals": self.relevance_signals,
             "relevance_sensitivity": self.relevance_sensitivity,
         }
@@ -190,7 +172,6 @@ class StaminaData:
     # One syncer per configured recorder, keyed by its subentry id. Empty unless cloud sync
     # has been set up, so an installation that only wants the panel pays nothing for it.
     syncers: dict[str, NvrSyncer] = field(default_factory=dict)
-    # None unless the Relevance beta is on, in which case no journal exists at all.
     relevance: RelevanceRuntime | None = None
 
 
@@ -222,18 +203,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN] = data
     await _async_start_syncers(hass, entry)
 
-    if options.beta_relevance:
-        data.relevance = await async_start_relevance(
-            hass,
-            entry,
-            include_all_devices=options.beta_all_devices,
-            signals=options.relevance_signals,
-            sensitivity=options.relevance_sensitivity,
-        )
+    data.relevance = await async_start_relevance(
+        hass,
+        entry,
+        signals=options.relevance_signals,
+        sensitivity=options.relevance_sensitivity,
+    )
 
-    # Unconditional rather than gated on the beta being on: what was left behind was left
-    # behind by whatever the option said at the time, and turning the beta off does not
-    # give the space back.
+    # Whatever an earlier run left behind in the temporary directory. A conversion that was
+    # playing when Home Assistant stopped does not get the chance to clean up after itself.
     await async_sweep_sessions(hass)
 
     if not hass.data.get(_WS_REGISTERED):
@@ -259,9 +237,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Streams a recording straight from the recorder to the browser. No subprocess,
         # nothing cached, nothing to leak.
         hass.http.register_view(ReolinkStaminaFlvView())
-        # The adaptive beta's two routes. Registered whether or not the beta is on — a view
-        # cannot be added and removed as an option changes — and both refuse outright while
-        # it is off, so the URLs exist but do nothing.
+        # Adaptive playback's two routes, used only when the browser cannot play what the
+        # recorder sends.
         hass.http.register_view(ReolinkStaminaRestreamView())
         hass.http.register_view(ReolinkStaminaHlsView())
         hass.data[_VIEW_REGISTERED] = True
@@ -347,7 +324,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload the panel."""
     frontend.async_remove_panel(hass, PANEL_URL_PATH)
 
-    # Whatever the adaptive beta was converting stops here: an ffmpeg left pulling from a
+    # Whatever adaptive playback was converting stops here: an ffmpeg left pulling from a
     # recorder is exactly the failure this integration was built to avoid.
     await async_shutdown_restreams(hass)
 

@@ -68,15 +68,13 @@ const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
 
 export class PlaybackSource {
   /**
-   * `isAdaptive` is asked rather than passed, because the option can change under an open
-   * panel. `onRouteChange` is how the chrome learns it has something new to say, and
-   * `onGiveUp` is called when the ladder is exhausted — what to do about that is the
-   * player's business, not this one's.
+   * `onRouteChange` is how the chrome learns it has something new to say, and `onGiveUp` is
+   * called when the ladder is exhausted — what to do about that is the player's business,
+   * not this one's.
    */
-  constructor({ video, overlay, isAdaptive, onRouteChange, onGiveUp }) {
+  constructor({ video, overlay, onRouteChange, onGiveUp }) {
     this._video = video;
     this._overlay = overlay;
-    this._isAdaptive = isAdaptive;
     this._onRouteChange = onRouteChange;
     this._onGiveUp = onGiveUp;
 
@@ -137,9 +135,8 @@ export class PlaybackSource {
    * Point at a row and a resolution, and choose where to start from.
    *
    * The route is whatever worked for this camera, this resolution and this browser last
-   * time, so the ladder is walked once and not on every clip. Passthrough otherwise, which
-   * is what an installation with the beta off always gets — and `keepRoute` is how such an
-   * install changes resolution without the route silently changing under it too.
+   * time, so the ladder is walked once and not on every clip; passthrough otherwise.
+   * `keepRoute` is for a caller that wants the current route reloaded as it stands.
    */
   reset({ event, stream, keepRoute = false }) {
     this._event = event;
@@ -153,7 +150,6 @@ export class PlaybackSource {
   }
 
   _recalledRoute(event, stream) {
-    if (!this._isAdaptive()) return ROUTE_STREAM;
     const recalled = recalledRoute(readRouteMemory(), routeMemoryKeys(event, stream));
     // Only a conversion is worth recalling; anything else means "start from the top".
     return CONVERTED_ROUTES.has(recalled) ? recalled : ROUTE_STREAM;
@@ -161,7 +157,7 @@ export class PlaybackSource {
 
   /** Note that this route works here, so the next clip opens straight onto it. */
   _rememberWorkingRoute() {
-    if (!this._isAdaptive() || !this._event) return;
+    if (!this._event) return;
     const memory = readRouteMemory();
     const keys = routeMemoryKeys(this._event, this._stream);
     if (recalledRoute(memory, keys) === this._route) return;
@@ -235,7 +231,7 @@ export class PlaybackSource {
 
     if (!canDemux(demuxer)) {
       // No Media Source Extensions, which is every iPhone: nothing here can demux the
-      // recorder's FLV at all. With the beta on the server repackages it instead — the route
+      // recorder's FLV at all. The server repackages it instead — the route
       // that makes the Home Assistant app on an iPhone work. Explicitly not a decode
       // failure: the browser could not *read* the container and its own decoder was never
       // asked for an opinion, so repackaging is exactly the fix.
@@ -352,7 +348,7 @@ export class PlaybackSource {
    * the failure rather than keep spinning.
    */
   failover(reason, decodeFailure = false) {
-    const next = nextRoute(this._route, { adaptive: this._isAdaptive(), decodeFailure });
+    const next = nextRoute(this._route, { decodeFailure });
     if (!next) return false;
     // eslint-disable-next-line no-console
     console.debug(`Reolink Stamina: ${this._route} route failed (${reason}); trying ${next}`);
@@ -432,11 +428,11 @@ export class PlaybackSource {
    * Only one thing here is decided in advance rather than on failure, and only because the
    * browser itself answers it: whether it can decode HEVC at all. Chrome and Firefox
    * cannot, and their Media Source Extensions accept the stream anyway and then draw
-   * nothing — the black window this beta exists for.
+   * nothing — the black window the conversions exist for.
    */
   handleMediaInfo(info) {
     this._sourceIsHevc = isHevcCodec(info?.videoCodec);
-    if (!this._sourceIsHevc || HEVC_SUPPORTED || !this._isAdaptive()) return;
+    if (!this._sourceIsHevc || HEVC_SUPPORTED) return;
     this._codecFailure = true;
     this.failover("this browser cannot decode H.265", true);
   }
@@ -457,8 +453,8 @@ export class PlaybackSource {
    */
   _armDecodeProbe() {
     this._clearDecodeProbe();
-    // Runs whether or not the beta is on: with it off nothing fails over, but this is still
-    // what tells the loading spinner that a picture has arrived.
+    // Also what tells the loading spinner that a picture has arrived, not only what starts
+    // a failover.
     this._decoding = false;
     this._probeStartedAt = Date.now();
     this._dataSince = null;
@@ -515,13 +511,6 @@ export class PlaybackSource {
     if (!stalled && !silent) return;
 
     this._clearDecodeProbe();
-
-    // With the beta off there is no ladder to walk, and nothing this can convert: the
-    // player says so and offers the download.
-    if (!this._isAdaptive()) {
-      this._onGiveUp(null);
-      return;
-    }
 
     // A stream that arrived and would not decode is the decoder's failure, not the
     // container's — but only where we know the codec, since repackaging is the right answer

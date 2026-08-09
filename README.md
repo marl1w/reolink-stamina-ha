@@ -24,7 +24,7 @@ It is a companion to the official [Reolink integration][reolink], not a replacem
 - The official **Reolink integration**, with at least one **NVR** with a working HDD
 - For cloud sync only: an existing **OneDrive** integration — its credentials are reused
 
-Standalone cameras and Home Hubs are filtered out, unless you switch on [the beta that lists them](docs/timeline.md#hubs-and-standalone-cameras-beta).
+Home Hubs and standalone cameras are listed alongside your recorders, tagged as [the untested quantity they are](docs/timeline.md#hubs-and-standalone-cameras).
 
 ## Install
 

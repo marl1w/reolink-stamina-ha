@@ -361,8 +361,8 @@ export class StaminaToolbar extends HTMLElement {
       icon("mdi:menu-down")
     );
     // What everything selected normally does, as opposed to what one camera does. Only
-    // present with the beta on, and only worth offering for more than one camera — for a
-    // single one the picker's own button says the same thing about the same data.
+    // worth offering for more than one camera — for a single one the picker's own button
+    // says the same thing about the same data.
     this._learned = el(
       "button",
       {

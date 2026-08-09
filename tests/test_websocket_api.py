@@ -19,7 +19,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
-from custom_components.reolink_stamina.const import CONF_BETA_RESTREAM, DOMAIN
+from custom_components.reolink_stamina.const import DOMAIN
 
 from .conftest import FakeApi, FakeHost
 
@@ -586,28 +586,7 @@ async def test_stream_url_adds_the_window_offset_to_the_seek(
     assert response["result"]["seek"] == 30
 
 
-# --------------------------------------------------- the adaptive playback beta
-
-
-@pytest.fixture
-async def setup_beta(hass: HomeAssistant):
-    """Set up Stamina with adaptive playback switched on."""
-    assert await async_setup_component(hass, "http", {})
-
-    api = FakeApi(channels=[0])
-    reolink = MockConfigEntry(domain="reolink", title="Backyard NVR")
-    reolink.add_to_hass(hass)
-    reolink.runtime_data = SimpleNamespace(host=FakeHost(api))
-    reolink.mock_state(hass, ConfigEntryState.LOADED)
-
-    entry = MockConfigEntry(
-        domain=DOMAIN, title="Reolink Events", options={CONF_BETA_RESTREAM: True}
-    )
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    return SimpleNamespace(api=api, reolink=reolink, entry=entry)
+# ------------------------------------------------------- adaptive playback
 
 
 def _stream_url(target, **extra):
@@ -624,24 +603,12 @@ def _stream_url(target, **extra):
     }
 
 
-async def test_a_conversion_is_refused_while_the_beta_is_off(
+async def test_passthrough_is_still_the_default(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
-    """Nothing can be made to convert without the option being on, panel or not."""
+    """Converting is possible on every install; it still only happens when asked."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_stamina, route="remux"))
-    response = await client.receive_json()
-
-    assert not response["success"]
-    assert response["error"]["code"] == "not_supported"
-
-
-async def test_passthrough_is_still_the_default_with_the_beta_on(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
-) -> None:
-    """The option makes conversion possible; it does not make it happen."""
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_beta))
+    await client.send_json_auto_id(_stream_url(setup_stamina))
     response = await client.receive_json()
 
     assert response["success"]
@@ -650,11 +617,11 @@ async def test_passthrough_is_still_the_default_with_the_beta_on(
 
 
 async def test_a_remux_asks_ffmpeg_only_to_repackage(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """The cheap rung has to be addressable, or it can never be the one that is used."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_beta, route="remux", seek=240))
+    await client.send_json_auto_id(_stream_url(setup_stamina, route="remux", seek=240))
     response = await client.receive_json()
 
     assert response["success"]
@@ -664,11 +631,11 @@ async def test_a_remux_asks_ffmpeg_only_to_repackage(
 
 
 async def test_a_transcode_says_so_in_its_path(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """The view must not have to guess how much work it was asked to do."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_beta, route="transcode"))
+    await client.send_json_auto_id(_stream_url(setup_stamina, route="transcode"))
     response = await client.receive_json()
 
     assert response["success"]
@@ -676,7 +643,7 @@ async def test_a_transcode_says_so_in_its_path(
 
 
 async def test_an_hls_session_is_started_and_addressed_by_its_token(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """What an iPhone is handed has to be a playlist it can fetch unaided.
 
@@ -690,7 +657,7 @@ async def test_an_hls_session_is_started_and_addressed_by_its_token(
     ) as start:
         client = await hass_ws_client(hass)
         await client.send_json_auto_id(
-            _stream_url(setup_beta, route="remux", format="hls", seek=90)
+            _stream_url(setup_stamina, route="remux", format="hls", seek=90)
         )
         response = await client.receive_json()
 
@@ -704,11 +671,11 @@ async def test_an_hls_session_is_started_and_addressed_by_its_token(
 
 
 async def test_an_unknown_route_is_rejected_by_the_schema(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_beta
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """Only the three real routes exist; anything else is a mistake worth naming."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_beta, route="magic"))
+    await client.send_json_auto_id(_stream_url(setup_stamina, route="magic"))
     response = await client.receive_json()
 
     assert not response["success"]

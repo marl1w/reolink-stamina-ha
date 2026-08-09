@@ -1,9 +1,9 @@
 """Finding the ffmpeg Home Assistant is configured with.
 
-Two features need it and neither is on by default: cutting a clip out of 24/7 footage for
-cloud sync, and the beta adaptive playback route. Everything else in this integration
-works on an installation with no ffmpeg at all, which is why this is asked for per
-request rather than checked at setup.
+Two things need it, and neither happens on every installation: cutting a clip out of 24/7
+footage for cloud sync, and converting a recording the browser cannot play. Everything
+else in this integration works on an installation with no ffmpeg at all, which is why this
+is asked for per request rather than checked at setup.
 """
 
 from __future__ import annotations

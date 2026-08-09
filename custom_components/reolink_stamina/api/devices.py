@@ -40,8 +40,7 @@ def ws_devices(
     options = data.options
     try:
         devices = [
-            device.as_dict()
-            for device in async_discover_devices(hass, include_all_devices=options.beta_all_devices)
+            device.as_dict() for device in async_discover_devices(hass, include_all_devices=True)
         ]
     except Exception as err:
         # Without this the panel shows a bare "Unknown error" and the reason is only in

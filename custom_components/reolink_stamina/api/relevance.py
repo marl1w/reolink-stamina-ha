@@ -1,4 +1,4 @@
-"""What the "learn what is normal" beta makes of a camera.
+"""What "learn what is normal" makes of a camera.
 
 Three questions, and they are different sizes. What fired inside one recording; what the
 model makes of every event in a window; and what a camera has learned overall, which is the
@@ -86,11 +86,7 @@ async def ws_detections(
 @callback
 def _labels(hass: HomeAssistant, data: Any, camera: str) -> dict[str, str]:
     """Return what Home Assistant calls every signal this camera could mention."""
-    watched = async_signal_map(
-        hass,
-        data.options.relevance_signals or {},
-        include_all_devices=data.options.beta_all_devices,
-    )
+    watched = async_signal_map(hass, data.options.relevance_signals or {})
     model = data.relevance.analysis.model
     wanted = set(watched.get(camera, ()))
     # And whatever the history holds, which is not the same set: a signal removed last week
@@ -104,7 +100,7 @@ def _labels(hass: HomeAssistant, data: Any, camera: str) -> dict[str, str]:
     }
 
 
-def _camera_names(hass: HomeAssistant, include_all_devices: bool) -> dict[str, str]:
+def _camera_names(hass: HomeAssistant) -> dict[str, str]:
     """Map each camera's journal key onto the name a person would recognise.
 
     The scorer deliberately knows nothing about names — it is handed them so its sentences
@@ -113,7 +109,7 @@ def _camera_names(hass: HomeAssistant, include_all_devices: bool) -> dict[str, s
     """
     return {
         camera_key(device.entry_id, camera.channel): camera.name
-        for device in async_discover_devices(hass, include_all_devices=include_all_devices)
+        for device in async_discover_devices(hass, include_all_devices=True)
         for camera in device.cameras
     }
 
@@ -156,7 +152,7 @@ async def ws_relevance(
 
     analysis = data.relevance.analysis
     camera = camera_key(msg["entry_id"], msg["channel"])
-    names = _camera_names(hass, data.options.beta_all_devices)
+    names = _camera_names(hass)
 
     # What Home Assistant calls every entity that could appear in a breakdown, so a term reads
     # "Someone home — off" rather than an entity id. The scorer is handed them; it knows
@@ -252,7 +248,7 @@ def ws_relevance_profile(
             msg["id"], websocket_api.const.ERR_INVALID_FORMAT, "No cameras asked about"
         )
         return
-    names = _camera_names(hass, data.options.beta_all_devices)
+    names = _camera_names(hass)
 
     def _label(entity_id: str) -> str:
         """Return what Home Assistant calls an entity, or its id if it is gone."""

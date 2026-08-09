@@ -76,14 +76,12 @@ def async_unhelpful_signals(hass: HomeAssistant) -> list[str]:
     ours = {
         entry.entry_id for entry in hass.config_entries.async_entries() if entry.domain == DOMAIN
     }
-    detections = set(async_detection_map(hass, include_all_devices=True))
+    detections = set(async_detection_map(hass))
     # And whatever each camera already contributes about itself. Those are attached to their
     # own camera automatically, so offering them here would only let somebody attach one
     # camera's floodlight to all of them.
     automatic = {
-        entity_id
-        for entities in async_signal_map(hass, {}, include_all_devices=True).values()
-        for entity_id in entities
+        entity_id for entities in async_signal_map(hass, {}).values() for entity_id in entities
     }
 
     # Devices carrying an alarm panel. Their other entities are that panel's parts.

@@ -48,30 +48,26 @@ const NOW = 1_700_000_000_000;
 
 // ------------------------------------------------------------------- the ladder
 
-test("with the beta off there is nothing to fall back to", () => {
-  // The panel used to hand over the recorder's whole file here. It was unseekable, minutes
-  // long and in the codec that had just failed; the player now offers the download instead.
-  assert.equal(nextRoute(ROUTE_STREAM, { adaptive: false }), null);
-  assert.equal(nextRoute(ROUTE_STREAM, { adaptive: false, decodeFailure: true }), null);
-});
-
 test("the cheap rung comes first, and the ladder ends after the re-encode", () => {
-  assert.equal(nextRoute(ROUTE_STREAM, { adaptive: true }), ROUTE_REMUX);
-  assert.equal(nextRoute(ROUTE_REMUX, { adaptive: true }), ROUTE_TRANSCODE);
-  assert.equal(nextRoute(ROUTE_TRANSCODE, { adaptive: true }), null);
+  // The panel used to hand over the recorder's whole file after the last rung. It was
+  // unseekable, minutes long and in the codec that had just failed; the player now offers
+  // the download instead, which is why the ladder simply ends.
+  assert.equal(nextRoute(ROUTE_STREAM), ROUTE_REMUX);
+  assert.equal(nextRoute(ROUTE_REMUX), ROUTE_TRANSCODE);
+  assert.equal(nextRoute(ROUTE_TRANSCODE), null);
 });
 
 test("a refused codec skips repackaging, which would hand it the same codec", () => {
   // Repackaging changes the container and leaves the bitstream alone, so on a browser with
   // one way into a decoder it cannot help one that has already refused this bitstream.
   // Under node the HLS probe fails, which is the shape of Chrome and Firefox.
-  assert.equal(nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }), ROUTE_TRANSCODE);
+  assert.equal(nextRoute(ROUTE_STREAM, { decodeFailure: true }), ROUTE_TRANSCODE);
 });
 
 test("a container this browser could not read is exactly what repackaging is for", () => {
   // An iPhone has no Media Source Extensions, so nothing demuxed the recording and its own
   // decoder was never asked. Re-encoding there would be pure waste.
-  assert.equal(nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: false }), ROUTE_REMUX);
+  assert.equal(nextRoute(ROUTE_STREAM, { decodeFailure: false }), ROUTE_REMUX);
 });
 
 test("a browser that says nothing about HLS is handed MP4", () => {
@@ -238,17 +234,14 @@ test("a browser with its own HLS pipeline repackages before it re-encodes", () =
   // high-resolution clip through the costliest route on the machine, for no reason.
   assert.equal(safari.nativeHls(), true);
   assert.equal(safari.convertedFormat(), "hls");
-  assert.equal(
-    safari.nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }),
-    ROUTE_REMUX
-  );
+  assert.equal(safari.nextRoute(ROUTE_STREAM, { decodeFailure: true }), ROUTE_REMUX);
 });
 
 test("repackaging failing there still leads to the re-encode", () => {
   // The rung below is unchanged: if the native pipeline will not take it either, the codec
   // really is the problem and only re-encoding is left.
-  assert.equal(safari.nextRoute(ROUTE_REMUX, { adaptive: true }), ROUTE_TRANSCODE);
-  assert.equal(safari.nextRoute(ROUTE_TRANSCODE, { adaptive: true, decodeFailure: true }), null);
+  assert.equal(safari.nextRoute(ROUTE_REMUX, {}), ROUTE_TRANSCODE);
+  assert.equal(safari.nextRoute(ROUTE_TRANSCODE, { decodeFailure: true }), null);
 });
 
 // Last, because it is the one thing here that changes the module rather than asking it.
@@ -262,7 +255,7 @@ test("a browser that claimed HLS and refused one is not asked for another", () =
   assert.equal(safari.convertedFormat(), "mp4");
   assert.equal(safari.nativeHls(), false);
   assert.equal(
-    safari.nextRoute(ROUTE_STREAM, { adaptive: true, decodeFailure: true }),
+    safari.nextRoute(ROUTE_STREAM, { decodeFailure: true }),
     ROUTE_TRANSCODE
   );
 });

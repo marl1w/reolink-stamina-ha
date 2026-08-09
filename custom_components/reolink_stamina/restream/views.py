@@ -39,7 +39,6 @@ from .diagnosis import (
 from .runner import (
     FfmpegUnavailableError,
     _async_spawn,
-    async_beta_enabled,
 )
 from .sessions import (
     _HlsStream,
@@ -75,8 +74,6 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
         """Convert the recording on its way to the browser."""
         hass: HomeAssistant = request.app["hass"]
 
-        if not async_beta_enabled(hass):
-            return web.Response(status=404, text="Adaptive playback is not enabled")
         if mode not in RESTREAM_MODES:
             return web.Response(status=400, text="Unknown conversion mode")
 

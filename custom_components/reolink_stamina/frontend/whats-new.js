@@ -12,8 +12,10 @@
 /**
  * Everything the panel can do, in the order somebody meets it.
  *
- * `beta` marks the ones that are off until switched on, because "why don't I have that" is
- * the question this is here to prevent, not cause.
+ * `beta` no longer means "off until switched on" — there is nothing to switch on any more,
+ * because a setup with six decisions in it is a setup most people get wrong. It means the
+ * feature is newer than the rest and has met less hardware, which is worth saying plainly
+ * to somebody deciding how much to trust it.
  */
 export const FEATURES = [
   {
@@ -43,9 +45,9 @@ export const FEATURES = [
     text:
       "Marks the handful of events that are unusual for a camera — not by recognising " +
       "anything, but by counting. The cat that crosses at one in the morning every night " +
-      "is ordinary; a person doing it is not. Nothing is recorded until you switch it on, " +
-      "and it needs a week or so before it can say anything.",
-    where: "Reolink Stamina → <b>Configure</b> → Learn what is normal.",
+      "is ordinary; a person doing it is not. What it counts stays on this machine and is " +
+      "deleted with the integration, and it needs a week or so before it can say anything.",
+    where: "Marked rows appear in the timeline. Choose what else it counts in <b>Configure</b>.",
   },
   {
     tone: "motion",
@@ -69,7 +71,7 @@ export const FEATURES = [
       "Recordings normally go straight from the recorder to your browser. When that draws " +
       "a black window — H.265 on Chrome or Firefox, or anything on an iPhone — this " +
       "converts them instead, and the player says which route the picture took.",
-    where: "Reolink Stamina → <b>Configure</b> → Adaptive playback.",
+    where: "Nothing to switch on: the player tries it only when direct play fails.",
   },
 ];
 
@@ -108,16 +110,11 @@ function count(number) {
  */
 export function summarise(features = FEATURES) {
   const beta = features.filter((feature) => feature.beta).length;
-  const ready = features.length - beta;
-  const opener =
-    ready === 1
-      ? "One of these is ready to use"
-      : `${count(ready)[0].toUpperCase()}${count(ready).slice(1)} of these are ready to use`;
   const rest =
     beta === 0
       ? ""
       : beta === 1
-        ? "; the one marked beta is off until you switch it on"
-        : `; the ${count(beta)} marked beta are off until you switch them on`;
-  return `${opener}${rest}. You can open this again from the header.`;
+        ? "; the one marked beta is newer and has met less hardware"
+        : `; the ${count(beta)} marked beta are newer and have met less hardware`;
+  return `All of these are on, with nothing to switch on${rest}. You can open this again from the header.`;
 }

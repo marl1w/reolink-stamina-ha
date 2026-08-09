@@ -18,9 +18,6 @@ from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 import voluptuous as vol
 
 from .const import (
-    CONF_BETA_ALL_DEVICES,
-    CONF_BETA_RELEVANCE,
-    CONF_BETA_RESTREAM,
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
     CONF_CLIP_TAIL,
@@ -40,9 +37,6 @@ from .const import (
     CONF_SYNC_STREAM,
     CONF_SYNC_TAIL,
     CONF_VERIFY_TLS,
-    DEFAULT_BETA_ALL_DEVICES,
-    DEFAULT_BETA_RELEVANCE,
-    DEFAULT_BETA_RESTREAM,
     DEFAULT_BROWSE_STREAM,
     DEFAULT_CLIP_LEAD,
     DEFAULT_CLIP_TAIL,
@@ -145,8 +139,8 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         """Ask what is switched on, in one short page.
 
         Twelve fields on one form meant scrolling past six numbers to reach the switch you
-        came for. Three pages instead: what is on, how the player behaves, and anything a
-        switched-on feature needs — so the page you want is the one you land on.
+        came for. Three pages instead: what is on, how the player behaves, and what the
+        counting should watch — so the page you want is the one you land on.
         """
         if user_input is not None:
             self._pending = {**self.config_entry.options, **user_input}
@@ -173,19 +167,6 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                         CONF_VERIFY_TLS,
                         default=options.get(CONF_VERIFY_TLS, DEFAULT_VERIFY_TLS),
                     ): selector.BooleanSelector(),
-                    # Betas last: with all three off, nothing above them behaves differently.
-                    vol.Required(
-                        CONF_BETA_RESTREAM,
-                        default=options.get(CONF_BETA_RESTREAM, DEFAULT_BETA_RESTREAM),
-                    ): selector.BooleanSelector(),
-                    vol.Required(
-                        CONF_BETA_ALL_DEVICES,
-                        default=options.get(CONF_BETA_ALL_DEVICES, DEFAULT_BETA_ALL_DEVICES),
-                    ): selector.BooleanSelector(),
-                    vol.Required(
-                        CONF_BETA_RELEVANCE,
-                        default=options.get(CONF_BETA_RELEVANCE, DEFAULT_BETA_RELEVANCE),
-                    ): selector.BooleanSelector(),
                 }
             ),
         )
@@ -194,9 +175,7 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         """Ask how recordings are searched, cut and played."""
         if user_input is not None:
             self._pending = {**self._pending, **user_input}
-            if self._pending.get(CONF_BETA_RELEVANCE):
-                return await self.async_step_signals()
-            return self.async_create_entry(data=self._pending)
+            return await self.async_step_signals()
 
         options = self._pending
 
@@ -214,8 +193,9 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="player",
-            # Last unless Relevance is on, in which case its signals page follows.
-            last_step=not self._pending.get(CONF_BETA_RELEVANCE),
+            # The signals page follows, unless there are no devices to pick signals for —
+            # which cannot be known from here without asking the Reolink integration twice.
+            last_step=False,
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -282,9 +262,7 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         well as a named person and which one suits a household is not this integration's
         business to assume.
         """
-        devices = async_discover_devices(
-            self.hass, include_all_devices=bool(self._pending.get(CONF_BETA_ALL_DEVICES))
-        )
+        devices = async_discover_devices(self.hass, include_all_devices=True)
         # Keyed by name rather than by entry id, because the key is what Home Assistant shows
         # as the field's label and an entry id reads as a barcode.
         by_name = {device.name: device.entry_id for device in devices}

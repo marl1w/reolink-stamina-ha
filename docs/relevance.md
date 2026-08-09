@@ -4,7 +4,7 @@
 
 ![Relevance in the timeline](../img/relevance.png)
 
-> **Beta.** It works end to end — it collects, it learns, and it marks. What it has not had yet is months of real households, which is what the numbers behind it need in order to be right. Reports are the point.
+> **Beta.** It works end to end — it collects, it learns, and it marks, and it does so from the moment the panel is set up. What it has not had yet is months of real households, which is what the numbers behind it need in order to be right. Reports are the point.
 
 A 24/7 recorder produces hundreds of detections a day, and almost all of them are the same detections it produced yesterday. The timeline puts them in one list; what it cannot do is tell you which three are worth opening.
 
@@ -55,25 +55,23 @@ Point it at entities you already have and it counts them alongside the time and 
 
 ## What it keeps
 
-**Nothing is recorded until you switch this on.** What it keeps is a record of when your cameras see people, which is close to a record of when your house is empty — not something to start on your behalf. Switching it on is the consent.
+What it keeps is a record of when your cameras see people, which is close to a record of when your house is empty. It starts collecting when the panel is set up — there is no switch, because a setup with six decisions in it is a setup most people get wrong — so what it keeps is worth reading before you install it.
 
 - **It stays on your machine.** Its own small SQLite file in your Home Assistant configuration folder. No cloud, no account, nothing leaves the machine.
 - **It is small.** A few megabytes a year for a busy recorder.
 - **It is in your backups**, like the rest of that folder — deliberately, so a restored Home Assistant does not start again from nothing. The file is checkpointed before each backup so the copy is a usable database rather than one caught mid-write.
-- **Turning it off** stops the recording and keeps what was collected. **Removing the integration** deletes the file.
+- **Removing the integration** deletes the file. That is the off switch, and it is the whole of it.
 - **No faces, no number plates, no images.** It stores timestamps and which sensor fired. There is no picture in it, and none is planned.
 
 ## What it needs
 
 **Nothing installed.** No ffmpeg, no models, no GPU, no cloud service — this is arithmetic over timestamps and it is meant to stay that way.
 
-It also **does not depend on your recorder's retention**. Detections are read from Home Assistant's state machine as they happen, so a ten-day purge no longer takes the history with it. Home Assistant's own recorder is read exactly once, when you turn this on, to import whatever it still holds — however many days you have it set to keep, not an assumed ten. That import runs in the background and does not hold up a restart.
+It also **does not depend on your recorder's retention**. Detections are read from Home Assistant's state machine as they happen, so a ten-day purge no longer takes the history with it. Home Assistant's own recorder is read exactly once, at first setup, to import whatever it still holds — however many days you have it set to keep, not an assumed ten. That import runs in the background and does not hold up a restart.
 
-## Turning it on
+## Setting it up
 
-*Reolink Stamina → **Configure** → **Learn what is normal***.
-
-Switching it on adds a page to the end of that flow — **Marking, and what else to count** — holding how much to mark and any household signals you want counted. Both are optional — it starts collecting either way, and the detail view on any row shows you what it has.
+There is nothing to switch on. The last page of *Reolink Stamina → **Configure*** — **Marking, and what else to count** — holds how much to mark and any household signals you want counted. Both are optional: it starts collecting either way, and the detail view on any row shows you what it has.
 
 ## How long before it says anything
 
@@ -97,4 +95,4 @@ Worth saying plainly, because the obvious expectations are the wrong ones.
 1. **The record.** ✅ The journal, and the one-off import of what Home Assistant already held.
 2. **Scoring and the mark.** ✅ The rate model, the mark on the row, the sentence saying why, the detail view and the filter chip.
 3. **Your own signals.** ✅ Pick entities per recorder, and each camera's own floodlight, siren and day/night state are found without being asked for. Numbers are counted in bands learned from each sensor's own history. History for a signal is read back from Home Assistant's recorder, so adding one counts immediately.
-4. **What the picture says.** Optional and behind its own switch: the coarse shape and position of what moved, so an unfamiliar vehicle at the gate can be told from a familiar one. This is the only part that will need ffmpeg.
+4. **What the picture says.** The coarse shape and position of what moved, so an unfamiliar vehicle at the gate can be told from a familiar one. This is the only part that will need ffmpeg.

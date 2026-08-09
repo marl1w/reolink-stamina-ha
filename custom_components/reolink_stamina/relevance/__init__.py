@@ -45,7 +45,6 @@ async def async_start(
     hass: HomeAssistant,
     entry: ConfigEntry,
     *,
-    include_all_devices: bool = False,
     signals: dict[str, list[str]] | None = None,
     sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY,
 ) -> RelevanceRuntime:
@@ -61,9 +60,7 @@ async def async_start(
     """
     journal = Journal(hass)
     await journal.async_open()
-    watcher = TransitionWatcher(
-        hass, journal, include_all_devices=include_all_devices, signals=signals
-    )
+    watcher = TransitionWatcher(hass, journal, signals=signals)
     analysis = Analysis(hass, journal, sensitivity=sensitivity)
     runtime = RelevanceRuntime(journal=journal, watcher=watcher, analysis=analysis)
 
@@ -72,13 +69,7 @@ async def async_start(
         analysis.async_schedule()
         entry.async_create_background_task(
             hass,
-            _async_catch_up(
-                hass,
-                journal,
-                analysis,
-                include_all_devices=include_all_devices,
-                signals=signals or {},
-            ),
+            _async_catch_up(hass, journal, analysis, signals=signals or {}),
             name=f"{DOMAIN}_journal_backfill",
         )
 
@@ -91,7 +82,6 @@ async def _async_catch_up(
     journal: Journal,
     analysis: Analysis,
     *,
-    include_all_devices: bool,
     signals: dict[str, list[str]],
 ) -> None:
     """Import history if there is any to import, then learn from everything held.
@@ -105,8 +95,8 @@ async def _async_catch_up(
     on every reload. That matters: changing the configuration reloads the entry, and somebody
     who has just chosen a signal should not have to wait until tomorrow to see it.
     """
-    await async_backfill(hass, journal, include_all_devices=include_all_devices)
-    await async_backfill_signals(hass, journal, signals, include_all_devices=include_all_devices)
+    await async_backfill(hass, journal)
+    await async_backfill_signals(hass, journal, signals)
     await analysis.async_rebuild()
 
 

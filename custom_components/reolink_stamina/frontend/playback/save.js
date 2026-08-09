@@ -4,7 +4,7 @@
  * Always from the recorder's own bytes, and always the original footage: the clip is
  * assembled in the browser from the playback stream, so what lands in your downloads is
  * what the camera recorded, whatever route the *player* had to take to show it to you.
- * The adaptive beta's conversions exist for watching and touch nothing here.
+ * Adaptive playback's conversions exist for watching and touch nothing here.
  *
  * Asking the recorder to cut the clip itself would be faster — and it does have a command
  * for it — but see fragments.py: on the recorders tested it prepares a fragment it then

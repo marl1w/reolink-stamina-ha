@@ -148,7 +148,7 @@ async def _async_resolve_playback_fields(
         # Seconds into the recording to start from. Server-side, time-based seeking.
         vol.Optional("seek", default=0): vol.Coerce(int),
         # Which route the panel wants. `passthrough` is the only one that costs the machine
-        # nothing, and the only one available with the adaptive beta off.
+        # nothing; the other two convert.
         vol.Optional("route", default=ROUTE_PASSTHROUGH): vol.In(
             (ROUTE_PASSTHROUGH, ROUTE_REMUX, ROUTE_TRANSCODE)
         ),
@@ -169,7 +169,7 @@ async def ws_stream_url(
     already serves a container the browser can demux, so nothing is transcoded, segmented
     or processed server-side. Seeking is done by asking for a different offset.
 
-    The `remux` and `transcode` routes are the adaptive beta, for a browser that cannot
+    The `remux` and `transcode` routes are adaptive playback, for a browser that cannot
     play what the recorder sends — see restream.py. Which recording is wanted is resolved
     identically for all three, which is the point of them sharing this command.
     """
@@ -178,14 +178,6 @@ async def ws_stream_url(
         return
 
     route = msg["route"]
-    if route != ROUTE_PASSTHROUGH and not data.options.beta_restream:
-        connection.send_error(
-            msg["id"],
-            websocket_api.const.ERR_NOT_SUPPORTED,
-            "Adaptive playback is not enabled for this integration",
-        )
-        return
-
     filename = msg["filename"]
     start_id = msg["start_id"]
     playback_id = msg["playback_id"]

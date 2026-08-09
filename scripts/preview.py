@@ -751,10 +751,6 @@ HARNESS = """<!doctype html>
             browse_stream: "sub", split_minutes: 5, hide_timer: true, pre_roll: 5,
             require_admin: true, include_unlabelled: false, event_lead: 30,
             clip_lead: 15, clip_tail: 15, verify_tls: false,
-            // On, because the stand-in recording is an MP4 rather than the FLV a real
-            // recorder sends: the passthrough rung refuses here, the ladder falls to the
-            // next one exactly as it would in the field, and that rung is served.
-            beta_restream: true, beta_all_devices: false, beta_relevance: true,
           },
           search_window_days: 30,
         };

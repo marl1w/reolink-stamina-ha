@@ -29,19 +29,6 @@ CONF_CLIP_TAIL: Final = "clip_tail"
 # other call to the device goes through — never checks it either.
 CONF_VERIFY_TLS: Final = "verify_tls"
 
-# Beta options. Both default to off, and with both off the integration behaves exactly as
-# it did before they existed: nothing in the normal paths reads them.
-#
-# They are opt-in because each trades a guarantee this project otherwise keeps. Adaptive
-# playback gives up "no ffmpeg, no subprocess, no CPU cost"; showing every device gives up
-# "only hardware this has been tested against". Both are here to be reported on.
-CONF_BETA_RESTREAM: Final = "beta_restream"
-CONF_BETA_ALL_DEVICES: Final = "beta_all_devices"
-# Relevance gives up "this integration keeps no record of your household". Nothing is
-# journalled until it is switched on, which is why it is an option rather than a quiet
-# default: see the journal module for the whole argument.
-CONF_BETA_RELEVANCE: Final = "beta_relevance"
-
 DEFAULT_BROWSE_STREAM: Final = "sub"
 DEFAULT_SPLIT_MINUTES: Final = 5
 DEFAULT_HIDE_TIMER: Final = True
@@ -64,9 +51,6 @@ DEFAULT_CLIP_TAIL: Final = 15
 # Off, because a Reolink recorder's factory certificate cannot pass verification and the
 # calls this integration does not make itself are already not verifying it.
 DEFAULT_VERIFY_TLS: Final = False
-DEFAULT_BETA_RESTREAM: Final = False
-DEFAULT_BETA_ALL_DEVICES: Final = False
-DEFAULT_BETA_RELEVANCE: Final = False
 
 STREAM_MAIN: Final = "main"
 STREAM_SUB: Final = "sub"

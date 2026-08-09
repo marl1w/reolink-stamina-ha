@@ -365,7 +365,7 @@ export class LearnedSheet extends HTMLElement {
           { class: "note state" },
           icon("mdi:progress-clock"),
           el("span", {
-            text: "Nothing counted for this camera yet. It starts the moment a detection fires, and whatever Home Assistant already had in its history was imported when the beta was switched on.",
+            text: "Nothing counted for this camera yet. It starts the moment a detection fires, and whatever Home Assistant already had in its history was imported when the panel was set up.",
           })
         )
       );

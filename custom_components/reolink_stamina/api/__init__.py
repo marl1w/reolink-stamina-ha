@@ -2,7 +2,7 @@
 
 Split out of a single file that had grown to a thousand lines holding six unrelated
 conversations: browsing recordings, getting one to play, saving one, and three questions
-about the relevance beta. They share only the access check, which is in `shared`.
+about what a camera has learned. They share only the access check, which is in `shared`.
 
 Registration stays here so there is exactly one list of what exists, and adding a command
 means touching one line in it rather than remembering that such a list is somewhere.

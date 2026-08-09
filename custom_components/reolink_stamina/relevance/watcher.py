@@ -38,9 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @callback
-def async_detection_map(
-    hass: HomeAssistant, *, include_all_devices: bool = False
-) -> dict[str, tuple[str, str]]:
+def async_detection_map(hass: HomeAssistant) -> dict[str, tuple[str, str]]:
     """Map every detection sensor onto the camera it belongs to and what it detects.
 
     Built from discovery rather than from a saved list, so a camera added to a recorder is
@@ -48,7 +46,7 @@ def async_detection_map(
     import path, which has to ask the same question of the same entities.
     """
     found: dict[str, tuple[str, str]] = {}
-    for device in async_discover_devices(hass, include_all_devices=include_all_devices):
+    for device in async_discover_devices(hass, include_all_devices=True):
         for camera in device.cameras:
             key = camera_key(device.entry_id, camera.channel)
             entities = async_detection_entities(hass, device.entry_id, camera.channel)
@@ -60,8 +58,6 @@ def async_detection_map(
 def async_signal_map(
     hass: HomeAssistant,
     signals: dict[str, list[str]],
-    *,
-    include_all_devices: bool = False,
 ) -> dict[str, list[str]]:
     """Map every camera onto the entities whose state is recorded alongside its detections.
 
@@ -80,7 +76,7 @@ def async_signal_map(
     that do not add up.
     """
     found: dict[str, list[str]] = {}
-    for device in async_discover_devices(hass, include_all_devices=include_all_devices):
+    for device in async_discover_devices(hass, include_all_devices=True):
         chosen = signals.get(device.entry_id) or []
         for camera in device.cameras:
             own = async_camera_signal_entities(hass, device.entry_id, camera.channel)
@@ -98,7 +94,6 @@ class TransitionWatcher:
         hass: HomeAssistant,
         journal: Journal,
         *,
-        include_all_devices: bool = False,
         signals: dict[str, list[str]] | None = None,
     ) -> None:
         """Prepare a watcher, without subscribing.
@@ -108,7 +103,6 @@ class TransitionWatcher:
         """
         self._hass = hass
         self._journal = journal
-        self._include_all_devices = include_all_devices
         self._signals = signals or {}
         self._entities: dict[str, tuple[str, str]] = {}
         # Which signals belong to which camera, worked out once at start rather than per
@@ -130,12 +124,8 @@ class TransitionWatcher:
         in the meantime nothing is lost that was ever available to be lost.
         """
         self.async_stop()
-        self._entities = async_detection_map(
-            self._hass, include_all_devices=self._include_all_devices
-        )
-        self._watching = async_signal_map(
-            self._hass, self._signals, include_all_devices=self._include_all_devices
-        )
+        self._entities = async_detection_map(self._hass)
+        self._watching = async_signal_map(self._hass, self._signals)
         if not self._entities:
             _LOGGER.debug("No Reolink detection sensors found; the journal has nothing to watch")
             return

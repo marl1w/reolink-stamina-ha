@@ -112,9 +112,7 @@ async def _async_history(
         return {}
 
 
-async def async_backfill(
-    hass: HomeAssistant, journal: Journal, *, include_all_devices: bool = False
-) -> int:
+async def async_backfill(hass: HomeAssistant, journal: Journal) -> int:
     """Import the recorder's detection history into the journal, once.
 
     Returns how many transitions were new. Running it again is harmless — every row is
@@ -123,7 +121,7 @@ async def async_backfill(
     if await journal.async_get_meta(JOURNAL_META_BACKFILLED) is not None:
         return 0
 
-    entities = async_detection_map(hass, include_all_devices=include_all_devices)
+    entities = async_detection_map(hass)
     if not entities:
         # Nothing to import, and nothing to remember either: the recorders may simply not be
         # loaded yet, and marking this done would lose the history for good.
@@ -198,8 +196,6 @@ async def async_backfill_signals(
     hass: HomeAssistant,
     journal: Journal,
     signals: dict[str, list[str]],
-    *,
-    include_all_devices: bool = False,
 ) -> int:
     """Reconstruct what the configured signals said, and stamp it onto history.
 
@@ -218,7 +214,7 @@ async def async_backfill_signals(
     # The same map the live watcher uses, so a reconstructed snapshot and a recorded one hold
     # the same entities. Two readers disagreeing here would surface only as counts that do
     # not add up, months later.
-    wanted = async_signal_map(hass, signals, include_all_devices=include_all_devices)
+    wanted = async_signal_map(hass, signals)
     # Keyed on the signals themselves rather than on "done": adding one has to re-stamp
     # everything, because a snapshot missing an entity is not the same as one recording it
     # as absent, and the two must not end up mixed together in one history.

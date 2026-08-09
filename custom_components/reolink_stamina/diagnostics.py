@@ -42,7 +42,7 @@ from .ffmpeg import async_ffmpeg_binary
 from .playback_route import async_all_routes
 from .relevance.backfill import async_retention_days
 from .reolink_registry import async_discover, async_discover_devices, async_get_host
-from .restream import SESSION_PREFIX, async_beta_enabled, async_get_manager
+from .restream import SESSION_PREFIX, async_get_manager
 
 
 def _clock(hass: HomeAssistant) -> dict[str, Any]:
@@ -95,18 +95,16 @@ def _clock(hass: HomeAssistant) -> dict[str, Any]:
     return clock
 
 
-def _excluded_entries(hass: HomeAssistant, include_all_devices: bool) -> list[dict[str, Any]]:
+def _excluded_entries(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Return the Reolink entries the panel is not offering, and why.
 
-    Asked with the user's own beta setting rather than with everything on, because the
-    question this answers is "why is that device not in my list" — and with the beta off,
-    `not_a_recorder_and_the_beta_is_off` against a `camera` is the whole answer. Issue #4
-    was exactly that and took two screenshots to establish, because an excluded entry
-    appeared nowhere: not in the panel, and not here either.
+    Asked exactly as the panel asks it, because the question this answers is "why is that
+    device not in my list". Issue #4 was that question and took two screenshots to establish,
+    because an excluded entry appeared nowhere: not in the panel, and not here either.
 
     Ids only, no names: a Reolink entry is usually named after where the camera points.
     """
-    found = async_discover(hass, include_all_devices=include_all_devices)
+    found = async_discover(hass, include_all_devices=True)
     return [entry.as_dict() for entry in found.excluded]
 
 
@@ -156,7 +154,6 @@ async def async_get_config_entry_diagnostics(
     return {
         "options": data.options.as_dict() if data is not None else None,
         "adaptive_playback": {
-            "enabled": async_beta_enabled(hass),
             "ffmpeg": binary or "not found",
             # Newest last, and already reduced to a cause rather than raw ffmpeg output.
             "failures": list(manager.failures),
@@ -166,9 +163,7 @@ async def async_get_config_entry_diagnostics(
         },
         "clocks": _clock(hass),
         # Reolink entries that exist but are not offered in the panel, with the reason.
-        "excluded_reolink_entries": _excluded_entries(
-            hass, data.options.beta_all_devices if data is not None else False
-        ),
+        "excluded_reolink_entries": _excluded_entries(hass),
         # Which endpoint each recorder was measured to serve playback from, keyed by
         # Reolink config entry. Recorders disagree about this and the disagreement does not
         # follow the model, so "which route is this device on" is the first question a

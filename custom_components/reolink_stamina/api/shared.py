@@ -25,8 +25,8 @@ _LOGGER = logging.getLogger(__name__)
 # of searches.
 MAX_BUCKETS = 240
 
-# What the panel may ask `stream_url` for. Passthrough is the recorder's own bytes and the
-# only route available with the adaptive beta off; the other two are conversions.
+# What the panel may ask `stream_url` for. Passthrough is the recorder's own bytes, sent on
+# untouched; the other two are conversions.
 ROUTE_PASSTHROUGH = "passthrough"
 ROUTE_REMUX = "remux"
 ROUTE_TRANSCODE = "transcode"

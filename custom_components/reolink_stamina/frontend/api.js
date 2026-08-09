@@ -57,11 +57,11 @@ export class StaminaApi {
    * long segment.
    */
   /**
-   * What the "learn what is normal" beta makes of one camera over a window.
+   * What "learn what is normal" makes of one camera over a window.
    *
    * Answers while a camera is still collecting, and that is deliberate: the scores mean
    * nothing yet, but what has been *collected* about each detection does, and showing it is
-   * what makes the beta worth installing before it can say anything.
+   * what makes it worth having before it can say anything.
    */
   async relevance({ entryId, channel, start, end }) {
     return this.hass.callWS({
@@ -103,7 +103,7 @@ export class StaminaApi {
    * the recorder's own web player does. Home Assistant only passes the bytes through, so
    * nothing is transcoded and there is no server-side process to outlive the clip.
    *
-   * `route` asks for one of the beta conversion routes instead, for a browser that cannot
+   * `route` asks for one of the conversion routes instead, for a browser that cannot
    * play what the recorder sends: `remux` repackages, `transcode` re-encodes. `format`
    * says which container this browser can take — HLS for anything Apple.
    *

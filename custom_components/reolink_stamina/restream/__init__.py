@@ -1,4 +1,4 @@
-"""Beta: converting a recording server-side, when and only when the browser cannot.
+"""Converting a recording server-side, when and only when the browser cannot.
 
 The normal playback route needs nothing installed and costs nothing: the recorder serves
 FLV, the browser demuxes it through Media Source Extensions, and Home Assistant only
@@ -81,7 +81,6 @@ from .encoders import _available_encoders, async_choose_encoder, build_args
 from .runner import (
     FfmpegUnavailableError,
     RestreamError,
-    async_beta_enabled,
     async_start_hls,
 )
 from .sessions import (
@@ -126,7 +125,6 @@ __all__ = [
     "_devices_requested",
     "_diagnose_no_output",
     "_without_hwaccel_probe",
-    "async_beta_enabled",
     "async_choose_encoder",
     "async_get_manager",
     "async_hls_path",

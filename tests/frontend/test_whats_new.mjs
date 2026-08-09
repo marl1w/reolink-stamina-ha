@@ -71,7 +71,8 @@ test("every feature says what it is and where to find it", () => {
 });
 
 test("the betas are marked as such", () => {
-  // "Why don't I have that?" is the question this dialog exists to prevent, not cause.
+  // Nothing is off any more, so the mark means "newer, and it has met less hardware" — which
+  // is what somebody deciding how much to trust a feature actually wants to know.
   const betas = FEATURES.filter((feature) => feature.beta).map((feature) => feature.title);
   assert.ok(
     betas.some((title) => title.toLowerCase().includes("normal")),
@@ -86,18 +87,14 @@ test("the summary counts the list rather than claiming a number", () => {
   const words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight"];
   const line = summarise();
 
-  assert.ok(
-    line.toLowerCase().startsWith(`${words[FEATURES.length - beta]} of these are ready`) ||
-      line.startsWith("One of these is ready"),
-    `the ready count is wrong: ${line}`
-  );
+  assert.ok(line.includes("nothing to switch on"), `the summary is wrong: ${line}`);
   assert.ok(line.includes(words[beta]), `the beta count is wrong: ${line}`);
 });
 
 test("the summary copes with a list that is all one thing", () => {
   const stable = [{ beta: false }, { beta: false }];
   assert.ok(!summarise(stable).includes("beta"), "nothing in beta, so say nothing about it");
-  assert.ok(summarise([{ beta: true }]).includes("the one marked beta is off"));
+  assert.ok(summarise([{ beta: true }]).includes("the one marked beta is newer"));
 });
 
 process.stdout.write(`\n  ${ran - failures}/${ran} what's-new checks passed\n`);

@@ -31,10 +31,9 @@ def clean_journal(hass):
     """Remove the relevance journal after every test.
 
     The test harness shares one configuration directory across the whole run, and the
-    journal is deliberately a real file in it — so a test that switches the beta on leaves
-    one behind for every test that follows. The first casualty is the test asserting that
-    the beta being *off* means no file exists at all, which is the one assertion in the
-    suite that must not be able to pass or fail by accident.
+    journal is deliberately a real file in it — so every test that sets the integration up
+    leaves one behind for every test that follows. Removal is supposed to delete it, and an
+    assertion about that must not be able to pass or fail by accident.
     """
     yield
     for suffix in ("", "-wal", "-shm"):

@@ -1,4 +1,4 @@
-"""Tests for the adaptive playback beta.
+"""Tests for adaptive playback.
 
 Two things matter here: that the command built for each rung of the ladder is the command
 intended — a remux must not re-encode, and a re-encode must not hand a hardware encoder
@@ -11,7 +11,8 @@ precisely that — the intended arguments, refused, and the remux rung broken fo
 every non-Apple browser. So the two remux rungs are also run for real against a generated
 H.264 clip, and skipped where there is no ffmpeg to run them with.
 
-The rest is refusal: with the beta off, the views must behave as though they did not exist.
+The rest is refusal: a malformed request must be turned away by the views rather than
+handed to ffmpeg.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
-from custom_components.reolink_stamina.const import CONF_BETA_RESTREAM, DOMAIN
+from custom_components.reolink_stamina.const import DOMAIN
 from custom_components.reolink_stamina.restream import (
     FORMAT_HLS,
     FORMAT_MP4,
@@ -797,46 +798,27 @@ async def test_only_the_last_few_failures_are_kept(hass: HomeAssistant) -> None:
 
 @pytest.fixture
 async def setup_stamina(hass: HomeAssistant):
-    """Set up Stamina alongside a fake Reolink NVR, with the beta configurable."""
+    """Set up Stamina alongside a fake Reolink NVR."""
+    assert await async_setup_component(hass, "http", {})
 
-    async def _setup(*, beta: bool):
-        assert await async_setup_component(hass, "http", {})
+    api = FakeApi(channels=[0])
+    reolink = MockConfigEntry(domain="reolink", title="Backyard NVR")
+    reolink.add_to_hass(hass)
+    reolink.runtime_data = SimpleNamespace(host=FakeHost(api))
+    reolink.mock_state(hass, ConfigEntryState.LOADED)
 
-        api = FakeApi(channels=[0])
-        reolink = MockConfigEntry(domain="reolink", title="Backyard NVR")
-        reolink.add_to_hass(hass)
-        reolink.runtime_data = SimpleNamespace(host=FakeHost(api))
-        reolink.mock_state(hass, ConfigEntryState.LOADED)
-
-        entry = MockConfigEntry(
-            domain=DOMAIN, title="Reolink Events", options={CONF_BETA_RESTREAM: beta}
-        )
-        entry.add_to_hass(hass)
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-        return SimpleNamespace(api=api, reolink=reolink, entry=entry)
-
-    return _setup
-
-
-async def test_the_restream_view_does_not_exist_while_the_beta_is_off(
-    hass: HomeAssistant, hass_client: ClientSessionGenerator, setup_stamina
-) -> None:
-    """The URL is registered whatever the option says, so refusing is the option."""
-    data = await setup_stamina(beta=False)
-    client = await hass_client()
-
-    path = async_restream_path(data.reolink.entry_id, 0, "sub", "file", "s", "p", 0)
-    response = await client.get(path)
-
-    assert response.status == 404
+    entry = MockConfigEntry(domain=DOMAIN, title="Reolink Events")
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return SimpleNamespace(api=api, reolink=reolink, entry=entry)
 
 
 async def test_the_restream_view_says_so_when_there_is_no_ffmpeg(
     hass: HomeAssistant, hass_client: ClientSessionGenerator, setup_stamina
 ) -> None:
     """Naming the missing dependency beats an empty video and a log line."""
-    data = await setup_stamina(beta=True)
+    data = setup_stamina
     client = await hass_client()
 
     with (
@@ -860,7 +842,7 @@ async def test_an_unknown_conversion_mode_is_refused(
     hass: HomeAssistant, hass_client: ClientSessionGenerator, setup_stamina
 ) -> None:
     """The mode is in the path, so it is worth checking rather than trusting."""
-    data = await setup_stamina(beta=True)
+    data = setup_stamina
     client = await hass_client()
 
     response = await client.get(
@@ -879,7 +861,6 @@ async def test_hls_serves_nothing_but_a_playlist_or_a_segment(
     Checked before the token is even looked up, because this is the guard that stops a
     session being used to read the rest of the filesystem.
     """
-    await setup_stamina(beta=True)
     client = await hass_client()
 
     response = await client.get("/api/reolink_stamina/hls/token/secrets.yaml")
@@ -890,7 +871,6 @@ async def test_an_expired_hls_session_is_a_plain_404(
     hass: HomeAssistant, hass_client: ClientSessionGenerator, setup_stamina
 ) -> None:
     """Expected rather than exceptional: the panel reopens when it sees this."""
-    await setup_stamina(beta=True)
     client = await hass_client()
 
     response = await client.get(f"/api/reolink_stamina/hls/nosuchtoken/{HLS_PLAYLIST}")
