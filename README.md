@@ -4,27 +4,24 @@
 
 *Your NVR has the memory. This has the stamina.*
 
-Reolink hardware records diligently and then makes the footage tedious to get at: one camera at a time, one app or one folder at a time, and nothing that survives the recorder being stolen. **Reolink Stamina closes that gap** — it is about the experience of *using* the Reolink system you already own, from inside Home Assistant.
+Reolink hardware records diligently and then makes the footage tedious to get at: one camera at a time, one app or one folder at a time, and nothing that survives the recorder being stolen. Reolink Stamina closes that gap from inside Home Assistant.
 
-It is a companion to the official [Reolink integration][reolink], not a replacement. Every device, camera and recording comes from it, so there are **no extra credentials to enter**.
-
-**Why "Stamina"?** Because everything else in this chain tires quickly, and a good experience has to outlast it. The recorder answers searches at its leisure, streams playback at walking pace, and drops your connection if you ask twice too fast. So: cached results appear instantly while it keeps asking in the background, clips queue instead of stampeding the recorder, a backlog survives a restart, and it will process the four hundredth cat of the evening without complaint.
+It is a companion to the official [Reolink integration][reolink], not a replacement — every device, camera and recording comes through it, so there are **no extra credentials to enter**.
 
 ## Three things it does
 
 | | |
 | --- | --- |
-| **[One timeline across every device →](docs/timeline.md)** | Every camera's detections in a single list, whatever recorder they hang off, with the clip one click away and the playhead already at the event. |
-| **[An off-site copy of what mattered →](docs/cloud-sync.md)** | A clip of each detection uploaded to your own cloud storage, event by event, so the evidence outlives the recorder it was written on. |
-| **[Learning what is normal →](docs/relevance.md)** | A record of what each camera usually sees and when, so the handful of events worth opening can be told from the hundreds that are not — and a view of what it has actually learned. Beta. |
+| **[One timeline across every device →](docs/timeline.md)** | Every camera's detections in a single list, with the clip one click away and the playhead already at the event. |
+| **[An off-site copy of what mattered →](docs/cloud-sync.md)** | A clip of each detection uploaded to your own OneDrive, so the footage outlives the recorder it was written on. |
+| **[Learning what is normal →](docs/relevance.md)** | A record of what each camera usually sees, so the handful of events worth opening can be told from the hundreds that are not. Beta. |
 
-## What you need
+## Requirements
 
 - Home Assistant 2026.1 or newer, any install type
 - The official **Reolink integration**, with at least one **NVR** with a working HDD
-- For cloud sync only: an existing **OneDrive** integration — its credentials are reused
-
-Home Hubs and standalone cameras are listed alongside your recorders, tagged as [the untested quantity they are](docs/timeline.md#hubs-and-standalone-cameras).
+- An existing **OneDrive** integration, for cloud sync only — its credentials are reused
+- **ffmpeg**, only for converted playback and for cutting clips out of 24/7 footage
 
 ## Install
 
@@ -34,20 +31,15 @@ Home Hubs and standalone cameras are listed alongside your recorders, tagged as 
 2. Install **Reolink Stamina**, then restart Home Assistant.
 3. **Settings → Devices & services → Add integration → Reolink Stamina.**
 
-Setup asks nothing: it discovers your NVRs through the Reolink integration and adds itself to the sidebar. Once an NVR is set up there, Home Assistant also offers Stamina by itself — it watches the network for Reolink recorders exactly as the official integration does, and the panel turns up as a **Discovered** card.
+Setup asks nothing: it discovers your NVRs through the Reolink integration and adds itself to the sidebar. Home Assistant also offers it by itself once a Reolink recorder is set up, as a **Discovered** card.
 
 > **Tested against:** Home Assistant 2026.8.4 · Reolink RLN8-410 (N7MB01) on firmware v3.6.5.562_26062933 · cameras B800, RLC-81MA, Duo 2 PoE, Duo 2v PoE. Other NVRs should work; other *models* of recorder are where surprises live, so reports are welcome.
 
-## Documentation
-
-- **[The timeline](docs/timeline.md)** — browsing, playback, downloads, and the panel's options
-- **[Cloud sync](docs/cloud-sync.md)** — off-site clips, quotas and how the switch behaves
-- **[Learning what is normal](docs/relevance.md)** — what it collects, what it will do with it, and what it keeps on your machine
-- **[FAQ and troubleshooting](docs/faq.md)** — symptoms, causes, and how to turn on debug logging
+In case of trouble, see the [FAQ and troubleshooting](docs/faq.md) for symptoms, causes and debug logging.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to run the checks and the one non-obvious thing about editing the panel. Maintained by [marl1w](MAINTAINERS.md).
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Maintained by [marl1w](MAINTAINERS.md).
 
 ```bash
 make          # what there is to run
