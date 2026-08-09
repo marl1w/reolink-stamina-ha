@@ -46,6 +46,10 @@ const STYLES = /* css */ `
  */
 @media (max-width: 700px) {
   .sheet {
+    /* Fixed rather than covering the screen by size alone: a modal dialog is centred by the
+       browser, and one exactly as tall as the viewport still moves when the keyboard opens. */
+    position: fixed;
+    inset: 0;
     width: 100vw;
     max-width: 100vw;
     height: 100dvh;
@@ -53,9 +57,11 @@ const STYLES = /* css */ `
     margin: 0;
     border: 0;
     border-radius: 0;
-    /* Fixed rather than covering the screen by size alone: a modal dialog is centred by the
-       browser, and one exactly as tall as the viewport still moves when the keyboard opens. */
-    padding-bottom: var(--rv-safe-bottom, 0px);
+    /* Being placed against the viewport is also how it escapes the offset Home Assistant's
+       layout starts at, so at this size nothing is holding it off the status bar but this —
+       the same case the full-screen player already handles. Without it the camera's name and
+       the close button sit under the clock. */
+    padding: var(--rv-safe-top) var(--rv-safe-right) var(--rv-safe-bottom) var(--rv-safe-left);
   }
 }
 

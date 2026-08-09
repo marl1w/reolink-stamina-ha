@@ -99,6 +99,32 @@ h2 { margin: 0; font-size: 1.24rem; font-weight: 650; letter-spacing: -0.01em; }
 }
 .version { font-size: 0.74rem; color: var(--rv-text-dim); font-variant-numeric: tabular-nums; }
 
+/*
+ * Full-screen on a phone, like the two sheets. A dialog inset by sixteen pixels on a 390px
+ * screen is a box with a sliver of dimmed panel around it — the inset reads as an accident
+ * rather than as a frame, and it costs the width the content actually wanted.
+ *
+ * Fixed rather than covering the screen by size alone: a modal dialog is placed against the
+ * viewport, so it escapes the offset Home Assistant's own layout starts at and would land
+ * under the status bar — the same case the full-screen player already handles. The safe-area
+ * padding is what holds the heading off the clock and the "Got it" button off the home
+ * indicator.
+ */
+@media (max-width: 700px) {
+  dialog {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    padding: var(--rv-safe-top) var(--rv-safe-right) var(--rv-safe-bottom) var(--rv-safe-left);
+  }
+}
+
 @media (max-width: 560px) {
   .head { padding: 18px 18px 4px; }
   .body { padding: 14px 18px 4px; }
