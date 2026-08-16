@@ -835,3 +835,194 @@ def test_a_scheduled_recording_stays_scheduled_even_once_someone_walks_into_it()
     )
 
     assert sorted(events[0]["kinds"]) == ["person", "timer"]
+
+
+# --------------------------------------------- a device that states no PlaybackTime at all
+
+
+class _FakeHubVod(_FakeVod):
+    """A hub's answer to a search: StartTime, EndTime, a name, and nothing else.
+
+    The real VOD_file reads `data["PlaybackTime"]` unconditionally, so a device that does
+    not send the field raises KeyError from the property rather than returning None. That is
+    reproduced exactly, because the bare `'PlaybackTime'` that KeyError carries as its whole
+    message is what the panel ended up displaying to the user.
+    """
+
+
+def _hub_file(start: dt.datetime, end: dt.datetime, tz: dt.tzinfo, **extra) -> _FakeHubVod:
+    data = {
+        "StartTime": _reolink_time(start),
+        "EndTime": _reolink_time(end),
+        "type": "sub",
+        "size": 1024,
+        **extra,
+    }
+    return _FakeHubVod(data, tz)
+
+
+def test_a_recording_without_playback_time_is_serialised_rather_than_raising() -> None:
+    """A hub states no PlaybackTime, and the search must survive it.
+
+    reolink_aio reads the field unconditionally, so the first recording killed the whole
+    camera-day with a KeyError whose entire message was the field name — which the cache
+    reported beside stale data as "Could not reach the device ... 'PlaybackTime'", blaming
+    the network for a device that was answering fine.
+    """
+    tz = dt.timezone(dt.timedelta(hours=2))
+    file = _hub_file(
+        dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz),
+        dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz),
+        tz,
+        name="1-4-0-01260704063000-00000",
+    )
+
+    result = serialize_file(file)
+
+    # The recording is addressed by its own start, in the recorder's time...
+    assert result["file_start_id"] == "20260804083000"
+    # ...and by the same instant in UTC, which is what the endpoint wants.
+    assert result["playback_id"] == "20260804063000"
+    # Nothing was split, so this row *is* the recording and there is nowhere to seek to.
+    assert result["offset"] == 0.0
+    assert result["playback_derived"] is True
+    assert result["name"] == "1-4-0-01260704063000-00000"
+
+
+def test_a_stated_playback_time_is_not_reported_as_derived() -> None:
+    """The flag has to distinguish the two, or diagnostics cannot tell them apart."""
+    tz = dt.timezone(dt.timedelta(hours=2))
+    data = {
+        "StartTime": _reolink_time(dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz)),
+        "EndTime": _reolink_time(dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz)),
+        "PlaybackTime": _reolink_time(dt.datetime(2026, 8, 4, 6, 30, tzinfo=dt.UTC)),
+        "name": "1-4-0-01260704063000-00000",
+        "size": 1024,
+        "type": "sub",
+    }
+    assert serialize_file(_FakeVod(data, tz))["playback_derived"] is False
+
+
+def test_a_device_stating_neither_playback_time_nor_a_name_is_named_by_timestamp() -> None:
+    """reolink_aio's own fallback name is built from PlaybackTime, so it raises too.
+
+    A device sending neither field would otherwise fail one line further on, in exactly the
+    same way and with an equally opaque message.
+    """
+    tz = dt.timezone(dt.timedelta(hours=2))
+    file = _hub_file(
+        dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz),
+        dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz),
+        tz,
+    )
+
+    # The name the library would have derived, had it had the field to derive it from.
+    assert serialize_file(file)["name"] == "20260804063000"
+
+
+def test_a_device_reporting_no_offset_keeps_its_wall_clock() -> None:
+    """A naive timestamp is the only time such a device has; converting it moves the request."""
+    file = _hub_file(
+        dt.datetime(2026, 8, 4, 8, 30),
+        dt.datetime(2026, 8, 4, 8, 35),
+        None,
+        name="1-4-0-01260704063000-00000",
+    )
+
+    result = serialize_file(file)
+
+    assert result["playback_id"] == "20260804083000"
+    assert result["file_start_id"] == "20260804083000"
+    assert result["offset"] == 0.0
+
+
+def test_files_without_playback_time_abstain_from_the_convention_vote() -> None:
+    """There is no convention to measure where the field is absent, and no row may guess."""
+    tz = dt.timezone(dt.timedelta(hours=2))
+    files = [
+        _hub_file(
+            dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz),
+            dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz),
+            tz,
+            name="1-4-0-01260704063000-00000",
+        ),
+        _hub_file(
+            dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz),
+            dt.datetime(2026, 8, 4, 8, 40, tzinfo=tz),
+            tz,
+            name="1-4-0-01260704063500-00000",
+        ),
+    ]
+
+    # Falls back to the library's assumption, and nothing consults it: every row derives.
+    assert playback_time_is_utc(files) is True
+    assert all(serialize_file(file, playback_is_utc=True)["playback_derived"] for file in files)
+
+
+def test_a_mixed_search_serialises_both_kinds() -> None:
+    """One unusual row must not take the camera-day down with it.
+
+    The measurement still runs on the rows that do state the field, and the ones that do
+    not are derived — rather than the whole search failing on the first of them.
+    """
+    tz = dt.timezone(dt.timedelta(hours=2))
+    stated = _FakeVod(
+        {
+            "StartTime": _reolink_time(dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz)),
+            "EndTime": _reolink_time(dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz)),
+            "PlaybackTime": _reolink_time(dt.datetime(2026, 8, 4, 6, 30, tzinfo=dt.UTC)),
+            "name": "1-4-0-01260704063000-00000",
+            "size": 1024,
+            "type": "sub",
+        },
+        tz,
+    )
+    missing = _hub_file(
+        dt.datetime(2026, 8, 4, 9, 30, tzinfo=tz),
+        dt.datetime(2026, 8, 4, 9, 35, tzinfo=tz),
+        tz,
+        name="1-4-0-01260704073000-00000",
+    )
+
+    results = [serialize_file(file) for file in (stated, missing)]
+
+    assert [row["playback_derived"] for row in results] == [False, True]
+    assert [row["playback_id"] for row in results] == ["20260804063000", "20260804073000"]
+
+
+async def test_a_hub_day_survives_a_search_with_no_playback_time(hass) -> None:
+    """End to end: the search itself must return rows, not raise.
+
+    This is the failure as reported — the panel showing stale results and the bare word
+    `'PlaybackTime'` where a reason should be. `async_search_day` is where the exception
+    escaped to the cache, so it is where the regression is pinned.
+    """
+    from unittest.mock import patch as mock_patch
+
+    class _NoPlaybackTime(FakeVodFile):
+        @property
+        def playback_time(self) -> dt.datetime:
+            raise KeyError("PlaybackTime")
+
+    start = dt.datetime(2026, 8, 3, 14, 0, tzinfo=TZ)
+    api = FakeApi(
+        is_hub=True,
+        files={
+            "sub": [
+                _NoPlaybackTime(
+                    start, start + dt.timedelta(seconds=30), triggers=VOD_trigger.PERSON
+                )
+            ]
+        },
+    )
+
+    with mock_patch(
+        "custom_components.reolink_stamina.vod.async_get_host",
+        return_value=FakeHost(api),
+    ):
+        files, _ = await async_search_day(hass, "entry", 0, "sub", dt.date(2026, 8, 3), 5)
+
+    assert len(files) == 1
+    assert files[0]["playback_derived"] is True
+    assert files[0]["file_start_id"] == "20260803140000"
+    assert files[0]["playback_id"] == "20260803120000"

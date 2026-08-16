@@ -98,6 +98,51 @@ def _wall_clock(moment: dt.datetime) -> dt.datetime:
 _CONVENTION_SLACK = dt.timedelta(seconds=2)
 
 
+def stated_playback_time(file: Any) -> dt.datetime | None:
+    """Return the recording's own start as the recorder stated it, or None if it did not.
+
+    `PlaybackTime` is not a field every device answers a search with. Hubs in particular
+    return StartTime, EndTime and a file name and nothing else, and reolink_aio reads the
+    field unconditionally -- so the very first recording killed the whole camera-day with a
+    KeyError whose entire message was the bare field name. The cache keeps a failed search's
+    previous answer and reports the error beside it, which is why the panel read
+
+        Could not reach the device, showing results from 1 min ago. 'PlaybackTime'
+
+    -- a message about the network for a device that was answering perfectly well. The
+    absence is a shape the library does not cover, not a fault, so it is read as a question
+    with two answers rather than as an exception.
+    """
+    try:
+        return file.playback_time
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _derived_playback_time(start: dt.datetime) -> dt.datetime:
+    """Return the recording's start as `PlaybackTime` would have stated it.
+
+    The endpoint wants that instant in UTC, which is what the recorders stating the field
+    hand over. A device reporting no offset at all is left as it is: its wall clock is the
+    only time it has, and converting from an assumed zone would move the request.
+    """
+    return start.astimezone(dt.UTC) if start.tzinfo is not None else start
+
+
+def _file_name(file: Any, playback_time: dt.datetime) -> str:
+    """Return what the recording is called, naming it by timestamp if the device does not.
+
+    reolink_aio already falls back to a bare timestamp for a device that returns no file
+    name -- but it builds that timestamp out of `PlaybackTime`, so on a device stating
+    neither it raises the same KeyError one line further on. Given the timestamp instead of
+    going back to the file for it, the fallback works on both.
+    """
+    try:
+        return file.file_name
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return playback_time.strftime("%Y%m%d%H%M%S")
+
+
 def playback_time_is_utc(files: list[Any]) -> bool:
     """Measure whether the recorder states PlaybackTime in UTC or in its own time.
 
@@ -120,12 +165,19 @@ def playback_time_is_utc(files: list[Any]) -> bool:
     began before the day being searched can come back clipped to the window, and a clipped
     StartTime is not the file's start. A recorder keeping UTC cannot be told apart at all,
     since both conventions agree there -- and it does not matter, because they agree.
+
+    A device that does not state the field at all has no convention to measure, and every
+    row abstains. What is returned then is immaterial: `serialize_file` derives the
+    timestamp from StartTime instead and never consults this.
     """
     earliest: dict[dt.datetime, tuple[dt.datetime, dt.timedelta]] = {}
     for file in files:
+        stated = stated_playback_time(file)
+        if stated is None:
+            continue
         try:
             start = file.start_time
-            playback = _wall_clock(file.playback_time)
+            playback = _wall_clock(stated)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
         known = earliest.get(playback)
@@ -169,6 +221,14 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
     `playback_is_utc` is which zone the recorder states PlaybackTime in, measured by
     `playback_time_is_utc` over a whole search rather than decided per row. It defaults to
     the library's own assumption, which is right far more often than not.
+
+    A device that does not state PlaybackTime at all is served by StartTime, and safely:
+    the field exists to survive splitting, and reolink_aio does not split the recordings of
+    a device that is not an NVR -- hubs included, explicitly. Every row from such a device
+    is therefore a whole recording whose StartTime *is* the file's start, so the anchor is
+    exact and the offset into it is zero. Were a split row ever to arrive without the field,
+    this would name the segment rather than the file, which is the same clip a second late
+    at worst -- and is still an answer, where the KeyError was a dead camera-day.
     """
     start = file.start_time
     end = file.end_time
@@ -177,11 +237,17 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
     # anchor for where this window sits inside the recording. reolink_aio hands it over
     # labelled UTC; where that label is wrong it is the recorder's own time already and
     # converting it would move the request the whole UTC offset away from the recording.
-    playback_time = file.playback_time
-    if playback_is_utc:
-        file_start = playback_time.astimezone(start.tzinfo)
+    stated = stated_playback_time(file)
+    derived = stated is None
+    if stated is None:
+        playback_time = _derived_playback_time(start)
+        file_start = start
     else:
-        file_start = playback_time.replace(tzinfo=start.tzinfo)
+        playback_time = stated
+        if playback_is_utc:
+            file_start = playback_time.astimezone(start.tzinfo)
+        else:
+            file_start = playback_time.replace(tzinfo=start.tzinfo)
     offset = max(0.0, (start - file_start).total_seconds())
 
     return {
@@ -197,9 +263,14 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
         # report says how `file_start_id` was arrived at rather than leaving it to be
         # inferred from the two timestamps.
         "playback_is_utc": playback_is_utc,
+        # True when the recorder never stated PlaybackTime and it was taken from StartTime.
+        # `playback_is_utc` says nothing on such a device -- nothing was measured -- so
+        # without this a diagnostics report cannot tell a measured convention from an
+        # absent field, which is the difference between a wrong timestamp and no timestamp.
+        "playback_derived": derived,
         # Seconds from the start of the recording to the start of this window.
         "offset": offset,
-        "name": file.file_name,
+        "name": _file_name(file, playback_time),
         "size": file.size,
         "type": file.type,
         "triggers": trigger_names(file.triggers),
@@ -324,6 +395,19 @@ async def async_search_day(
     # row cannot say which convention produced it.
     playback_is_utc = playback_time_is_utc(vod_files)
     serialised = [serialize_file(file, playback_is_utc=playback_is_utc) for file in vod_files]
+
+    # Said once per search rather than per recording: a device that omits PlaybackTime omits
+    # it from every row, and the interesting number is how many rows that was.
+    derived = sum(1 for data in serialised if data["playback_derived"])
+    if derived:
+        _LOGGER.debug(
+            "%s channel %s states no PlaybackTime (%s of %s recordings); "
+            "using StartTime as the recording's own start",
+            entry_id,
+            channel,
+            derived,
+            len(serialised),
+        )
 
     # What Home Assistant saw, folded in before anything is judged or discarded.
     #
