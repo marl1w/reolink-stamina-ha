@@ -13,10 +13,11 @@ grows rather than more expensive.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
 from ..const import DEFAULT_RELEVANCE_SENSITIVITY, RELEVANCE_SENSITIVITY_FLOORS
@@ -71,11 +72,32 @@ class Analysis:
         return self._events
 
     def async_schedule(self) -> None:
-        """Rebuild nightly."""
+        """Rebuild nightly.
+
+        The scheduled action has to be a `@callback`, and a bare lambda is not one. Home
+        Assistant decides how to run an action from what it is: a coroutine function is
+        awaited, a callback is called on the event loop, and anything else -- a plain lambda
+        included -- is handed to an executor thread. `async_create_task` from an executor
+        thread is precisely what `helpers.frame` reports as unsafe, and it did, nightly at
+        the rebuild hour:
+
+            RuntimeError: Detected that custom integration 'reolink_stamina' calls
+            hass.async_create_task from a thread other than the event loop
+
+        Declaring the callback puts the call back on the loop. Named rather than a lambda
+        because `@callback` is a decorator and the name is what says the thread it runs on
+        was chosen rather than inherited.
+        """
         self.async_cancel()
+
+        @callback
+        def _async_rebuild_now(_now: dt.datetime) -> None:
+            """Start the rebuild on the event loop, and do not wait for it."""
+            self._hass.async_create_task(self.async_rebuild())
+
         self._cancel = async_track_time_change(
             self._hass,
-            lambda _now: self._hass.async_create_task(self.async_rebuild()),
+            _async_rebuild_now,
             hour=_REBUILD_HOUR,
             minute=_REBUILD_MINUTE,
             second=0,

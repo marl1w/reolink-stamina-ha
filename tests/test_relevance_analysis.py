@@ -146,3 +146,44 @@ async def test_rebuilding_picks_up_new_transitions(hass, journal):
     await analysis.async_rebuild()
 
     assert len(analysis.events) == 2
+
+
+# ------------------------------------------------- which thread the nightly rebuild runs on
+
+
+async def test_the_nightly_rebuild_is_scheduled_as_a_callback(hass, journal):
+    """Home Assistant decides the thread from what the action *is*.
+
+    A coroutine function is awaited, a `@callback` is called on the event loop, and anything
+    else -- a plain lambda included -- is handed to an executor thread. The rebuild starts a
+    task, and `hass.async_create_task` off the event loop is what `helpers.frame` reports:
+
+        RuntimeError: Detected that custom integration 'reolink_stamina' calls
+        hass.async_create_task from a thread other than the event loop
+
+    It fired nightly at the rebuild hour and nowhere else, which is why nothing caught it.
+    """
+    from unittest.mock import patch
+
+    from homeassistant.core import is_callback
+
+    analysis = Analysis(hass, journal)
+    with patch(
+        "custom_components.reolink_stamina.relevance.analysis.async_track_time_change"
+    ) as track:
+        analysis.async_schedule()
+
+    action = track.call_args.args[1]
+    assert is_callback(action), "the nightly rebuild would be run in an executor thread"
+
+
+async def test_scheduling_replaces_a_previous_registration(hass, journal):
+    """Rescheduling must not leave two rebuilds running against one journal."""
+    analysis = Analysis(hass, journal)
+    analysis.async_schedule()
+    first = analysis._cancel
+    analysis.async_schedule()
+
+    assert analysis._cancel is not first
+    analysis.async_cancel()
+    assert analysis._cancel is None
