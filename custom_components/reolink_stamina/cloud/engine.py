@@ -496,15 +496,19 @@ class NvrSyncer:
 
     # --------------------------------------------------------------------- working
 
-    def _slots(self) -> int:
+    async def _async_slots(self) -> int:
         """How many clips may be in flight right now.
 
         Asked each time rather than fixed at startup: what the machine has free is not a
         constant, and a syncer that has just learned its clips are four megabytes rather than
         thirty-two should be allowed to act on that immediately.
+
+        Asking costs a couple of `/sys` reads, which is a blocking call however small it is, so
+        it goes to the executor — this runs on the event loop, and asking there was reported as
+        exactly the stall it is.
         """
         expected = expected_clip_bytes(list(self._clip_sizes), SYNC_ASSUMED_CLIP_BYTES)
-        available = available_bytes()
+        available = await self.hass.async_add_executor_job(available_bytes)
         cpus = os.cpu_count()
         self.status.concurrency = slots(available, expected, cpus)
         self.status.capacity = describe(available, expected, cpus)
@@ -519,7 +523,7 @@ class NvrSyncer:
         crossing three cameras used to take three times as long as one.
         """
         while True:
-            while self._queue and len(self._inflight) < self._slots():
+            while self._queue and len(self._inflight) < await self._async_slots():
                 job = self._queue.popleft()
                 task = self.hass.async_create_background_task(
                     self._async_run(job), f"{DOMAIN} clip {job.camera} {job.window.start:%H%M%S}"

@@ -99,6 +99,10 @@ def available_bytes() -> int | None:
     """Return the memory this process can reasonably expect to be able to use.
 
     None where nothing could be read, which the caller treats as "assume the smallest machine".
+
+    Reads files, so it belongs in the executor. They are a few bytes of `/sys` and answer
+    instantly, but "instantly" is not "without blocking" and Home Assistant is right to say so:
+    call this through `async_add_executor_job`, never straight from the event loop.
     """
     return _cgroup_available() or _host_available()
 

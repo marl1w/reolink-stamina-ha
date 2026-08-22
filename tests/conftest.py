@@ -192,12 +192,26 @@ class FakeApi:
         return [], list(self._files.get(stream or "sub", []))
 
 
+class _Absorbed:
+    """The result of any Baichuan call, whether the caller awaits it or drops it.
+
+    `__getattr__` cannot know which it will be: the real Baichuan side is mostly
+    coroutines, but `unregister_callback` is synchronous and the unload path calls it
+    bare. Handing back a coroutine for that one is a `RuntimeWarning` per call — it is
+    never awaited — so this is awaitable without being a coroutine, and both uses are
+    silent.
+    """
+
+    def __await__(self):
+        return iter(())
+
+
 class _FakeBaichuan:
     """Stand-in for reolink_aio's Baichuan side, which the real unload path touches."""
 
     def __getattr__(self, name: str):
-        async def _noop(*args: Any, **kwargs: Any) -> None:
-            return None
+        def _noop(*args: Any, **kwargs: Any) -> _Absorbed:
+            return _Absorbed()
 
         return _noop
 
