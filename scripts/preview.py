@@ -74,7 +74,22 @@ RECORDERS = (
     # Greyed out in the picker, with the card saying why. A state that only appears when
     # somebody's recorder is genuinely unplugged is one that never gets looked at otherwise.
     ("01CABIN", "Cabin NVR", "RLN8-410", "not_connected"),
+    # Not a recorder at all: a doorbell on its own direct connection, which is also a channel
+    # on the villa's NVR. Issue #4's setup, and the only way to see the "via" marker.
+    ("01DOORBELL", "Doorbell Direct", "Reolink Video Doorbell", "ok"),
 )
+
+# What each entry turns out to be. Only the doorbell is not a recorder, and it has to say so
+# or the panel cards it as one.
+KINDS = {"01DOORBELL": "camera"}
+
+# Cameras reachable two ways, and where the recordings actually are.
+#
+# The doorbell writes to the villa's NVR rather than to its own card, so its own storage
+# answers with nothing and the disabled channel on the recorder holds everything. Searching
+# the recorder is what fills the timeline; the rows say where they came from, because their
+# times are the doorbell's own and agree with every other row it has.
+PAIRED = {("01DOORBELL", 0): ("01VILLA", 3)}
 
 # hour, spread in minutes, kind, days in ten it happens, how long it lasts
 _COMMUTE = [
@@ -122,6 +137,16 @@ CAMERAS = (
     # Nothing here plays: the recorder answers the search and refuses the stream, which is a
     # row the panel has its own wording for.
     ("01GARAGE", 2, "Side alley", 45, True, False, [(2.0, 120, "animal", 6, 10)]),
+    # Served by the villa's NVR rather than by itself — every row carries the "via" marker.
+    (
+        "01DOORBELL",
+        0,
+        "Doorbell",
+        50,
+        False,
+        True,
+        [(8.4, 45, "doorbell", 6, 12), (12.2, 200, "package", 4, 18), (19.0, 80, "person", 7, 35)],
+    ),
 )
 
 # The odd ones out, planted so every chip colour can be seen with a red icon beside it:
@@ -426,6 +451,10 @@ def _rows(detections) -> dict[str, list[dict]]:
                 "files": ["sub"],
                 "playable": playable,
                 "continuous": continuous,
+                # Set only where the camera did not answer for itself, exactly as the search
+                # records it, so the row marker has the same input it has in the real panel.
+                "source_entry_id": PAIRED.get((entry_id, channel), (None, None))[0],
+                "source_channel": PAIRED.get((entry_id, channel), (None, None))[1],
                 "alternate_streams": ["main"],
                 "pre_roll": 5,
             }
@@ -541,7 +570,7 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
                 "connected": status == "ok",
                 "has_storage": status == "ok",
                 "reports_triggers": True,
-                "kind": "nvr",
+                "kind": KINDS.get(entry_id, "nvr"),
                 "cameras": [
                     {
                         "channel": channel,
@@ -550,6 +579,8 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
                         "streams": ["main", "sub"],
                         "can_playback": True,
                         "pre_record": {"supported": False, "enabled": False, "seconds": None},
+                        "paired_entry_id": PAIRED.get((cam_entry, channel), (None, None))[0],
+                        "paired_channel": PAIRED.get((cam_entry, channel), (None, None))[1],
                     }
                     for cam_entry, channel, camera, _d, _c, _p, routines in CAMERAS
                     if cam_entry == entry_id

@@ -18,7 +18,11 @@ import voluptuous as vol
 
 from ..const import DOMAIN
 from ..flv_proxy import async_flv_path
-from ..reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
+from ..reolink_registry import (
+    DeviceUnavailableError,
+    ReolinkIncompatibleError,
+    async_paired_channel,
+)
 from ..restream import (
     FORMAT_HLS,
     FORMAT_MP4,
@@ -127,6 +131,40 @@ async def _async_resolve_playback_fields(
     return await _async_resolve_file(hass, data, entry_id, channel, stream, start, end)
 
 
+@callback
+def _async_playback_target(
+    hass: HomeAssistant,
+    entry_id: str,
+    channel: int,
+    source_entry_id: str | None,
+    source_channel: int | None,
+) -> tuple[str, int]:
+    """Return the device to address for playback, refusing to be pointed anywhere else.
+
+    A camera whose recordings live on a recorder has to be played back from that recorder,
+    so the row remembers which device answered for it and the panel hands that back here.
+
+    Checked rather than taken. The only device a camera may be served from, other than
+    itself, is the recorder channel it is currently paired to -- so a stale row naming a
+    channel the user has since taken back into use, or a client naming anything at all,
+    falls back to the camera rather than reaching a device nobody asked about.
+    """
+    if source_entry_id is None or source_channel is None:
+        return entry_id, channel
+    asked = (source_entry_id, source_channel)
+    if asked == (entry_id, channel):
+        return entry_id, channel
+    if async_paired_channel(hass, entry_id, channel) == asked:
+        return asked
+    _LOGGER.debug(
+        "Ignoring playback source %s for %s channel %s: not its paired channel",
+        asked,
+        entry_id,
+        channel,
+    )
+    return entry_id, channel
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/stream_url",
@@ -141,6 +179,10 @@ async def _async_resolve_playback_fields(
         # Both required by the playback endpoint; resolved server-side when omitted.
         vol.Optional("start_id", default=""): cv.string,
         vol.Optional("playback_id", default=""): cv.string,
+        # Which device answered for this row, where that is not the camera itself. Verified
+        # against the camera's current pairing rather than trusted.
+        vol.Optional("source_entry_id", default=None): vol.Any(None, cv.string),
+        vol.Optional("source_channel", default=None): vol.Any(None, vol.Coerce(int)),
         # Seconds from the start of the recording to the start of this row's window. A
         # long recording is split into several rows, all sharing one file, so without
         # this every row replays the file from its beginning.
@@ -182,6 +224,8 @@ async def ws_stream_url(
     start_id = msg["start_id"]
     playback_id = msg["playback_id"]
     offset = max(0.0, float(msg["offset"]))
+    source_entry_id = msg["source_entry_id"]
+    source_channel = msg["source_channel"]
 
     if not filename or not start_id or not playback_id:
         resolved = await _async_resolve_playback_fields(
@@ -206,12 +250,22 @@ async def ws_stream_url(
         start_id = resolved.get("file_start_id") or resolved["start_id"]
         playback_id = resolved.get("playback_id", "")
         offset = max(0.0, float(resolved.get("offset") or 0.0))
+        # Resolved from the cache, so the row's own record of who answered is authoritative.
+        source_entry_id = resolved.get("source_entry_id")
+        source_channel = resolved.get("source_channel")
 
     # The panel asks in seconds from the start of the row it is showing, which is the only
     # frame of reference it has. The recorder counts from the start of the recording, so
     # the window's own offset is added here rather than being the panel's problem.
     within_window = max(0, int(msg["seek"]))
     seek = int(offset) + within_window
+
+    # Where the bytes come from, which is the camera unless its recordings live elsewhere.
+    # `msg["entry_id"]` stays the camera's throughout: it is what the cache is keyed by and
+    # what access was granted for, and only the device being addressed moves.
+    play_entry_id, play_channel = _async_playback_target(
+        hass, msg["entry_id"], msg["channel"], source_entry_id, source_channel
+    )
 
     result: dict[str, Any] = {
         # Echoed back window-relative, matching what the panel displays.
@@ -223,8 +277,8 @@ async def ws_stream_url(
 
     if route == ROUTE_PASSTHROUGH:
         result["path"] = async_flv_path(
-            msg["entry_id"],
-            msg["channel"],
+            play_entry_id,
+            play_channel,
             msg["stream"],
             filename,
             start_id,
@@ -243,8 +297,8 @@ async def ws_stream_url(
         try:
             token = await async_start_hls(
                 hass,
-                msg["entry_id"],
-                msg["channel"],
+                play_entry_id,
+                play_channel,
                 msg["stream"],
                 filename,
                 start_id,
@@ -274,8 +328,8 @@ async def ws_stream_url(
         return
 
     result["path"] = async_restream_path(
-        msg["entry_id"],
-        msg["channel"],
+        play_entry_id,
+        play_channel,
         msg["stream"],
         filename,
         start_id,

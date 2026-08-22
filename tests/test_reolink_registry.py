@@ -422,6 +422,13 @@ async def test_a_disabled_channel_does_not_hide_the_direct_camera(hass: HomeAssi
     assert sorted(device.kind for device in found.devices) == ["camera", "nvr"]
     assert found.excluded == []
 
+    # And the copy they kept now knows where the recordings actually are. The doorbell
+    # writes to the recorder, so its own card is empty and the disabled channel is the
+    # only place its footage exists.
+    doorbell = next(device for device in found.devices if device.kind == "camera")
+    assert doorbell.cameras[0].paired_entry_id == recorder.entry_id
+    assert doorbell.cameras[0].paired_channel == 1
+
 
 async def test_an_enabled_channel_still_hides_the_direct_camera(hass: HomeAssistant) -> None:
     """The dedup itself is unchanged: a channel in use is still the one that wins."""
@@ -455,3 +462,114 @@ async def test_deduplication_survives_a_library_without_camera_uid(hass: HomeAss
     devices = async_discover_devices(hass, include_all_devices=True)
 
     assert sorted(device.kind for device in devices) == ["camera", "nvr"]
+
+
+# ----------------------------------------------------- pairing a camera to its disabled channel
+
+
+class _Recorder(FakeApi):
+    """A recorder that files each channel under Reolink's own UID for the camera on it."""
+
+    def camera_uid(self, channel):
+        return f"CAMUID{channel}"
+
+
+class _Doorbell(FakeApi):
+    """A directly-connected camera, which is its own host and so answers with its own UID."""
+
+    uid = "CAMUID1"
+
+    def camera_uid(self, channel):
+        return self.uid
+
+
+async def test_an_enabled_channel_pairs_nothing(hass: HomeAssistant) -> None:
+    """There is nothing to pair when the recorder's own copy is the one being watched.
+
+    The direct entry is deduplicated away entirely in that case, so a pairing would have
+    nothing to hang off. Pairing exists for the setup where the *disabled* copy is where
+    the recordings are.
+    """
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR")
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Doorbell(is_nvr=False, channels=[0]))))
+
+    devices = async_discover_devices(hass, include_all_devices=True)
+
+    assert [device.kind for device in devices] == ["nvr"]
+    assert all(camera.paired_entry_id is None for camera in devices[0].cameras)
+
+
+async def test_a_camera_on_no_recorder_is_not_paired(hass: HomeAssistant) -> None:
+    """A camera that simply is not on a recorder must not be pointed at one."""
+
+    class Stranger(FakeApi):
+        uid = "SOMETHINGELSE"
+
+        def camera_uid(self, channel):
+            return self.uid
+
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR", disabled=True)
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(Stranger(is_nvr=False, channels=[0]))))
+
+    devices = async_discover_devices(hass, include_all_devices=True)
+    camera = next(device for device in devices if device.kind == "camera")
+
+    assert camera.cameras[0].paired_entry_id is None
+    assert camera.cameras[0].paired_channel is None
+
+
+async def test_a_recorders_own_channel_is_never_paired_away(hass: HomeAssistant) -> None:
+    """A recorder's channel is where a pairing points *to*, never where it points from.
+
+    One camera on two recorders, kept on the first and disabled on the second, is the case
+    that makes this bite: the same UID is then both deduplicating (from the recorder watching
+    it) and pairable (from the one that is not), so the two halves of the index are *not*
+    disjoint across recorders. Without the check, the channel actually being watched would be
+    pointed at the copy the user switched off and searched twice for one camera.
+    """
+    watching = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, watching, 1, name="Doorbell NVR")
+    ignoring = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, ignoring, 1, name="Doorbell spare", disabled=True)
+
+    devices = async_discover_devices(hass, include_all_devices=True)
+    channels = [camera for device in devices if device.kind == "nvr" for camera in device.cameras]
+
+    assert channels, "the recorders' channels should still be listed"
+    assert all(camera.paired_entry_id is None for camera in channels)
+
+
+async def test_pairing_survives_a_library_without_camera_uid(hass: HomeAssistant) -> None:
+    """An older reolink_aio costs the pairing, not the camera.
+
+    `camera_uid` is not in every version, and neither is `uid`. Losing the pairing puts the
+    camera back exactly where it is today -- listed, searched against its own storage -- which
+    is a worse answer than the pairing and a far better one than no camera at all.
+    """
+
+    class NoUids(FakeApi):
+        """A camera whose library exposes neither UID read."""
+
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR", disabled=True)
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(NoUids(is_nvr=False, channels=[0]))))
+
+    devices = async_discover_devices(hass, include_all_devices=True)
+    camera = next(device for device in devices if device.kind == "camera")
+
+    assert camera.cameras[0].paired_entry_id is None
+
+
+async def test_the_pairing_is_serialised_for_the_panel(hass: HomeAssistant) -> None:
+    """The row marker is drawn from this, so it has to survive the websocket."""
+    recorder = _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Recorder(channels=[0, 1]))))
+    _reolink_channel_device(hass, recorder, 1, name="Doorbell NVR", disabled=True)
+    _reolink_entry(hass, SimpleNamespace(host=FakeHost(_Doorbell(is_nvr=False, channels=[0]))))
+
+    devices = async_discover(hass, include_all_devices=True).devices
+    camera = next(device for device in devices if device.kind == "camera").as_dict()
+
+    assert camera["cameras"][0]["paired_entry_id"] == recorder.entry_id
+    assert camera["cameras"][0]["paired_channel"] == 1

@@ -393,9 +393,13 @@ async def test_shutdown_cancels_in_flight_searches(cache: VodCache, hass) -> Non
         await asyncio.sleep(0)
         cache.async_shutdown()
         gate.set()
-        await asyncio.sleep(0)
+        # Waited on rather than given a fixed number of loop turns to unwind in. A paired
+        # camera searches two devices through a gather, so how many turns cancellation takes
+        # to travel back out is an implementation detail; that it arrives is not.
+        _done, pending = await asyncio.wait([task], timeout=5)
 
-    assert task.cancelled() or task.done()
+    assert not pending, "the search never unwound"
+    assert task.cancelled()
 
 
 async def test_including_unlabelled_uses_a_separate_cache_entry(cache: VodCache, hass) -> None:
@@ -519,3 +523,247 @@ async def test_an_empty_record_is_not_refetched_for_schema_alone(cache: VodCache
         await hass.async_block_till_done()
 
     assert cache.is_day_fresh("entry", 0, "sub", PAST) is True
+
+
+# ------------------------------------------------- a camera whose recordings are on a recorder
+
+
+PAIRED = ("nvr", 2)
+
+
+def _rows(name: str, source: tuple[str, int]) -> list[dict]:
+    """One serialised recording, tagged with the device that answered for it."""
+    return [
+        {
+            "start": "2026-08-03T14:00:00+02:00",
+            "name": name,
+            "size": 10,
+            "source_entry_id": source[0],
+            "source_channel": source[1],
+        }
+    ]
+
+
+def _searcher(answers: dict[tuple[str, int], object]):
+    """Stand in for async_search_day, answering per device asked.
+
+    An answer is either `(files, unlabelled)` or an exception to raise, so a test can put
+    one device offline without putting the camera offline.
+    """
+
+    async def search(hass, entry_id, channel, *args, **kwargs):
+        target = (kwargs["source_entry_id"], kwargs["source_channel"])
+        answer = answers[target]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    return search
+
+
+def _paired(target=PAIRED):
+    """Patch discovery so the camera under test is paired to `target`."""
+    return patch(
+        "custom_components.reolink_stamina.cache.async_paired_channel", return_value=target
+    )
+
+
+async def test_an_unpaired_camera_is_asked_once(cache: VodCache, hass) -> None:
+    """The ordinary case must not pay for the paired one."""
+    calls = []
+
+    async def search(hass_, entry_id, channel, *args, **kwargs):
+        calls.append((kwargs["source_entry_id"], kwargs["source_channel"]))
+        return FILES, 0
+
+    with (
+        patch("custom_components.reolink_stamina.cache.async_paired_channel", return_value=None),
+        patch("custom_components.reolink_stamina.cache.async_search_day", side_effect=search),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+
+    assert calls == [("entry", 0)]
+
+
+async def test_a_paired_camera_asks_both_and_keeps_the_one_that_answers(
+    cache: VodCache, hass
+) -> None:
+    """Issue #4: the camera's own card is empty because it records to the recorder."""
+    answers = {("entry", 0): ([], 0), PAIRED: (_rows("nvr.mp4", PAIRED), 0)}
+
+    with (
+        _paired(),
+        patch(
+            "custom_components.reolink_stamina.cache.async_search_day",
+            side_effect=_searcher(answers),
+        ),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+
+    record = cache.peek_day("entry", 0, "sub", TODAY)
+    assert [file["name"] for file in record.files] == ["nvr.mp4"]
+    assert record.error is None
+    # Filed under the camera the panel is showing, while the row remembers who answered.
+    assert record.files[0]["source_entry_id"] == "nvr"
+    assert record.files[0]["source_channel"] == 2
+
+
+async def test_the_answering_device_is_remembered_for_the_next_day(cache: VodCache, hass) -> None:
+    """Learned once per camera, so every later day costs one search rather than two."""
+    answers = {("entry", 0): ([], 0), PAIRED: (_rows("nvr.mp4", PAIRED), 0)}
+    asked: list[tuple[str, int]] = []
+
+    async def search(hass_, entry_id, channel, *args, **kwargs):
+        target = (kwargs["source_entry_id"], kwargs["source_channel"])
+        asked.append(target)
+        return answers[target]
+
+    with (
+        _paired(),
+        patch("custom_components.reolink_stamina.cache.async_search_day", side_effect=search),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+        assert sorted(asked) == [("entry", 0), PAIRED]
+
+        asked.clear()
+        await cache.async_ensure_day("entry", 0, "sub", PAST, 5)
+        await hass.async_block_till_done()
+
+    assert asked == [PAIRED]
+
+
+async def test_a_day_with_nothing_on_it_settles_nothing(cache: VodCache, hass) -> None:
+    """A quiet day is not evidence about where a camera records.
+
+    Drawing a winner from it would pin the camera to whichever device was asked first and
+    happened to have nothing, on the strength of no recordings at all.
+    """
+    answers = {("entry", 0): ([], 0), PAIRED: ([], 0)}
+    asked: list[tuple[str, int]] = []
+
+    async def search(hass_, entry_id, channel, *args, **kwargs):
+        target = (kwargs["source_entry_id"], kwargs["source_channel"])
+        asked.append(target)
+        return answers[target]
+
+    with (
+        _paired(),
+        patch("custom_components.reolink_stamina.cache.async_search_day", side_effect=search),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+        asked.clear()
+        await cache.async_ensure_day("entry", 0, "sub", PAST, 5)
+        await hass.async_block_till_done()
+
+    assert sorted(asked) == [("entry", 0), PAIRED]
+    assert cache.peek_day("entry", 0, "sub", TODAY).error is None
+
+
+async def test_one_device_being_offline_does_not_fail_the_camera(cache: VodCache, hass) -> None:
+    """The whole point of asking the recorder is that the camera may be unreachable."""
+    from custom_components.reolink_stamina.reolink_registry import DeviceUnavailableError
+
+    answers = {
+        ("entry", 0): DeviceUnavailableError("camera is asleep"),
+        PAIRED: (_rows("nvr.mp4", PAIRED), 0),
+    }
+
+    with (
+        _paired(),
+        patch(
+            "custom_components.reolink_stamina.cache.async_search_day",
+            side_effect=_searcher(answers),
+        ),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+
+    record = cache.peek_day("entry", 0, "sub", TODAY)
+    assert record.error is None
+    assert [file["name"] for file in record.files] == ["nvr.mp4"]
+
+
+async def test_every_device_failing_is_still_an_error(cache: VodCache, hass) -> None:
+    """Asking twice must not turn two failures into a silent empty day."""
+    from custom_components.reolink_stamina.reolink_registry import DeviceUnavailableError
+
+    answers = {
+        ("entry", 0): DeviceUnavailableError("camera is asleep"),
+        PAIRED: DeviceUnavailableError("recorder is offline"),
+    }
+
+    with (
+        _paired(),
+        patch(
+            "custom_components.reolink_stamina.cache.async_search_day",
+            side_effect=_searcher(answers),
+        ),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+
+    # The camera's own failure is reported: that is the device the user is looking at.
+    assert cache.peek_day("entry", 0, "sub", TODAY).error == "camera is asleep"
+
+
+async def test_the_recorder_wins_when_both_answer(cache: VodCache, hass) -> None:
+    """A camera can write to its own card and to the recorder at once.
+
+    Continuous recording lives on the recorder, so it holds the longer history and is the
+    side someone pairing a camera is reaching for.
+    """
+    answers = {
+        ("entry", 0): (_rows("card.mp4", ("entry", 0)), 0),
+        PAIRED: (_rows("nvr.mp4", PAIRED), 0),
+    }
+
+    with (
+        _paired(),
+        patch(
+            "custom_components.reolink_stamina.cache.async_search_day",
+            side_effect=_searcher(answers),
+        ),
+    ):
+        await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+        await hass.async_block_till_done()
+
+    assert [f["name"] for f in cache.peek_day("entry", 0, "sub", TODAY).files] == ["nvr.mp4"]
+
+
+async def test_re_enabling_the_channel_withdraws_the_redirect(cache: VodCache, hass) -> None:
+    """Taking the recorder's copy back into use ends the pairing, and the redirect with it.
+
+    The remembered device would otherwise go on being asked for a camera it no longer
+    stands in for.
+    """
+    answers = {
+        ("entry", 0): (_rows("card.mp4", ("entry", 0)), 0),
+        PAIRED: (_rows("nvr.mp4", PAIRED), 0),
+    }
+    asked: list[tuple[str, int]] = []
+
+    async def search(hass_, entry_id, channel, *args, **kwargs):
+        target = (kwargs["source_entry_id"], kwargs["source_channel"])
+        asked.append(target)
+        return answers[target]
+
+    with patch("custom_components.reolink_stamina.cache.async_search_day", side_effect=search):
+        with _paired():
+            await cache.async_ensure_day("entry", 0, "sub", TODAY, 5)
+            await hass.async_block_till_done()
+        assert cache._sources.get(("entry", 0)) == PAIRED
+
+        asked.clear()
+        # The user re-enables the recorder's copy: there is no pairing any more.
+        with patch(
+            "custom_components.reolink_stamina.cache.async_paired_channel", return_value=None
+        ):
+            await cache.async_ensure_day("entry", 0, "sub", PAST, 5)
+            await hass.async_block_till_done()
+
+    assert asked == [("entry", 0)]
+    assert ("entry", 0) not in cache._sources

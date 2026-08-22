@@ -207,6 +207,9 @@ export class PlaybackSource {
       // The recording's start, not this row's: a long recording holds several rows.
       startId: file.file_start_id || file.start_id,
       playbackId: file.playback_id,
+      // The camera stays the event's; only the device the bytes come from can differ.
+      sourceEntryId: file.source_entry_id ?? null,
+      sourceChannel: file.source_channel ?? null,
       offset: file.offset || 0,
       start: this._event.start,
       end: this._event.end,

@@ -117,6 +117,10 @@ export class StaminaApi {
     filename = "",
     startId = "",
     playbackId = "",
+    // Which device answered for this row, when that is not the camera it is filed under.
+    // The backend checks it against the camera's pairing rather than taking it on trust.
+    sourceEntryId = null,
+    sourceChannel = null,
     offset = 0,
     start = "",
     end = "",
@@ -134,6 +138,8 @@ export class StaminaApi {
       filename,
       start_id: startId,
       playback_id: playbackId,
+      source_entry_id: sourceEntryId,
+      source_channel: sourceChannel,
       // Where this row sits inside the recording; the backend adds it to the seek.
       offset: offset,
       start,

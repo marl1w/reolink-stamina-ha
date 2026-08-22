@@ -611,6 +611,30 @@ export class EventList extends HTMLElement {
       }
     }
 
+    // Where the footage came from, when that is not the camera named on the row. Last in the
+    // chip row rather than at its head: the head slot says what the row *is*, and this says
+    // where it was fetched from, which is a different kind of fact and a rarer one.
+    //
+    // A chip rather than a mark of its own, so the phone rule above carries it for free —
+    // the label drops at narrow widths and the icon stays, which is the right trade for
+    // something most people will see once and then stop noticing.
+    const source = store.eventSource(event);
+    if (source) {
+      refs.chips.append(
+        el(
+          "span",
+          {
+            class: "chip",
+            dataset: { tone: "neutral" },
+            title: `Recorded on ${source.name} rather than on this camera`,
+            "aria-label": `Recorded on ${source.name} rather than on this camera`,
+          },
+          icon("mdi:nas"),
+          el("span", { class: "chip__label", text: `via ${source.name}` })
+        )
+      );
+    }
+
     // Facts: duration and size. Deliberately not the resolutions — see below.
     refs.facts.replaceChildren();
     refs.facts.append(

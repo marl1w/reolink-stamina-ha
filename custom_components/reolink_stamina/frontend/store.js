@@ -399,6 +399,24 @@ export class StaminaStore extends EventTarget {
     return sortTriggers(event.kinds || event.triggers || []);
   }
 
+  /**
+   * The device a row's footage actually came from, when that is not its own camera.
+   *
+   * A camera set up twice — directly, and as a channel on a recorder whose copy is disabled
+   * in Home Assistant — is searched against the recorder, because that is where a camera
+   * recording to its recorder rather than its own card keeps everything. The row is still
+   * the camera's, and the timestamps agree with every other row, so nothing on the row would
+   * otherwise say that the bytes come from somewhere else.
+   *
+   * Null for every row whose camera answered for itself, which is nearly all of them.
+   */
+  eventSource(event) {
+    const entryId = event.source_entry_id;
+    if (!entryId || entryId === event.entry_id) return null;
+    const device = this.devices.find((item) => item.entry_id === entryId);
+    return { entryId, name: device?.name || "the recorder" };
+  }
+
   /** How many times each kind fired inside a row, by `kind`. */
   detectionCounts(event) {
     return new Map(Object.entries(event.counts || {}));

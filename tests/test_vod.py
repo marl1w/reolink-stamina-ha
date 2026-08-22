@@ -1052,3 +1052,54 @@ async def test_a_hub_day_survives_a_search_with_no_playback_time(hass) -> None:
     assert files[0]["playback_derived"] is True
     assert files[0]["file_start_id"] == "20260803140000"
     assert files[0]["playback_id"] == "20260803120000"
+
+
+# ------------------------------------------- a row served by a device other than its camera
+
+
+def test_a_row_carries_the_device_that_answered_for_it() -> None:
+    """The row is the camera's; the bytes come from wherever the search reached.
+
+    Both halves have to survive into the event: the panel groups, selects and marks rows by
+    the camera, and builds the playback URL from the source. Losing the source is the quiet
+    failure of the whole feature -- a well-formed URL against a device that has nothing.
+    """
+    files = [serialize_file(_file(14, 0), source_entry_id="nvr", source_channel=2)]
+    events = build_events(
+        entry_id="doorbell",
+        device_name="Doorbell Direct",
+        channel=0,
+        camera={"name": "Doorbell"},
+        primary_stream="sub",
+        primary_files=files,
+        other_files={},
+        pre_roll_default=5,
+        continuous=False,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    # Identity: unchanged, and the camera's own.
+    assert (event["entry_id"], event["channel"]) == ("doorbell", 0)
+    assert event["id"].startswith("doorbell:0:")
+    # Address: the device that answered, on the row and on the resolution played from.
+    assert (event["source_entry_id"], event["source_channel"]) == ("nvr", 2)
+    assert event["files"]["sub"]["source_entry_id"] == "nvr"
+    assert event["files"]["sub"]["source_channel"] == 2
+
+
+def test_a_row_from_the_camera_itself_names_no_other_device() -> None:
+    """Nearly every row. The marker must not appear on cameras answering for themselves."""
+    events = _events([_file(14, 0)])
+    assert events[0]["source_entry_id"] is None
+    assert events[0]["source_channel"] is None
+
+
+async def test_the_search_asks_the_device_it_was_pointed_at(hass, patch_host) -> None:
+    """The camera names the row; the source says who to ask. They are separate arguments."""
+    await async_search_day(
+        hass, "doorbell", 0, "sub", dt.date(2026, 8, 3), 5, source_entry_id="nvr", source_channel=2
+    )
+
+    # The channel asked for is the recorder's, not the camera's.
+    assert patch_host.api.search_calls[-1]["channel"] == 2

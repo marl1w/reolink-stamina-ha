@@ -125,3 +125,46 @@ async def test_diagnostics_name_no_recording(hass: HomeAssistant, entry: MockCon
 
     assert "password" not in repr(report).lower()
     assert "token" not in repr(report).lower()
+
+
+async def test_diagnostics_report_a_camera_served_by_a_recorder(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Answer why one doorbell shows recordings and an identical one shows none.
+
+    The answer is usually that one writes to its recorder and the other to its own card, and
+    nothing on a row says so -- the times are the camera's own either way. Issue #4 took two
+    screenshots to establish something the panel simply did not report, so the pairing is
+    reported here rather than left to be inferred.
+    """
+    from custom_components.reolink_stamina.reolink_registry import CameraInfo, DeviceInfo
+
+    paired = DeviceInfo(
+        entry_id="doorbell",
+        name="Doorbell Direct",
+        status="ok",
+        kind="camera",
+        cameras=[CameraInfo(channel=0, name="Doorbell", paired_entry_id="nvr", paired_channel=2)],
+    )
+    with patch(
+        "custom_components.reolink_stamina.diagnostics.async_discover_devices",
+        return_value=[paired],
+    ):
+        report = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert report["paired_cameras"] == [
+        {
+            "entry_id": "doorbell",
+            "channel": 0,
+            "paired_entry_id": "nvr",
+            "paired_channel": 2,
+        }
+    ]
+
+
+async def test_diagnostics_say_nothing_about_unpaired_cameras(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Nearly every install. An empty list is the answer, not a missing key."""
+    report = await async_get_config_entry_diagnostics(hass, entry)
+    assert report["paired_cameras"] == []

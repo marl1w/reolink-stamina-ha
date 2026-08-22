@@ -38,10 +38,31 @@ from .const import (
     TTL_PAST,
     TTL_TODAY,
 )
-from .reolink_registry import DeviceUnavailableError, ReolinkIncompatibleError
+from .reolink_registry import (
+    DeviceUnavailableError,
+    ReolinkIncompatibleError,
+    async_paired_channel,
+)
 from .vod import async_search_calendar, async_search_day
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _SearchOutcome:
+    """What one device said when asked for one camera-day.
+
+    A result rather than an exception, because a paired camera asks two devices at once and
+    one of them failing is not the camera failing. The old single-device path raised, and
+    reporting "could not reach the device" because the copy nobody is using is offline would
+    be a worse answer than the one the other device just gave.
+    """
+
+    target: tuple[str, int]
+    files: list[dict[str, Any]] | None = None
+    unlabelled: int = 0
+    error: str | None = None
+
 
 # A refresh that failed is retried sooner than a successful one, but not so soon that
 # an offline device gets hammered.
@@ -146,6 +167,11 @@ class VodCache:
         self._calendars: dict[str, CalendarRecord] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # Which device turned out to hold each paired camera's recordings. Learned from the
+        # first search that returns any, and deliberately not persisted: it is one extra
+        # empty search to relearn, against a stored answer outliving a change in how the
+        # camera records.
+        self._sources: dict[tuple[str, int], tuple[str, int]] = {}
         self._listeners: list[Callable[[str], None]] = []
 
     # ------------------------------------------------------------------ storage
@@ -382,6 +408,72 @@ class VodCache:
         task.add_done_callback(lambda _: self._tasks.pop(key, None))
         return task
 
+    @callback
+    def _async_search_targets(self, entry_id: str, channel: int) -> list[tuple[str, int]]:
+        """Return the devices to ask for this camera, best first.
+
+        Usually one: the camera itself. A camera set up twice -- directly, and as a channel
+        on a recorder whose copy the user disabled -- can have its recordings on either, and
+        which one is not knowable without asking. Reolink will write to the camera's own card
+        and to the recorder, so this is a real question and not a formality.
+
+        Both are asked until one of them answers with recordings, and that one is then
+        remembered for the rest of the session. Remembered per camera rather than per day
+        because a per-day race would take one day from the recorder and the next from the
+        card, and the two describe their recordings differently -- different names, offsets
+        and playback ids either side of a midnight boundary.
+
+        A day with nothing on it settles nothing, so no winner is drawn from it and both are
+        asked again next time. A camera that never records pays for a second empty search,
+        which is the cheapest search there is.
+        """
+        nominal = (entry_id, channel)
+        paired = async_paired_channel(self.hass, entry_id, channel)
+        if paired is None:
+            # Whatever was learned no longer applies: the recorder's copy of this camera has
+            # been taken back into use, so it is not ours to redirect to any more.
+            self._sources.pop(nominal, None)
+            return [nominal]
+
+        known = self._sources.get(nominal)
+        if known is not None and known in (nominal, paired):
+            return [known]
+        return [nominal, paired]
+
+    async def _async_search_one(
+        self,
+        entry_id: str,
+        channel: int,
+        target: tuple[str, int],
+        stream: str,
+        date: dt.date,
+        split_minutes: int,
+        include_unlabelled: bool,
+    ) -> _SearchOutcome:
+        """Ask one device for one camera-day. Never raises, except to be cancelled."""
+        target_entry, target_channel = target
+        async with self._semaphore(target_entry):
+            try:
+                files, unlabelled = await async_search_day(
+                    self.hass,
+                    entry_id,
+                    channel,
+                    stream,
+                    date,
+                    split_minutes,
+                    include_unlabelled,
+                    source_entry_id=target_entry,
+                    source_channel=target_channel,
+                )
+            except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
+                return _SearchOutcome(target, error=str(err))
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                _LOGGER.debug("Search failed for %s on %s: %s", entry_id, target, err)
+                return _SearchOutcome(target, error=str(err) or type(err).__name__)
+        return _SearchOutcome(target, files=files, unlabelled=unlabelled)
+
     async def _async_fetch_day(
         self,
         key: str,
@@ -393,32 +485,47 @@ class VodCache:
         include_unlabelled: bool,
     ) -> None:
         """Search one camera-day and update the cache."""
-        async with self._semaphore(entry_id):
-            try:
-                files, unlabelled = await async_search_day(
-                    self.hass,
-                    entry_id,
-                    channel,
-                    stream,
-                    date,
-                    split_minutes,
-                    include_unlabelled,
+        nominal = (entry_id, channel)
+        targets = self._async_search_targets(entry_id, channel)
+
+        # Concurrently, and independently: a paired camera that is offline must not stall or
+        # fail the recorder's answer, which is the entire point of asking it.
+        outcomes = await asyncio.gather(
+            *(
+                self._async_search_one(
+                    entry_id, channel, target, stream, date, split_minutes, include_unlabelled
                 )
-            except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
-                self._record_day_error(key, str(err))
+                for target in targets
+            )
+        )
+
+        answered = [outcome for outcome in outcomes if outcome.files]
+        if answered:
+            # The recorder wins a tie. Continuous recording lives there, so it holds the
+            # longer history, and it is the side someone pairing a camera is reaching for.
+            chosen = next(
+                (outcome for outcome in answered if outcome.target != nominal), answered[0]
+            )
+            if len(targets) > 1:
+                _LOGGER.debug("%s channel %s is served by %s", entry_id, channel, chosen.target)
+                self._sources[nominal] = chosen.target
+        else:
+            usable = [outcome for outcome in outcomes if outcome.error is None]
+            if not usable:
+                # Every device asked failed. Report the camera's own failure where there is
+                # one, since that is the device the user thinks they are looking at.
+                own = next(
+                    (outcome for outcome in outcomes if outcome.target == nominal), outcomes[0]
+                )
+                self._record_day_error(key, own.error or "Search failed")
                 return
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
-                _LOGGER.debug("Search failed for %s: %s", key, err)
-                self._record_day_error(key, str(err) or type(err).__name__)
-                return
+            chosen = next((outcome for outcome in usable if outcome.target == nominal), usable[0])
 
         self._days[key] = DayRecord(
-            files=files,
+            files=chosen.files or [],
             fetched_at=time.time(),
             error=None,
-            unlabelled=unlabelled,
+            unlabelled=chosen.unlabelled,
             schema=FILE_SCHEMA_VERSION,
         )
         self._schedule_save()

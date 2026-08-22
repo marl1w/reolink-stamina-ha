@@ -58,6 +58,12 @@ class CameraInfo:
     pre_record_supported: bool = False
     pre_record_enabled: bool = False
     pre_record_seconds: int | None = None
+    # Where else this same camera's recordings might be: the channel it occupies on a
+    # recorder, when that channel is disabled in Home Assistant and this directly-connected
+    # entry is the copy the user kept. None for every camera reachable only one way, which
+    # is nearly all of them.
+    paired_entry_id: str | None = None
+    paired_channel: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Serialise for the websocket API."""
@@ -67,6 +73,8 @@ class CameraInfo:
             "ai_types": self.ai_types,
             "streams": self.streams,
             "can_playback": self.can_playback,
+            "paired_entry_id": self.paired_entry_id,
+            "paired_channel": self.paired_channel,
             "pre_record": {
                 "supported": self.pre_record_supported,
                 "enabled": self.pre_record_enabled,
@@ -306,7 +314,9 @@ def _async_channel_devices(
 
 
 @callback
-def _async_build_camera(host: Any, channel: int, name: str) -> CameraInfo:
+def _async_build_camera(
+    host: Any, channel: int, name: str, *, paired: tuple[str, int] | None = None
+) -> CameraInfo:
     """Collect what we can about one channel, defensively."""
     api = host.api
 
@@ -333,6 +343,8 @@ def _async_build_camera(host: Any, channel: int, name: str) -> CameraInfo:
         ai_types=ai_types,
         streams=streams,
         can_playback=can_playback,
+        paired_entry_id=paired[0] if paired else None,
+        paired_channel=paired[1] if paired else None,
     )
 
     # Exact pre-record time, where the camera reports it (typically battery models).
@@ -358,22 +370,44 @@ def _async_device_kind(api: Any) -> str:
     return KIND_HUB if api.is_hub else KIND_NVR
 
 
-@callback
-def _async_channel_uids(hass: HomeAssistant) -> set[str]:
-    """Return the UID of every camera attached to a recorder or a hub.
+@dataclass(slots=True)
+class _ChannelIndex:
+    """Where every camera on a recorder is, indexed by Reolink's own UID for it.
 
-    This is what keeps a camera from being listed twice once standalone devices are included:
-    a camera on an NVR is very often *also* set up on its own in the Reolink
-    integration, and its recordings would then appear under both. The UID is Reolink's own
-    identity for a camera and is what the Reolink integration keys its entities on, so it
-    is the one thing that matches across the two.
+    One walk, because both halves come from the same question -- which camera sits on which
+    recorder channel -- and two callers want opposite answers to it.
 
-    A channel whose device is disabled in Home Assistant is left out. Someone running a
-    doorbell on both its recorder and its own direct connection usually disables the copy
-    they do not use — and counting that copy would hide the one they kept, which is the
-    wrong way round and is what issue #4 would have hit next.
+    `attached` is the deduplication half: a camera already watched *through* a recorder should
+    not also be listed on its own, or the same footage appears twice under two names. Only
+    channels the user kept count. A disabled one is a copy they have said they do not watch,
+    and counting it would hide the copy they kept -- the wrong way round, and what issue #4
+    hit.
+
+    `paired` is the inverse, and it is what makes that same setup work rather than merely stop
+    being wrong: a channel the user disabled is still where the recordings physically are,
+    whenever the camera writes to the recorder instead of its own card. Keeping where it is
+    lets the directly-connected entry -- the copy holding the working detection sensors -- be
+    served from it.
+
+    The two halves are disjoint within one recorder and *not* across several: one camera on
+    two recorders, kept on one and disabled on the other, lands in both. Which is why only a
+    standalone entry is ever paired, and never a recorder's own channel.
     """
-    uids: set[str] = set()
+
+    attached: set[str] = field(default_factory=set)
+    paired: dict[str, tuple[str, int]] = field(default_factory=dict)
+
+
+@callback
+def _async_channel_index(hass: HomeAssistant) -> _ChannelIndex:
+    """Index every camera on every recorder by its UID.
+
+    The UID is Reolink's own identity for a camera and the one thing that matches across a
+    recorder's channel and that same camera's directly-connected entry. That is why the match
+    is made on it rather than on a name, which the user can change, or a channel number, which
+    means nothing off the recorder it counts on.
+    """
+    index = _ChannelIndex()
     for entry in hass.config_entries.async_entries(REOLINK_DOMAIN):
         try:
             api = async_get_host(hass, entry.entry_id).api
@@ -386,22 +420,62 @@ def _async_channel_uids(hass: HomeAssistant) -> set[str]:
         except Exception:
             continue
         # Not in every reolink_aio version, and cosmetic to the NVR list, so a library
-        # without it costs deduplication rather than the whole device list.
+        # without it costs deduplication and pairing rather than the whole device list.
         camera_uid = getattr(api, "camera_uid", None)
         if camera_uid is None:
             continue
         known = _async_channel_devices(hass, entry.entry_id, api)
         for channel in channels:
-            device = known.get(channel)
-            if device is not None and device.disabled:
-                continue
             try:
                 uid = camera_uid(channel)
             except Exception:
                 continue
-            if uid and uid.lower() not in {"unknown", ""}:
-                uids.add(uid)
-    return uids
+            if not uid or uid.lower() in {"unknown", ""}:
+                continue
+            device = known.get(channel)
+            if device is not None and device.disabled:
+                # First recorder wins, so a camera somehow disabled on two of them settles
+                # on one rather than flickering between them between reloads.
+                index.paired.setdefault(uid, (entry.entry_id, channel))
+            else:
+                index.attached.add(uid)
+    return index
+
+
+@callback
+def _async_camera_uid_candidates(api: Any, channel: int) -> list[str]:
+    """Return the UIDs one channel of a standalone entry might be known by on a recorder.
+
+    A directly-connected camera *is* the host, so its own UID is what a recorder files it
+    under. `camera_uid` is asked as well, because that is what the recorder side is indexed
+    by, and neither read is present in every reolink_aio version.
+    """
+    reads = [lambda: api.camera_uid(channel)]
+    if channel == 0:
+        reads.insert(0, lambda: api.uid)
+    found: list[str] = []
+    for read in reads:
+        try:
+            value = read()
+        except Exception:
+            continue
+        if value and value.lower() not in {"unknown", ""} and value not in found:
+            found.append(value)
+    return found
+
+
+@callback
+def _async_paired_source(
+    api: Any, channel: int, paired: dict[str, tuple[str, int]]
+) -> tuple[str, int] | None:
+    """Return the recorder channel holding this camera's recordings, if there is one."""
+    if not paired:
+        return None
+    for uid in _async_camera_uid_candidates(api, channel):
+        found = paired.get(uid)
+        if found is not None:
+            return found
+    return None
 
 
 @callback
@@ -409,15 +483,7 @@ def _async_is_attached(api: Any, attached_uids: set[str]) -> bool:
     """Whether this standalone camera is already a channel on a recorder or hub."""
     if not attached_uids:
         return False
-    candidates: list[str] = []
-    for read in (lambda: api.uid, lambda: api.camera_uid(0)):
-        try:
-            value = read()
-        except Exception:
-            continue
-        if value:
-            candidates.append(value)
-    return any(uid in attached_uids for uid in candidates)
+    return any(uid in attached_uids for uid in _async_camera_uid_candidates(api, 0))
 
 
 @callback
@@ -426,6 +492,28 @@ def async_discover_devices(
 ) -> list[DeviceInfo]:
     """Return every recording Reolink device known to the Reolink integration."""
     return async_discover(hass, include_all_devices=include_all_devices).devices
+
+
+@callback
+def async_paired_channel(
+    hass: HomeAssistant, entry_id: str, channel: int
+) -> tuple[str, int] | None:
+    """Return the recorder channel holding this camera's recordings, if there is one.
+
+    Asked per search rather than remembered, because it can change under us: enabling the
+    recorder's copy of a camera withdraws the pairing, and a remembered one would go on
+    redirecting searches to a channel the user has taken back into use.
+    """
+    for device in async_discover_devices(hass, include_all_devices=True):
+        if device.entry_id != entry_id:
+            continue
+        for camera in device.cameras:
+            if camera.channel != channel:
+                continue
+            if camera.paired_entry_id is None or camera.paired_channel is None:
+                return None
+            return (camera.paired_entry_id, camera.paired_channel)
+    return None
 
 
 @callback
@@ -446,7 +534,7 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
     """
     results: list[DeviceInfo] = []
     excluded: list[ExcludedEntry] = []
-    attached_uids = _async_channel_uids(hass) if include_all_devices else set()
+    index = _async_channel_index(hass) if include_all_devices else _ChannelIndex()
 
     for entry in hass.config_entries.async_entries(REOLINK_DOMAIN):
         # Disabled in Home Assistant on purpose, so not a device that has gone missing.
@@ -506,7 +594,7 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
             continue
 
         # A camera that is already a channel on a recorder is that recorder's to list.
-        if kind == KIND_CAMERA and _async_is_attached(api, attached_uids):
+        if kind == KIND_CAMERA and _async_is_attached(api, index.attached):
             _LOGGER.debug("Skipping %s: this camera is already a channel on an NVR", entry.entry_id)
             excluded.append(ExcludedEntry(entry.entry_id, EXCLUDED_ON_RECORDER, kind))
             continue
@@ -541,7 +629,14 @@ def async_discover(hass: HomeAssistant, *, include_all_devices: bool = False) ->
             name = (known.name if known else None) or reported_name or f"Channel {channel}"
             if dual_lens:
                 name = f"{name} (lens {channel})"
-            cameras.append(_async_build_camera(host, channel, name))
+            # Only a standalone camera is ever paired. A recorder's channel is where a
+            # pairing points *to*, and one camera sitting on two recorders puts the same UID
+            # in both halves of the index -- so pairing a channel could point the copy being
+            # watched at the copy that was switched off.
+            paired = (
+                _async_paired_source(api, channel, index.paired) if kind == KIND_CAMERA else None
+            )
+            cameras.append(_async_build_camera(host, channel, name, paired=paired))
 
         # Per-file trigger classification needs Baichuan or parseable file names.
         # Without Baichuan we may still get triggers from file names, so this is a

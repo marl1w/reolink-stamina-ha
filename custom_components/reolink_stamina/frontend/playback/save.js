@@ -142,6 +142,8 @@ export async function assembleClip({ api, event, stream, bounds, signal, onProgr
     filename: file.name,
     startId: file.file_start_id || file.start_id,
     playbackId: file.playback_id,
+    sourceEntryId: file.source_entry_id ?? null,
+    sourceChannel: file.source_channel ?? null,
     offset: file.offset || 0,
     start: event.start,
     end: event.end,

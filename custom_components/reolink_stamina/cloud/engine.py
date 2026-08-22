@@ -762,8 +762,15 @@ class NvrSyncer:
         source = await async_playback_source(
             self.hass,
             Recording(
-                entry_id=job.entry_id,
-                channel=job.channel,
+                # The device that answered for this recording, which is the camera unless
+                # its footage lives on a recorder it is paired to. The job stays the
+                # camera's -- that is what the clip is filed and named under.
+                entry_id=recording.get("source_entry_id") or job.entry_id,
+                channel=(
+                    job.channel
+                    if recording.get("source_channel") is None
+                    else int(recording["source_channel"])
+                ),
                 stream=self.stream,
                 filename=recording["name"],
                 start_id=recording.get("file_start_id") or recording["start_id"],

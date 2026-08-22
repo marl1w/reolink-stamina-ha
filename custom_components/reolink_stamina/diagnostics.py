@@ -108,6 +108,35 @@ def _excluded_entries(hass: HomeAssistant) -> list[dict[str, Any]]:
     return [entry.as_dict() for entry in found.excluded]
 
 
+def _paired_cameras(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Return the cameras whose recordings may be on a recorder rather than on themselves.
+
+    A camera set up twice -- directly, and as a channel on a recorder whose copy is disabled
+    in Home Assistant -- is searched against both, and whichever answers is where its rows
+    come from. Nothing about a row reveals that: the times are the camera's own and agree with
+    every other row it has.
+
+    So the pairing is reported, because "my doorbell shows recordings and my neighbour's
+    identical one does not" is otherwise unanswerable, and the answer is usually that one of
+    them writes to the recorder and the other to its card. Ids only, no names: a Reolink entry
+    is usually named after where the camera points.
+    """
+    found: list[dict[str, Any]] = []
+    for device in async_discover_devices(hass, include_all_devices=True):
+        for camera in device.cameras:
+            if camera.paired_entry_id is None:
+                continue
+            found.append(
+                {
+                    "entry_id": device.entry_id,
+                    "channel": camera.channel,
+                    "paired_entry_id": camera.paired_entry_id,
+                    "paired_channel": camera.paired_channel,
+                }
+            )
+    return found
+
+
 def _temporary_space() -> dict[str, Any]:
     """Return free space where HLS sessions are written, and what earlier ones left behind.
 
@@ -181,6 +210,9 @@ async def async_get_config_entry_diagnostics(
         # PlaybackTime came back and StartTime stood in for it, which no amount of staring
         # at the timestamps would reveal: they agree by construction.
         "playback_samples": data.cache.sample_files() if data is not None else [],
+        # Which cameras could be served by a recorder instead of by themselves, and where
+        # from. `source_entry_id` on a sample above says which of the two actually answered.
+        "paired_cameras": _paired_cameras(hass),
         "temporary_space": await hass.async_add_executor_job(_temporary_space),
         "cloud_sync": _cloud_sync(data),
         "relevance": await _relevance(hass, data),

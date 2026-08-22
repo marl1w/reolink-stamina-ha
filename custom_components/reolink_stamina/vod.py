@@ -221,7 +221,13 @@ def playback_time_is_utc(files: list[Any]) -> bool:
     return True
 
 
-def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]:
+def serialize_file(
+    file: Any,
+    *,
+    playback_is_utc: bool = True,
+    source_entry_id: str | None = None,
+    source_channel: int | None = None,
+) -> dict[str, Any]:
     """Turn a reolink_aio VOD_file into a JSON-safe dict.
 
     Splitting is why this is more involved than it looks. Recorders write long files -- half
@@ -291,6 +297,14 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
         # without this a diagnostics report cannot tell a measured convention from an
         # absent field, which is the difference between a wrong timestamp and no timestamp.
         "playback_derived": derived,
+        # Which device actually answered the search, so playback addresses the same one.
+        # Normally the camera the panel is showing; different only for a camera whose
+        # recordings live on a recorder whose copy of it is disabled in Home Assistant. It is
+        # recorded per row rather than per day because this is what a playback URL is built
+        # from, and a row outlives the search that produced it -- it is served from the cache
+        # long after, and asking the wrong device then returns a well-formed nothing.
+        "source_entry_id": source_entry_id,
+        "source_channel": source_channel,
         # Seconds from the start of the recording to the start of this window.
         "offset": offset,
         "name": _file_name(file, playback_time),
@@ -375,10 +389,25 @@ async def async_search_day(
     split_minutes: int,
     include_unlabelled: bool = False,
     classify: bool = True,
+    *,
+    source_entry_id: str | None = None,
+    source_channel: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Search one camera's recordings for one day on one stream.
 
     Returns the recordings worth keeping, and how many unlabelled ones were discarded.
+
+    `entry_id` and `channel` name the camera; `source_entry_id` and `source_channel` say
+    which device to ask, and default to the same thing. They differ only for a camera set
+    up twice -- directly, and as a channel on a recorder whose copy the user disabled --
+    where the recordings are on the recorder while the detection sensors belong to the
+    direct entry. The search then runs against the recorder and the classification against
+    the camera, because each is asking the device that actually knows.
+
+    Every row records which device answered, so playback addresses the same one. Nothing
+    else moves: the camera's identity in the panel, its event ids and its journal key stay
+    the direct entry's, which is why the detection and relevance features need no idea any
+    of this happened.
 
     A recorder with 24/7 recording enabled reports continuous footage with no trigger
     flag at all, and it dominates the results — 192 unlabelled segments against 6 real
@@ -390,7 +419,9 @@ async def async_search_day(
     the same single search and then returns one bucket from it, so filtering per trigger
     would mean more round trips, not fewer. What it saves is everything after that.
     """
-    host = async_get_host(hass, entry_id)
+    search_entry_id = source_entry_id if source_entry_id is not None else entry_id
+    search_channel = source_channel if source_channel is not None else channel
+    host = async_get_host(hass, search_entry_id)
     start, end = _day_bounds(date)
 
     split_time: dt.timedelta | None = None
@@ -399,14 +430,17 @@ async def async_search_day(
         split_time = dt.timedelta(minutes=clamped)
 
     _LOGGER.debug(
-        "Searching %s channel %s %s stream on %s",
-        entry_id,
-        channel,
+        "Searching %s channel %s %s stream on %s%s",
+        search_entry_id,
+        search_channel,
         stream,
         date.isoformat(),
+        ""
+        if (search_entry_id, search_channel) == (entry_id, channel)
+        else f" for {entry_id} channel {channel}",
     )
     _, vod_files = await host.api.request_vod_files(
-        channel,
+        search_channel,
         start,
         end,
         stream=stream,
@@ -417,7 +451,15 @@ async def async_search_day(
     # PlaybackTime conventions apart needs the rows that share a recording, and a single
     # row cannot say which convention produced it.
     playback_is_utc = playback_time_is_utc(vod_files)
-    serialised = [serialize_file(file, playback_is_utc=playback_is_utc) for file in vod_files]
+    serialised = [
+        serialize_file(
+            file,
+            playback_is_utc=playback_is_utc,
+            source_entry_id=search_entry_id,
+            source_channel=search_channel,
+        )
+        for file in vod_files
+    ]
 
     # Said once per search rather than per recording: a device that omits PlaybackTime omits
     # it from every row, and the interesting number is how many rows that was.
@@ -616,6 +658,10 @@ def build_events(
                 "file_start_id": file.get("file_start_id", ""),
                 "playback_id": file.get("playback_id", ""),
                 "offset": file.get("offset", 0.0),
+                # Which device to ask for these bytes, where that is not the camera the row
+                # is filed under. Carried per resolution because each is searched separately.
+                "source_entry_id": file.get("source_entry_id"),
+                "source_channel": file.get("source_channel"),
             }
         }
 
@@ -641,6 +687,8 @@ def build_events(
                     "file_start_id": best.get("file_start_id", ""),
                     "playback_id": best.get("playback_id", ""),
                     "offset": best.get("offset", 0.0),
+                    "source_entry_id": best.get("source_entry_id"),
+                    "source_channel": best.get("source_channel"),
                 }
 
         # A file reporting zero bytes in every stream is not worth opening a player for.
@@ -656,6 +704,11 @@ def build_events(
             {
                 "id": f"{entry_id}:{channel}:{file['start_id']}",
                 "entry_id": entry_id,
+                # Which device the recordings actually came from, where that is not this
+                # camera. The row says so, because footage arriving from somewhere other
+                # than the camera named on it is not something the timestamps would reveal.
+                "source_entry_id": file.get("source_entry_id"),
+                "source_channel": file.get("source_channel"),
                 "device": device_name,
                 "channel": channel,
                 "camera": camera_name,

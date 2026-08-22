@@ -21,7 +21,7 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.reolink_stamina.const import DOMAIN
 
-from .conftest import FakeApi, FakeHost
+from .conftest import FakeApi, FakeHost, FakeVodFile
 
 TODAY = dt_util.now().date()
 
@@ -679,3 +679,206 @@ async def test_an_unknown_route_is_rejected_by_the_schema(
     response = await client.receive_json()
 
     assert not response["success"]
+
+
+# ------------------------------------------- playing back a camera served by another device
+
+
+def _paired_to(target):
+    """Patch the pairing the playback target is checked against."""
+    return patch(
+        "custom_components.reolink_stamina.api.playback.async_paired_channel",
+        return_value=target,
+    )
+
+
+def _device_of(path: str) -> tuple[str, str]:
+    """Return the entry and channel a pass-through path addresses."""
+    parts = path.split("/api/reolink_stamina/flv/")[1].split("/")
+    return parts[0], parts[1]
+
+
+async def test_playback_addresses_the_device_that_answered(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """A camera whose recordings live on a recorder must be played back from the recorder.
+
+    The camera is still what the row is filed under and what access was granted for; only
+    the device the bytes are fetched from moves. Getting this wrong is the quiet failure of
+    the whole feature: the path would be perfectly well formed and return nothing.
+    """
+    client = await hass_ws_client(hass)
+    with _paired_to(("recorder-entry", 2)):
+        await client.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/stream_url",
+                "entry_id": setup_stamina.reolink.entry_id,
+                "channel": 0,
+                "stream": "sub",
+                "filename": "a-file",
+                "start_id": "20260803090001",
+                "playback_id": "20260803070001",
+                "source_entry_id": "recorder-entry",
+                "source_channel": 2,
+            }
+        )
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert _device_of(response["result"]["path"]) == ("recorder-entry", "2")
+
+
+async def test_playback_refuses_a_source_that_is_not_the_cameras_pairing(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """The source is checked, not taken.
+
+    A row cached while the camera was paired outlives the pairing -- the user re-enables the
+    recorder's copy and it is withdrawn -- and the panel would go on handing back the device
+    named on it. Anything that is not the camera's *current* pairing falls back to the
+    camera, which is the one device the request was certainly allowed to reach.
+    """
+    client = await hass_ws_client(hass)
+    with _paired_to(None):
+        await client.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/stream_url",
+                "entry_id": setup_stamina.reolink.entry_id,
+                "channel": 0,
+                "stream": "sub",
+                "filename": "a-file",
+                "start_id": "20260803090001",
+                "playback_id": "20260803070001",
+                "source_entry_id": "somewhere-else",
+                "source_channel": 7,
+            }
+        )
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert _device_of(response["result"]["path"]) == (setup_stamina.reolink.entry_id, "0")
+
+
+async def test_playback_without_a_source_addresses_the_camera(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """The ordinary case, and every row cached before this existed."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(
+        {
+            "type": f"{DOMAIN}/stream_url",
+            "entry_id": setup_stamina.reolink.entry_id,
+            "channel": 0,
+            "stream": "sub",
+            "filename": "a-file",
+            "start_id": "20260803090001",
+            "playback_id": "20260803070001",
+        }
+    )
+    response = await client.receive_json()
+
+    assert response["success"]
+    assert _device_of(response["result"]["path"]) == (setup_stamina.reolink.entry_id, "0")
+
+
+async def test_a_paired_camera_end_to_end(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Issue #4, whole: an empty camera, a full recorder, and one working timeline.
+
+    Driven through the two devices rather than through a patched search, so the real
+    serialisation, the real dual search and the real playback resolution all run. Every piece
+    is covered on its own; this is the one test that fails if the pieces are individually
+    right and do not join up.
+
+    The failure it exists for is the quiet one: rows appear, and playback builds a perfectly
+    well-formed URL against the camera whose card is empty, and returns nothing.
+    """
+    from reolink_aio.typings import VOD_trigger
+
+    start = dt_util.now().replace(hour=14, minute=0, second=0, microsecond=0)
+
+    # The recorder, holding the doorbell's footage on channel 2.
+    recorder_api = FakeApi(
+        channels=[0, 2],
+        files={
+            "sub": [
+                FakeVodFile(
+                    start,
+                    start + dt.timedelta(seconds=30),
+                    name="the-doorbell-file",
+                    triggers=VOD_trigger.PERSON,
+                )
+            ]
+        },
+    )
+    recorder = MockConfigEntry(domain="reolink", title="Villa NVR")
+    recorder.add_to_hass(hass)
+    recorder.runtime_data = SimpleNamespace(host=FakeHost(recorder_api))
+    recorder.mock_state(hass, ConfigEntryState.LOADED)
+
+    # The doorbell itself, whose own card has nothing on it.
+    doorbell_api = FakeApi(is_nvr=False, channels=[0], files={})
+    doorbell = MockConfigEntry(domain="reolink", title="Doorbell Direct")
+    doorbell.add_to_hass(hass)
+    doorbell.runtime_data = SimpleNamespace(host=FakeHost(doorbell_api))
+    doorbell.mock_state(hass, ConfigEntryState.LOADED)
+
+    pairing = (recorder.entry_id, 2)
+    client = await hass_ws_client(hass)
+
+    with patch(
+        "custom_components.reolink_stamina.cache.async_paired_channel", return_value=pairing
+    ):
+        await client.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/events",
+                "targets": [{"entry_id": doorbell.entry_id, "channel": 0}],
+                "start_date": TODAY.isoformat(),
+                "end_date": TODAY.isoformat(),
+            }
+        )
+        assert (await client.receive_json())["success"]
+        # The empty snapshot, before either device has answered.
+        assert (await client.receive_json())["event"]["type"] == "snapshot"
+        patch_message = await client.receive_json()
+
+    # Both devices were asked, and the recorder was asked for its own channel.
+    assert 2 in [call["channel"] for call in recorder_api.search_calls]
+    assert doorbell_api.search_calls, "the camera itself was never asked"
+
+    assert patch_message["event"]["type"] == "patch"
+    bucket = patch_message["event"]["bucket"]
+    assert bucket["loaded"] is True
+    assert bucket["error"] is None, "the empty camera must not be reported as a failure"
+    events = bucket["events"]
+    assert len(events) == 1, "the recorder's recordings never reached the timeline"
+    row = events[0]
+
+    # Filed under the doorbell, so selection, grouping and the journal are untouched...
+    assert (row["entry_id"], row["channel"]) == (doorbell.entry_id, 0)
+    # ...while the row says the bytes are the recorder's, which is what draws the marker.
+    assert (row["source_entry_id"], row["source_channel"]) == pairing
+
+    # And playback goes to the recorder, not to the camera with the empty card.
+    with patch(
+        "custom_components.reolink_stamina.api.playback.async_paired_channel",
+        return_value=pairing,
+    ):
+        await client.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/stream_url",
+                "entry_id": doorbell.entry_id,
+                "channel": 0,
+                "stream": "sub",
+                "filename": row["files"]["sub"]["name"],
+                "start_id": row["files"]["sub"]["file_start_id"],
+                "playback_id": row["files"]["sub"]["playback_id"],
+                "source_entry_id": row["files"]["sub"]["source_entry_id"],
+                "source_channel": row["files"]["sub"]["source_channel"],
+            }
+        )
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert _device_of(response["result"]["path"]) == (recorder.entry_id, "2")
