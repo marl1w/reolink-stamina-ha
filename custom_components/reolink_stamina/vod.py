@@ -112,6 +112,12 @@ def stated_playback_time(file: Any) -> dt.datetime | None:
     -- a message about the network for a device that was answering perfectly well. The
     absence is a shape the library does not cover, not a fault, so it is read as a question
     with two answers rather than as an exception.
+
+    The catch is wider than the absence that prompted it. A field that arrives unreadable
+    is answered the same way, because the alternative is the failure this replaced: one
+    unparseable row taking a whole camera-day down with it. So "the recorder did not state
+    it" is shorthand throughout for "nothing usable came back", and `playback_derived`
+    cannot tell the two apart -- it reports that StartTime stood in, not why it had to.
     """
     try:
         return file.playback_time
@@ -119,14 +125,24 @@ def stated_playback_time(file: Any) -> dt.datetime | None:
         return None
 
 
-def _derived_playback_time(start: dt.datetime) -> dt.datetime:
+def _derived_playback_time(start: dt.datetime, *, playback_is_utc: bool) -> dt.datetime:
     """Return the recording's start as `PlaybackTime` would have stated it.
 
-    The endpoint wants that instant in UTC, which is what the recorders stating the field
-    hand over. A device reporting no offset at all is left as it is: its wall clock is the
-    only time it has, and converting from an assumed zone would move the request.
+    Which zone that is is not ours to pick: it is whatever the recorder was measured to
+    state the field in. A recorder keeping UTC -- the library's assumption, and the only
+    answer available where every row abstained -- wants the instant converted. One keeping
+    its own time wants the wall clock it would itself have sent, because that is what the
+    endpoint will be asked for. Deriving in UTC regardless would put a device that omits
+    the field on only some of its rows an entire offset away from itself on those rows,
+    while the rows either side of them stayed right.
+
+    A device reporting no offset at all is left as it is under either convention: its wall
+    clock is the only time it has, and converting from an assumed zone would move the
+    request.
     """
-    return start.astimezone(dt.UTC) if start.tzinfo is not None else start
+    if not playback_is_utc or start.tzinfo is None:
+        return _wall_clock(start)
+    return start.astimezone(dt.UTC)
 
 
 def _file_name(file: Any, playback_time: dt.datetime) -> str:
@@ -226,9 +242,16 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
     the field exists to survive splitting, and reolink_aio does not split the recordings of
     a device that is not an NVR -- hubs included, explicitly. Every row from such a device
     is therefore a whole recording whose StartTime *is* the file's start, so the anchor is
-    exact and the offset into it is zero. Were a split row ever to arrive without the field,
-    this would name the segment rather than the file, which is the same clip a second late
-    at worst -- and is still an answer, where the KeyError was a dead camera-day.
+    exact and the offset into it is zero.
+
+    Splitting is the one thing this cannot stand in for, and the bound is not a small one:
+    a segment's start is not where any recording begins, so a split row derived this way
+    would ask the endpoint to locate a file by a timestamp no file has, and get either
+    nothing or the parent from its own beginning -- a whole split interval early, with an
+    offset of zero to correct it by. That is not reachable from here: the same library rule
+    that makes the field absent on a hub is the rule that stops a hub being split. It is
+    written down because the two facts have to keep holding together, and only the second
+    of them is enforced anywhere.
     """
     start = file.start_time
     end = file.end_time
@@ -240,7 +263,7 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
     stated = stated_playback_time(file)
     derived = stated is None
     if stated is None:
-        playback_time = _derived_playback_time(start)
+        playback_time = _derived_playback_time(start, playback_is_utc=playback_is_utc)
         file_start = start
     else:
         playback_time = stated
@@ -263,7 +286,7 @@ def serialize_file(file: Any, *, playback_is_utc: bool = True) -> dict[str, Any]
         # report says how `file_start_id` was arrived at rather than leaving it to be
         # inferred from the two timestamps.
         "playback_is_utc": playback_is_utc,
-        # True when the recorder never stated PlaybackTime and it was taken from StartTime.
+        # True when no usable PlaybackTime came back and StartTime stood in for it.
         # `playback_is_utc` says nothing on such a device -- nothing was measured -- so
         # without this a diagnostics report cannot tell a measured convention from an
         # absent field, which is the difference between a wrong timestamp and no timestamp.

@@ -840,17 +840,13 @@ def test_a_scheduled_recording_stays_scheduled_even_once_someone_walks_into_it()
 # --------------------------------------------- a device that states no PlaybackTime at all
 
 
-class _FakeHubVod(_FakeVod):
-    """A hub's answer to a search: StartTime, EndTime, a name, and nothing else.
+def _hub_file(start: dt.datetime, end: dt.datetime, tz: dt.tzinfo, **extra) -> _FakeVod:
+    """Return a hub's answer to a search: StartTime, EndTime, a name, nothing else.
 
-    The real VOD_file reads `data["PlaybackTime"]` unconditionally, so a device that does
-    not send the field raises KeyError from the property rather than returning None. That is
-    reproduced exactly, because the bare `'PlaybackTime'` that KeyError carries as its whole
-    message is what the panel ended up displaying to the user.
+    `_FakeVod` reads `data["PlaybackTime"]` just as the real VOD_file does, so leaving the
+    key out reproduces the failure exactly: KeyError from the property, carrying the bare
+    field name that the panel ended up displaying as its whole explanation.
     """
-
-
-def _hub_file(start: dt.datetime, end: dt.datetime, tz: dt.tzinfo, **extra) -> _FakeHubVod:
     data = {
         "StartTime": _reolink_time(start),
         "EndTime": _reolink_time(end),
@@ -858,7 +854,7 @@ def _hub_file(start: dt.datetime, end: dt.datetime, tz: dt.tzinfo, **extra) -> _
         "size": 1024,
         **extra,
     }
-    return _FakeHubVod(data, tz)
+    return _FakeVod(data, tz)
 
 
 def test_a_recording_without_playback_time_is_serialised_rather_than_raising() -> None:
@@ -957,6 +953,36 @@ def test_files_without_playback_time_abstain_from_the_convention_vote() -> None:
     # Falls back to the library's assumption, and nothing consults it: every row derives.
     assert playback_time_is_utc(files) is True
     assert all(serialize_file(file, playback_is_utc=True)["playback_derived"] for file in files)
+
+
+def test_a_derived_playback_time_follows_the_measured_convention() -> None:
+    """A recorder stating its own time must be derived for in its own time too.
+
+    The convention is measured from the rows that state the field and then applied to the
+    whole search. A derived row that ignored it would sit an entire UTC offset away from
+    the recorder on a device keeping local time, while the rows either side of it -- read
+    from the same recorder, in the same search -- stayed right.
+    """
+    tz = dt.timezone(dt.timedelta(hours=2))
+    file = _hub_file(
+        dt.datetime(2026, 8, 4, 8, 30, tzinfo=tz),
+        dt.datetime(2026, 8, 4, 8, 35, tzinfo=tz),
+        tz,
+        name="1-4-0-01260704063000-00000",
+    )
+
+    # Measured as keeping UTC: the endpoint wants the instant, so convert.
+    assert serialize_file(file, playback_is_utc=True)["playback_id"] == "20260804063000"
+    # Measured as keeping its own time: the endpoint wants the wall clock, unconverted --
+    # which is what a stated row on this recorder would have been asked for.
+    assert serialize_file(file, playback_is_utc=False)["playback_id"] == "20260804083000"
+
+    # Either way the recording is addressed by its own start in the recorder's own time,
+    # and this row is the whole recording.
+    for flag in (True, False):
+        result = serialize_file(file, playback_is_utc=flag)
+        assert result["file_start_id"] == "20260804083000"
+        assert result["offset"] == 0.0
 
 
 def test_a_mixed_search_serialises_both_kinds() -> None:
