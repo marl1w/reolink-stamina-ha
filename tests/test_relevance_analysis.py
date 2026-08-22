@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from custom_components.reolink_stamina.relevance.analysis import Analysis
@@ -151,6 +153,12 @@ async def test_rebuilding_picks_up_new_transitions(hass, journal):
 # ------------------------------------------------- which thread the nightly rebuild runs on
 
 
+def _scheduled_action(track) -> object:
+    """Return the action `async_schedule` registered, however it was passed."""
+    call = track.call_args
+    return call.kwargs["action"] if "action" in call.kwargs else call.args[1]
+
+
 async def test_the_nightly_rebuild_is_scheduled_as_a_callback(hass, journal):
     """Home Assistant decides the thread from what the action *is*.
 
@@ -162,8 +170,12 @@ async def test_the_nightly_rebuild_is_scheduled_as_a_callback(hass, journal):
         hass.async_create_task from a thread other than the event loop
 
     It fired nightly at the rebuild hour and nowhere else, which is why nothing caught it.
+
+    What was registered is asserted on twice: that it runs on the loop, and that running it
+    still starts a rebuild. The first alone would be satisfied by a callback that had
+    stopped doing anything at all.
     """
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from homeassistant.core import is_callback
 
@@ -173,17 +185,35 @@ async def test_the_nightly_rebuild_is_scheduled_as_a_callback(hass, journal):
     ) as track:
         analysis.async_schedule()
 
-    action = track.call_args.args[1]
+    action = _scheduled_action(track)
     assert is_callback(action), "the nightly rebuild would be run in an executor thread"
+
+    with patch.object(analysis, "async_rebuild", AsyncMock()) as rebuild:
+        action(dt.datetime(2026, 8, 4, 3, 17, tzinfo=dt.UTC))
+        await hass.async_block_till_done()
+
+    rebuild.assert_awaited_once()
 
 
 async def test_scheduling_replaces_a_previous_registration(hass, journal):
-    """Rescheduling must not leave two rebuilds running against one journal."""
-    analysis = Analysis(hass, journal)
-    analysis.async_schedule()
-    first = analysis._cancel
-    analysis.async_schedule()
+    """Rescheduling must cancel the previous rebuild, not stack a second on one journal.
 
-    assert analysis._cancel is not first
+    Asserting that `_cancel` merely changed would not say this: reassigning the attribute
+    is what a second registration does whether or not the first was ever called off. So the
+    canceller the first registration handed back is the thing asserted on.
+    """
+    from unittest.mock import Mock, patch
+
+    analysis = Analysis(hass, journal)
+    with patch(
+        "custom_components.reolink_stamina.relevance.analysis.async_track_time_change",
+        side_effect=[Mock(name="first"), Mock(name="second")],
+    ):
+        analysis.async_schedule()
+        first = analysis._cancel
+        analysis.async_schedule()
+
+    first.assert_called_once()
+
     analysis.async_cancel()
     assert analysis._cancel is None
