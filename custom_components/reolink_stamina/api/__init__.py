@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from .browse import ws_calendar, ws_events
 from .devices import ws_devices
 from .download import ws_clip_url
-from .playback import ws_playback_failure, ws_stream_url
+from .playback import ws_playback_failure, ws_recording_status, ws_stream_url
 from .relevance import ws_detections, ws_relevance, ws_relevance_profile
 
 __all__ = ["async_register"]
@@ -34,5 +34,6 @@ def async_register(hass: HomeAssistant) -> None:
         ws_relevance_profile,
         ws_clip_url,
         ws_playback_failure,
+        ws_recording_status,
     ):
         websocket_api.async_register_command(hass, command)

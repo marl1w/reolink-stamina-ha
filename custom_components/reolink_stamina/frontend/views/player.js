@@ -651,6 +651,17 @@ export class EventPlayer extends HTMLElement {
    */
   async _offerDownloadInstead(detail, lead = null) {
     if (!this._event) return;
+
+    // First, whether there is anything left to play at all.
+    //
+    // A download is assembled from the recorder's own bytes, so a recording the recorder has
+    // deleted cannot be downloaded either — and a row can outlive its footage by up to a
+    // week, because a past day is cached on the sound reasoning that it cannot gain
+    // recordings and the unsound corollary that it cannot lose any. Offering the download
+    // there sends people to watch a progress bar that ends in an error, which reads as a
+    // broken panel rather than as footage that has aged out.
+    if (await this._offerNothingIfGone()) return;
+
     // The ladder gives up without knowing why: on a converted route the failure happened
     // on the server and arrived here as a numeric MediaError with the reason discarded.
     // Ask what the server made of it, and prefer its sentence — "this machine cannot
@@ -667,6 +678,52 @@ export class EventPlayer extends HTMLElement {
       `${opening} Download it and it will play on your device${other ? `, or try ${streamLabel(other).toLowerCase()} resolution` : ""}.`,
       { action: { label: "Download this clip", onClick: () => this._saveClip(this._stream) } }
     );
+  }
+
+  /**
+   * Say that the recorder no longer has this recording, where that is what happened.
+   *
+   * Returns whether it was: true means the message is on screen and there is nothing further
+   * to offer. Only a definite "gone" counts — a recorder that could not be asked is not
+   * evidence of anything, and telling somebody their footage has been deleted because their
+   * NVR was busy would be the worse of the two mistakes by a distance.
+   *
+   * No action button. Everything the panel could offer reads the same bytes from the same
+   * device, so there is nothing that would work; the check itself re-searched the day, so
+   * the row this was reached from is already on its way out of the list.
+   */
+  async _offerNothingIfGone(stream = this._stream) {
+    const event = this._event;
+    const file = event?.files?.[stream];
+    // Without a name there is nothing to ask about — a resolution the panel never resolved a
+    // file for fails for that reason, not this one.
+    if (!file?.name || !event.start) return false;
+
+    const answer = await this._api.recordingStatus({
+      entryId: event.entry_id,
+      channel: event.channel,
+      stream,
+      // The day the row is filed under, which is the day the recorder is searched by: the
+      // search clips a recording to the day it was asked about, so the two always agree.
+      date: event.start.slice(0, 10),
+      filename: file.name,
+    });
+    if (answer?.status !== "gone") return false;
+    if (this._event?.id !== event.id) return true; // moved on; leave whatever is on screen
+
+    // Whether the rest of that day went with it, which is the difference between one
+    // recording overwritten at the edge of the disk and a day that has aged out entirely.
+    // Worth the words, because the second answers "how far back can I actually go" — which
+    // somebody looking at one dead row would otherwise find out by clicking another.
+    const alone = answer.remaining === 0;
+    this._overlay.show(
+      "mdi:delete-clock-outline",
+      "The recorder no longer has this recording — recordings are deleted as its disk " +
+        `fills, and this one has aged out. ${
+          alone ? "Nothing is left from that day at all." : "Nothing can play or download it now."
+        }`
+    );
+    return true;
   }
 
   /**
@@ -968,7 +1025,11 @@ export class EventPlayer extends HTMLElement {
     } catch (error) {
       if (error?.name === "AbortError") {
         this._overlay.hide();
-      } else {
+      } else if (!(await this._offerNothingIfGone(stream))) {
+        // Reached by pressing the download button on a stale row, rather than by playback
+        // failing first — the same recording that is not there, so the same answer, and a
+        // bare "could not save this clip" would send somebody hunting for a fault in the
+        // saving.
         this._overlay.show(
           "mdi:alert-circle-outline",
           `Could not save this clip: ${error?.message || error}`

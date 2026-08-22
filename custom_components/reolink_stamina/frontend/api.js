@@ -174,4 +174,34 @@ export class StaminaApi {
       return null;
     }
   }
+
+  /**
+   * Whether the recorder still holds a recording, asked when playback has failed on
+   * everything.
+   *
+   * `{ status, remaining }`, where status is `"present"`, `"gone"` or `"unknown"` and
+   * `remaining` counts what that day still holds. The distinction that matters is the last
+   * status: the device being unreachable is not evidence that a recording was deleted, and
+   * answering as though it were would tell people their footage is gone every time their
+   * recorder is busy. Null is treated exactly as `"unknown"`.
+   */
+  async recordingStatus({ entryId, channel, stream, date, filename }) {
+    try {
+      const result = await this.hass.callWS({
+        type: `${DOMAIN}/recording_status`,
+        entry_id: entryId,
+        channel,
+        stream,
+        date,
+        filename,
+      });
+      return result || null;
+    } catch (err) {
+      // The answer only ever chooses between two messages, and not knowing is one of the
+      // three things it can say — so a failure here is the same as an honest "unknown".
+      // eslint-disable-next-line no-console
+      console.debug("Reolink Stamina: could not check whether the recording is still there", err);
+      return null;
+    }
+  }
 }

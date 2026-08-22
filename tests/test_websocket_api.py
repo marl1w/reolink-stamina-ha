@@ -882,3 +882,176 @@ async def test_a_paired_camera_end_to_end(
 
     assert response["success"]
     assert _device_of(response["result"]["path"]) == (recorder.entry_id, "2")
+
+
+# ------------------------------------------------------- has the recorder still got it
+#
+# A row can outlive its footage: a past day is cached for a week on the sound reasoning that
+# it cannot gain recordings, which says nothing about losing them as the recorder's disk
+# fills. Playback then fails on every route, and the panel used to offer a download — which
+# reads the same bytes from the same device and fails the same way. These pin the answer it
+# needs to tell those two apart, and the third state that keeps it honest.
+
+
+def _recording_status(target, **extra):
+    """Build the panel's question about whether a recording is still on the recorder."""
+    return {
+        "type": f"{DOMAIN}/recording_status",
+        "entry_id": target.reolink.entry_id,
+        "channel": 0,
+        "stream": "sub",
+        "date": TODAY.isoformat(),
+        "filename": "a.mp4",
+        **extra,
+    }
+
+
+def _one_file(name: str = "a.mp4") -> list[dict]:
+    """One recording as the search reports it."""
+    start = dt.datetime(TODAY.year, TODAY.month, TODAY.day, 14, 0, 0)
+    return [
+        {
+            "start": start.isoformat(),
+            "end": (start + dt.timedelta(seconds=30)).isoformat(),
+            "start_id": "20260803140000",
+            "end_id": "20260803140030",
+            "name": name,
+            "size": 2048,
+            "type": "sub",
+            "triggers": ["person"],
+            "duration": 30.0,
+        }
+    ]
+
+
+async def test_recording_status_reports_a_recording_that_is_still_there(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Present, so the panel keeps its existing advice: download it and play it locally."""
+    with patch(
+        "custom_components.reolink_stamina.cache.async_search_day",
+        return_value=(_one_file(), 0),
+    ):
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(_recording_status(setup_stamina))
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["status"] == "present"
+
+
+async def test_recording_status_reports_a_recording_the_recorder_has_deleted(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """The day answers, and the file is not in it. That is the whole finding."""
+    with patch("custom_components.reolink_stamina.cache.async_search_day", return_value=([], 0)):
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(_recording_status(setup_stamina))
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["status"] == "gone"
+    assert response["result"]["remaining"] == 0
+
+
+async def test_recording_status_judges_by_name_not_by_the_day_being_empty(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Judge the file, not the day.
+
+    A day that still has recordings, but not this one, is still gone — and the count of what
+    is left comes back too, so a panel that wants to say what survived need not ask again.
+    """
+    with patch(
+        "custom_components.reolink_stamina.cache.async_search_day",
+        return_value=(_one_file("something-else.mp4"), 0),
+    ):
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(_recording_status(setup_stamina))
+        response = await client.receive_json()
+
+    assert response["result"]["status"] == "gone"
+    assert response["result"]["remaining"] == 1
+
+
+async def test_recording_status_will_not_call_a_busy_recorder_a_deletion(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """The mistake worth engineering against.
+
+    A recorder that could not be asked is not evidence that anything was deleted, and
+    answering "gone" here would tell people their footage is lost every time their NVR is
+    briefly unreachable. The panel treats this exactly as it treats no answer at all.
+    """
+    with patch(
+        "custom_components.reolink_stamina.cache.async_search_day",
+        side_effect=OSError("the recorder is not answering"),
+    ):
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(_recording_status(setup_stamina))
+        response = await client.receive_json()
+
+    assert response["success"]
+    assert response["result"]["status"] == "unknown"
+
+
+async def test_recording_status_does_not_search_beyond_the_recorders_horizon(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Past the search window there is nothing to ask and nothing to play.
+
+    Answered without a request, because a search beyond the window comes back empty for a
+    reason that has nothing to do with this recording — and reading that emptiness as proof
+    would be right by accident.
+    """
+    old = (TODAY - dt.timedelta(days=45)).isoformat()
+    with patch(
+        "custom_components.reolink_stamina.cache.async_search_day",
+        return_value=(_one_file(), 0),
+    ) as searched:
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id(_recording_status(setup_stamina, date=old))
+        response = await client.receive_json()
+
+    assert response["result"]["status"] == "gone"
+    assert response["result"]["reason"] == "beyond_search_window"
+    assert searched.call_count == 0
+
+
+async def test_recording_status_re_searches_a_day_the_cache_thinks_is_fresh(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """The half of this that repairs the cause rather than describing it.
+
+    The stale cached day is what put the row on screen, so asking it whether the row is real
+    would agree with itself for ever. The search is forced, which both answers the question
+    and replaces the listing that was wrong — so the row goes without anybody pressing
+    refresh.
+    """
+    yesterday = (TODAY - dt.timedelta(days=1)).isoformat()
+    with patch(
+        "custom_components.reolink_stamina.cache.async_search_day",
+        return_value=(_one_file(), 0),
+    ) as searched:
+        client = await hass_ws_client(hass)
+        # Once to fill the cache for a past day, which is then fresh for a week.
+        await client.send_json_auto_id(_recording_status(setup_stamina, date=yesterday))
+        assert (await client.receive_json())["success"]
+        first = searched.call_count
+
+        await client.send_json_auto_id(_recording_status(setup_stamina, date=yesterday))
+        assert (await client.receive_json())["success"]
+
+    assert first > 0
+    assert searched.call_count > first, "the second ask served the stale cache"
+
+
+async def test_recording_status_rejects_a_bad_date(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """A malformed date is the caller's error, not a deleted recording."""
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_recording_status(setup_stamina, date="the day before"))
+    response = await client.receive_json()
+
+    assert not response["success"]

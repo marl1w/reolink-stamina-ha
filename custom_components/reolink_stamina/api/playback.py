@@ -14,9 +14,10 @@ from typing import Any
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
-from ..const import DOMAIN
+from ..const import DOMAIN, SEARCH_WINDOW_DAYS
 from ..flv_proxy import async_flv_path
 from ..reolink_registry import (
     DeviceUnavailableError,
@@ -41,6 +42,7 @@ from .shared import (
     ROUTE_REMUX,
     ROUTE_TRANSCODE,
     _access,
+    _parse_date,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -356,4 +358,110 @@ def ws_playback_failure(
     failures = list(async_get_manager(hass).failures)
     connection.send_result(
         msg["id"], {"failure": failures[-1] if failures else None, "history": failures}
+    )
+
+
+# ------------------------------------------------- has the recorder still got it
+
+
+# What the panel is told, and it is deliberately three answers rather than two. "Not there"
+# and "could not ask" lead to opposite advice, and collapsing them would put the worse of the
+# two messages in front of a user whose recorder was merely busy.
+STATUS_PRESENT = "present"
+STATUS_GONE = "gone"
+STATUS_UNKNOWN = "unknown"
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/recording_status",
+        vol.Required("entry_id"): cv.string,
+        vol.Required("channel"): vol.Coerce(int),
+        vol.Required("stream"): cv.string,
+        vol.Required("date"): cv.string,
+        vol.Required("filename"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_recording_status(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Say whether the recorder still holds a recording the panel is showing.
+
+    Asked when playback has failed on every route, and it exists because of what the panel
+    used to do next: offer to download the clip instead. That is the right answer to a codec
+    the browser cannot decode, and exactly the wrong one to a recording the recorder has
+    deleted — the download reads the same bytes from the same device, so it fails the same
+    way, and being invited to try it reads as a panel that does not know what it is showing.
+    A row can outlive its footage by up to a week: a past day is cached for `TTL_PAST` on the
+    sound reasoning that it cannot gain recordings, which says nothing about losing them as
+    the disk fills.
+
+    The recorder is asked rather than guessed at. A 404 on every playback endpoint looks like
+    a deleted recording and is not proof of one — the same 404 came from a timestamp
+    convention this integration once got wrong, on files that were all still there — so what
+    settles it is whether the day's own listing still names the file. That also repairs the
+    cause: the search is forced, so the stale row it was asked about goes with it.
+    """
+    data = _access(hass, connection, msg)
+    if data is None:
+        return
+
+    try:
+        date = _parse_date(msg["date"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], websocket_api.const.ERR_INVALID_FORMAT, str(err))
+        return
+
+    # Past what the recorder will search, there is nothing to ask and nothing to play: the
+    # search window is the horizon for both. Answered without a request, because a search
+    # beyond it comes back empty for a reason that has nothing to do with this recording.
+    if (dt_util.now().date() - date).days > SEARCH_WINDOW_DAYS:
+        connection.send_result(msg["id"], {"status": STATUS_GONE, "reason": "beyond_search_window"})
+        return
+
+    cache = data.cache
+    options = data.options
+    entry_id = msg["entry_id"]
+    channel = msg["channel"]
+    stream = msg["stream"]
+
+    task = cache.async_ensure_day(
+        entry_id,
+        channel,
+        stream,
+        date,
+        options.split_minutes,
+        include_unlabelled=options.include_unlabelled,
+        force=True,
+    )
+    if task is not None:
+        await task
+
+    record = cache.peek_day(entry_id, channel, stream, date, options.include_unlabelled)
+    if record is None or record.error:
+        # The device could not be asked. Saying "deleted" here would be a guess dressed up
+        # as a finding, and the panel's existing advice is the better answer to a maybe.
+        connection.send_result(
+            msg["id"],
+            {"status": STATUS_UNKNOWN, "reason": (record.error if record else "no answer")},
+        )
+        return
+
+    # By file name rather than by start id. A long recording is split into rows that share
+    # one name, and which boundaries the split lands on depends on settings that may have
+    # changed since this row was built -- so a missing start id means "not that slice any
+    # more", while a missing name means the recording itself is gone, which is the question.
+    filename = msg["filename"]
+    listed = any((file.get("name") or "") == filename for file in record.files)
+    connection.send_result(
+        msg["id"],
+        {
+            "status": STATUS_PRESENT if listed else STATUS_GONE,
+            # What the day holds now, so a panel that wants to say "and 40 others went with
+            # it" has the number without asking again.
+            "remaining": len(record.files),
+        },
     )
