@@ -177,7 +177,9 @@ async def async_get_config_entry_diagnostics(
         # the recorder has nothing at is how a 404 happens, and these three side by side are
         # what show it. `playback_is_utc` is which zone `playback_id` was taken to be in,
         # measured per search -- so a wrong `file_start_id` says whether the measurement or
-        # the arithmetic was at fault.
+        # the arithmetic was at fault. `playback_derived` is true where no usable
+        # PlaybackTime came back and StartTime stood in for it, which no amount of staring
+        # at the timestamps would reveal: they agree by construction.
         "playback_samples": data.cache.sample_files() if data is not None else [],
         "temporary_space": await hass.async_add_executor_job(_temporary_space),
         "cloud_sync": _cloud_sync(data),
