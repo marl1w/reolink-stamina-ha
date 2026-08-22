@@ -11,6 +11,7 @@
  */
 
 import { adoptStyles, el, icon } from "../dom.js";
+import { cutAt, extentFor, needleAt } from "../gauge.js";
 import { SHARED } from "../theme.js";
 import { formatDayLabel, formatTime, triggerMeta } from "../format.js";
 
@@ -541,6 +542,12 @@ export class RelevanceSheet extends HTMLElement {
    * The bars are scaled to the largest contribution in *this* detection rather than to a
    * fixed range: what the reader wants is which signal mattered most here, and a fixed scale
    * would flatten every ordinary event into four invisible stubs.
+   *
+   * The gauge above them is deliberately not scaled that way. The two answer different
+   * questions — the bars rank signals *within* one event, where only their sizes relative to
+   * each other mean anything, while the gauge places that event against the others, which is
+   * a comparison and needs a scale that does not move between them. Scaling the gauge to its
+   * own event is the bug this pairing is written down to prevent; see `gauge.js`.
    */
   _detailFor(item, known) {
     const names = {
@@ -585,13 +592,17 @@ export class RelevanceSheet extends HTMLElement {
     // Without a threshold there is no region to shade and nothing can be marked, so the
     // scale still says where the event sits and stops short of claiming a verdict.
     const hasCut = item.threshold !== null && item.threshold !== undefined;
-    const extent =
-      Math.max(Math.abs(item.score), hasCut ? Math.abs(item.threshold) : 0, 1) * 1.15;
-    // Where the marked region begins, as a share of the track. Without a threshold there is
-    // nothing entitled to be marked, so the rarer region simply runs to the end.
-    const cut = hasCut
-      ? Math.max(50, Math.min(100, 50 + (item.threshold / extent) * 50))
-      : 100;
+    // Scaled across every event this camera has in the window, not across this one.
+    //
+    // Scaled to itself, the extent cancelled against the score and the needle sat at the same
+    // spot on every event past the threshold — so a mildly odd detection and the strangest
+    // thing all fortnight drew the same picture, while the bars below them said otherwise.
+    // See `gauge.js`.
+    const extent = extentFor(
+      (known.detections || []).map((each) => each.score),
+      hasCut ? item.threshold : null
+    );
+    const cut = cutAt(hasCut ? item.threshold : null, extent);
     verdict.append(
       el(
         "div",
@@ -618,7 +629,7 @@ export class RelevanceSheet extends HTMLElement {
           el("div", {
             class: "gauge__needle",
             dataset: { marked: String(Boolean(item.unusual)) },
-            style: { left: `${Math.max(1, Math.min(99, 50 + (item.score / extent) * 50))}%` },
+            style: { left: `${needleAt(item.score, extent)}%` },
             title: `This event scored ${item.score}`,
           })
         ),

@@ -131,6 +131,16 @@ else
   printf '  skipped (node not installed)\n'
 fi
 
+step "Relevance gauge"
+# Where one score sits on the scale the sheet draws. Scaled to the event being drawn it
+# cancelled, and every event past its threshold rendered identically — which looks like a
+# broken model rather than a broken axis, so the property is pinned in numbers.
+if command -v node >/dev/null 2>&1; then
+  if node tests/frontend/test_gauge.mjs; then ok "gauge"; else bad "gauge"; fi
+else
+  printf '  skipped (node not installed)\n'
+fi
+
 step "What's new"
 # When the panel introduces itself: a dialog that opens when it should not is the most
 # annoying thing a panel can do, and it is four lines with three states easy to confuse.
