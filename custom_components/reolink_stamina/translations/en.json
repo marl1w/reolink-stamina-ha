@@ -94,7 +94,6 @@
   },
   "config_subentries": {
     "cloud_sync": {
-      "title": "Cloud sync",
       "initiate_flow": {
         "user": "Add cloud sync",
         "reconfigure": "Reconfigure cloud sync"
