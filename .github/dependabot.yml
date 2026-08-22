@@ -1,0 +1,35 @@
+# Keeping the workflow's actions current, and nothing else.
+#
+# Only GitHub Actions is watched here. That is deliberate rather than a start, and the
+# reasoning is worth keeping, because "we should also watch pip" looks obviously right:
+#
+#   requirements-test.txt holds four dependencies. Three are unpinned and already resolve to
+#   the latest release on every install, so there is no constraint for Dependabot to raise.
+#   The fourth, reolink-aio, is pinned on purpose to the version Home Assistant ships --
+#   0.21.4 -- because the test suite exists to catch code depending on attributes that real
+#   installs do not have. Bumping it is how the `is_dual_lens` regression shipped in 0.1.0.
+#
+# So a pip block could only ever open the one pull request that must not be merged. The pin
+# moves when Home Assistant's does, together with SUPPORTED_REOLINK_AIO in
+# tests/test_upstream_contract.py, which is a decision rather than an upgrade.
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      # Actions release rarely and none of this is on a security-critical path, so monthly
+      # is often enough to keep up without a pull request nobody reads becoming the norm.
+      interval: "monthly"
+    # One pull request for all of them. The alternative is a separate one per action, which
+    # for a workflow this small is three notifications to approve the same decision.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    # No `labels` block on purpose. Dependabot labels its own pull requests "dependencies"
+    # and creates that label if the repository has none, while any label named here that
+    # does not already exist is silently ignored -- so listing it would read as a setting
+    # and do nothing.
