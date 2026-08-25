@@ -127,6 +127,7 @@ export class StaminaApi {
     seek = 0,
     route = "passthrough",
     format = "mp4",
+    duration = 0,
   }) {
     const result = await this.hass.callWS({
       type: `${DOMAIN}/stream_url`,
@@ -147,6 +148,7 @@ export class StaminaApi {
       seek: Math.max(0, Math.floor(seek)),
       route,
       format,
+      duration,
     });
     // An HLS session is addressed by its own unguessable token and says so, because iOS
     // hands playback to the system player, which sends no Home Assistant credentials and

@@ -18,11 +18,13 @@ import { join } from "node:path";
 import {
   aacConfig,
   avcDimensions,
+  downloadClip,
   FlvDemuxer,
   readAudioTag,
   readVideoTag,
   remuxFlvToMp4,
 } from "../../custom_components/reolink_stamina/frontend/clip.js";
+import { assembleClip } from "../../custom_components/reolink_stamina/frontend/playback/save.js";
 
 const work = mkdtempSync(join(tmpdir(), "reolink-clip-"));
 let failures = 0;
@@ -305,6 +307,57 @@ await asyncTest("the byte ceiling is enforced rather than filling memory", async
 await asyncTest("something that is not FLV is refused", async () => {
   const junk = new Uint8Array(64).fill(7);
   await assert.rejects(() => remuxFlvToMp4(inChunks(junk, 16), { seconds: 5 }), /FLV/);
+});
+
+await asyncTest("a Home Hub MP4 is saved without trying to demux it as FLV", async () => {
+  const bytes = new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]);
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const contentType of ["video/mp4", "application/octet-stream"]) {
+      globalThis.fetch = async () => new Response(bytes, { headers: { "content-type": contentType } });
+      const clip = await downloadClip("http://hub/recording", { maxBytes: 1024 });
+      assert.deepEqual(new Uint8Array(await clip.arrayBuffer()), bytes);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await asyncTest("a trimmed Home Hub clip is seeked and cut by the remux route", async () => {
+  const calls = [];
+  const api = {
+    async streamUrl(request) {
+      calls.push(request);
+      return calls.length === 1 ? { file: true, url: "http://hub/whole" } : { url: "http://hub/trim" };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), {
+      headers: { "content-type": "video/mp4" },
+    });
+  try {
+    await assembleClip({
+      api,
+      event: {
+        entry_id: "hub",
+        channel: 0,
+        start: "2026-08-24T19:36:09-07:00",
+        end: "2026-08-24T19:36:13-07:00",
+        duration: 4,
+        files: { sub: { name: "recording.mp4", start_id: "s", playback_id: "p" } },
+      },
+      stream: "sub",
+      bounds: { start: 1, end: 2 },
+      onProgress() {},
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].route, "remux");
+    assert.equal(calls[1].seek, 1);
+    assert.equal(calls[1].duration, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 process.stdout.write(`\n  ${ran - failures}/${ran} clip checks passed\n`);

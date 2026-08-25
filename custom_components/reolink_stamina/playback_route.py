@@ -209,6 +209,16 @@ async def _async_flv_url(api: Any, recording: Recording) -> str:
     return _with_seek(template, max(0, int(recording.seek)))
 
 
+async def _async_download_url(api: Any, recording: Recording) -> str:
+    """Build the whole-file MP4 URL used by Home Hubs."""
+    from reolink_aio.enums import VodRequestType
+
+    _mime, url = await api.get_vod_source(
+        recording.channel, recording.filename, recording.stream, VodRequestType.DOWNLOAD
+    )
+    return url
+
+
 async def _async_playback_url(api: Any, recording: Recording) -> str:
     """Build the `cmd=Playback` URL, as the recorder's own web player builds it.
 
@@ -327,14 +337,23 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
     )
 
 
+@callback
+def async_playback_input_seek(hass: HomeAssistant, recording: Recording) -> int:
+    """Return an ffmpeg input seek when the device cannot seek its own playback stream."""
+    return recording.seek if async_get_host(hass, recording.entry_id).api.is_hub else 0
+
+
 async def async_playback_source(hass: HomeAssistant, recording: Recording) -> str:
     """Return a URL for the recording, on a route the recorder is known to answer.
 
-    For ffmpeg, which is handed a URL rather than an open socket. When the route is
-    already known this costs nothing beyond building the URL; when it is not, the routes
-    are tried in order and the winner is closed again immediately, so the measurement
-    costs one request and no video.
+    For ffmpeg, which is handed a URL rather than an open socket. Home Hubs use their
+    whole-file Download route because they close both real-time playback endpoints without
+    sending data. Other recorders use the measured playback route as before.
     """
+    api = async_get_host(hass, recording.entry_id).api
+    if api.is_hub:
+        return await _async_download_url(api, recording)
+
     remembered = async_remembered_route(hass, recording.entry_id)
     if remembered is not None:
         return await async_route_url(hass, recording, remembered)

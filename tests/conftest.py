@@ -158,6 +158,8 @@ class FakeApi:
                 f"&type={stream_type}&start={filename}&seek=0"
                 f"&user={self._username}&password={self._password}",
             )
+        if request_type == VodRequestType.DOWNLOAD:
+            return "video/mp4", f"http://nvr/download?source={filename}&token=TOK123"
         # Shaped like reolink_aio's PLAYBACK URL: only its base and token are used.
         return (
             "video/mp4",
@@ -248,6 +250,10 @@ def patch_host(fake_api: FakeApi):
         # Imported by name, so each module that uses it needs patching in its own right.
         patch(
             "custom_components.reolink_stamina.playback_route.async_get_host",
+            return_value=host,
+        ),
+        patch(
+            "custom_components.reolink_stamina.api.playback.async_get_host",
             return_value=host,
         ),
     ):

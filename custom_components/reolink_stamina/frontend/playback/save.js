@@ -127,15 +127,14 @@ export function saveMenuNodes({ streams, length, onChoose }) {
 /**
  * Read the playback stream and build the MP4 here.
  *
- * Deliberately the pass-through route: these are the recorder's own bytes being put into a
- * different container by the browser, so nothing is re-encoded and the server does no work.
+ * NVRs use the pass-through route and are packaged in the browser. A Home Hub already
+ * serves MP4; a whole event is saved directly, while a trimmed event is cut by ffmpeg.
  */
 export async function assembleClip({ api, event, stream, bounds, signal, onProgress }) {
   const { start, end } = bounds;
   const seconds = Math.max(1, Math.round(end - start));
   const file = event.files?.[stream] || { name: "", start_id: "", playback_id: "", offset: 0 };
-
-  const { url } = await api.streamUrl({
+  const request = {
     entryId: event.entry_id,
     channel: event.channel,
     stream,
@@ -148,9 +147,15 @@ export async function assembleClip({ api, event, stream, bounds, signal, onProgr
     start: event.start,
     end: event.end,
     seek: Math.floor(start),
-  });
+  };
 
-  return downloadClip(url, {
+  let source = await api.streamUrl(request);
+  const wholeFile = start <= 0 && Number(event.duration) > 0 && end >= Number(event.duration);
+  if (source.file && !wholeFile) {
+    source = await api.streamUrl({ ...request, route: "remux", duration: seconds });
+  }
+
+  return downloadClip(source.url, {
     seconds,
     maxBytes: MAX_CLIP_BYTES,
     signal,

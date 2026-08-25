@@ -616,17 +616,37 @@ async def test_passthrough_is_still_the_default(
     assert response["result"]["mime"] == "video/x-flv"
 
 
+async def test_a_home_hub_uses_its_working_download_route(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """Home Hubs refuse Playback and FLV but serve each recorded event as an MP4."""
+    from base64 import urlsafe_b64decode
+
+    setup_stamina.api.is_hub = True
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_stamina, seek=12))
+    response = await client.receive_json()
+
+    assert response["success"]
+    result = response["result"]
+    assert result["mime"] == "video/mp4"
+    assert result["file"] is True
+    assert result["file_seek"] == 12
+    assert "/sub/Download/" in result["path"]
+    assert urlsafe_b64decode(result["path"].rsplit("/", 1)[-1]).decode() == "a-file"
+
+
 async def test_a_remux_asks_ffmpeg_only_to_repackage(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """The cheap rung has to be addressable, or it can never be the one that is used."""
     client = await hass_ws_client(hass)
-    await client.send_json_auto_id(_stream_url(setup_stamina, route="remux", seek=240))
+    await client.send_json_auto_id(_stream_url(setup_stamina, route="remux", seek=240, duration=5))
     response = await client.receive_json()
 
     assert response["success"]
     assert response["result"]["path"].startswith("/api/reolink_stamina/restream/copy/")
-    assert response["result"]["path"].endswith("/240")
+    assert response["result"]["path"].endswith("/240?duration=5.000")
     assert response["result"]["mime"] == "video/mp4"
 
 

@@ -204,6 +204,8 @@ def build_args(
     encoder: Encoder = SOFTWARE_ENCODER,
     directory: Path | None = None,
     verify_tls: bool = False,
+    input_seek: int = 0,
+    duration: float = 0,
 ) -> list[str]:
     """Build the ffmpeg command for one stream.
 
@@ -233,9 +235,13 @@ def build_args(
         "-fflags",
         "+genpts",
         *ffmpeg_tls_args(source_url, verify_tls=verify_tls),
-        "-i",
-        source_url,
     ]
+    args += ["-i", source_url]
+    if input_seek > 0:
+        # Home Hub downloads ignore range seeks, so ffmpeg must discard up to this point.
+        args += ["-ss", f"{input_seek:.3f}"]
+    if duration > 0:
+        args += ["-t", f"{duration:.3f}"]
 
     if mode == MODE_ENCODE:
         filters = [f"scale=-2:min(ih\\,{MAX_HEIGHT})", *encoder.filters]

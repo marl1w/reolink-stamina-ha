@@ -667,6 +667,28 @@ export async function downloadClip(url, { seconds, maxBytes, onProgress, signal 
   }
 
   const reader = response.body.getReader();
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0];
+  if (contentType === "video/mp4" || contentType === "application/octet-stream") {
+    const chunks = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        bytes += value.byteLength;
+        if (maxBytes && bytes > maxBytes) {
+          throw new Error("This clip is larger than the download limit");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+    onProgress?.({ seconds: seconds || 0, bytes });
+    return new Blob(chunks, { type: "video/mp4" });
+  }
+
   const chunks = {
     async *[Symbol.asyncIterator]() {
       try {

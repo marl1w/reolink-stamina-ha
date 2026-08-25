@@ -135,9 +135,10 @@ def async_restream_path(
     playback_id: str,
     seek: int,
     mode: str = MODE_COPY,
+    duration: float = 0,
 ) -> str:
     """Return the unsigned path that serves one recording as fragmented MP4."""
-    return Recording(
+    path = Recording(
         entry_id=entry_id,
         channel=channel,
         stream=stream,
@@ -146,6 +147,7 @@ def async_restream_path(
         playback_id=playback_id,
         seek=max(0, int(seek)),
     ).path(f"{RESTREAM_PREFIX}/{mode}")
+    return f"{path}?duration={duration:.3f}" if duration > 0 else path
 
 
 def async_hls_path(token: str) -> str:
