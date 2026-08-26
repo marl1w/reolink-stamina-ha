@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.reolink_stamina.cloud.engine import NvrSyncer, SyncJob, WatchedSensor
 from custom_components.reolink_stamina.cloud.windows import ClipWindow
@@ -49,7 +49,7 @@ def make_syncer(
         MagicMock(subentry_id="main"),
         nvr_name="Main NVR",
         entry_id=ENTRY,
-        destination=MagicMock(label="OneDrive"),
+        destination=AsyncMock(label="OneDrive"),
         kinds=kinds or {"person"},
         quota=15 * 1024**3,
         folder="Reolink",

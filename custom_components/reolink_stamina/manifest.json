@@ -2,8 +2,13 @@
   "domain": "reolink_stamina",
   "name": "Reolink Stamina",
   "after_dependencies": [
+    "google_drive",
+    "onedrive",
     "recorder",
-    "reolink"
+    "reolink",
+    "sftp_storage",
+    "synology_dsm",
+    "webdav"
   ],
   "codeowners": [
     "@marl1w"

@@ -100,15 +100,15 @@
       },
       "step": {
         "user": {
-          "title": "Sync clips to the cloud",
+          "title": "Sync clips off the recorder",
           "description": "Uploads a clip for every detection on this recorder's cameras, as soon as it has finished writing it. One cloud sync per NVR.",
           "data": {
             "nvr_entry_id": "Recorder",
-            "destination_entry_id": "Cloud account",
+            "destination_entry_id": "Where clips go",
             "quota_gb": "Storage quota",
             "kinds": "Detections to upload",
-      "sync_unusual": "Also upload unusual events",
-      "unusual_kinds": "Kinds that count as unusual",
+            "sync_unusual": "Also upload unusual events",
+            "unusual_kinds": "Kinds that count as unusual",
             "sync_stream": "Resolution",
             "sync_lead": "Seconds before the event",
             "sync_tail": "Seconds after the event",
@@ -116,48 +116,49 @@
           },
           "data_description": {
             "nvr_entry_id": "Clips are uploaded for every camera on this Reolink NVR. Recorders that already have a cloud sync are not listed.",
-            "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
+            "destination_entry_id": "Every account and server your storage integrations already hold, in one list. Whichever you pick, its connection is reused — there is nothing to authorise or enter again.",
             "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
             "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
-      "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
-      "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
+            "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
+            "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
             "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
             "sync_lead": "How much footage to keep before the first detection.",
             "sync_tail": "How much to keep after the last detection clears.",
-            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. May be several levels deep."
+            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. May be several levels deep. On a Synology NAS the first segment is the shared folder."
           }
         },
         "reconfigure": {
           "title": "Cloud sync settings",
           "description": "Which recorder this syncs is fixed. To sync a different one, add a cloud sync for it.",
           "data": {
-            "destination_entry_id": "Cloud account",
+            "destination_entry_id": "Where clips go",
             "quota_gb": "Storage quota",
             "kinds": "Detections to upload",
-      "sync_unusual": "Also upload unusual events",
-      "unusual_kinds": "Kinds that count as unusual",
+            "sync_unusual": "Also upload unusual events",
+            "unusual_kinds": "Kinds that count as unusual",
             "sync_stream": "Resolution",
             "sync_lead": "Seconds before the event",
             "sync_tail": "Seconds after the event",
             "remote_folder": "Folder name"
           },
           "data_description": {
-            "destination_entry_id": "An existing OneDrive integration. Its credentials are reused, so there is nothing to authorise again; clips go into Home Assistant's own app folder.",
+            "destination_entry_id": "Every account and server your storage integrations already hold, in one list. Whichever you pick, its connection is reused — there is nothing to authorise or enter again. Moving an existing sync elsewhere does not take the clips already uploaded with it; they stay where they are and stop counting against the quota.",
             "quota_gb": "How much this recorder's clips may occupy. Once full, the oldest clips are deleted to make room for new ones.",
             "kinds": "Motion fires constantly on most cameras and will spend the quota on empty footage; person, vehicle and animal are the useful ones.",
-      "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
-      "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
+            "sync_unusual": "Uploads anything the panel marks as unusual for its camera, even when its kind is not in the list above — and even while this recorder's cloud sync switch is off, since keeping the odd one out is the point of it. A camera needs about a week and a few hundred detections behind it before anything can be called unusual, so this does nothing at first.",
+            "unusual_kinds": "Which kinds this second rule may upload. Ignored while the option above is off. Choosing motion on a camera that records continuously means every detection it makes is checked, which is a lot of checking for a handful of clips.",
             "sync_stream": "Low resolution is a fraction of the size and plays everywhere.",
             "sync_lead": "How much footage to keep before the first detection.",
             "sync_tail": "How much to keep after the last detection clears.",
-            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. Changing it leaves clips already uploaded where they are, and they will no longer count towards the quota."
+            "remote_folder": "Where clips are stored, as `folder/240102_153045_recorder_camera.mp4`. May be several levels deep. On a Synology NAS the first segment is the shared folder."
           }
         }
       },
       "abort": {
         "reconfigure_successful": "Settings saved.",
         "no_nvr": "No Reolink NVR is set up in the Reolink integration yet.",
-        "all_nvrs_configured": "Every Reolink NVR already has a cloud sync."
+        "all_nvrs_configured": "Every Reolink NVR already has a cloud sync.",
+        "no_destination": "No storage integration is set up to send clips to. Add one of OneDrive, Google Drive, Synology DSM, WebDAV or SFTP Storage first — Stamina reuses its connection, so there is nothing to authorise twice."
       },
       "entry_type": "Cloud sync"
     }

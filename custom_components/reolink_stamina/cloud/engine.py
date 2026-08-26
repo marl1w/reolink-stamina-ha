@@ -63,7 +63,7 @@ from ..relevance.journal import camera_key
 from ..reolink_registry import async_discover_devices, async_get_host
 from ..tls import async_nvr_session, async_verify_tls
 from .capacity import available_bytes, describe, expected_clip_bytes, slots
-from .destination import Destination, DestinationError
+from .destinations import Destination, DestinationError
 from .fetch import (
     FetchError,
     FfmpegMissingError,
@@ -287,6 +287,7 @@ class NvrSyncer:
             task.cancel()
         self._inflight.clear()
         await self._async_save()
+        await self.destination.async_close()
 
     def async_add_listener(self, listener) -> callable:
         """Register an entity to be told when the status changes."""
