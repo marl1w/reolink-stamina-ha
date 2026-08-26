@@ -122,6 +122,23 @@ def test_a_remux_re_encodes_nothing() -> None:
     assert "frag_keyframe+empty_moov+default_base_moof" in args
 
 
+def test_a_whole_file_input_is_seeked_and_trimmed_by_ffmpeg() -> None:
+    """Home Hubs cannot seek their Download route, so ffmpeg must do both operations."""
+    args = build_args(
+        "ffmpeg",
+        _URL,
+        mode=MODE_COPY,
+        output_format=FORMAT_MP4,
+        input_seek=12,
+        duration=5,
+    )
+
+    assert args[args.index("-ss") + 1] == "12.000"
+    assert args.index("-ss") > args.index("-i")
+    assert args[args.index("-t") + 1] == "5.000"
+    assert args.index("-t") > args.index("-i")
+
+
 def test_audio_timestamps_are_made_monotonic_whichever_rung_this_is() -> None:
     """A seek part-way into a recording arrives with audio timestamps that step backwards.
 

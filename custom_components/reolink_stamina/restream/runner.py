@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from ..ffmpeg import async_ffmpeg_binary
 from ..playback_route import (
     Recording,
+    async_playback_input_seek,
     async_playback_secrets,
     async_playback_source,
 )
@@ -55,6 +56,8 @@ async def _async_spawn(
     mode: str,
     output_format: str,
     directory: Path | None = None,
+    input_seek: int = 0,
+    duration: float = 0,
 ) -> tuple[asyncio.subprocess.Process, Encoder]:
     """Start ffmpeg for one stream, and say which encoder it was given."""
     binary = async_ffmpeg_binary(hass)
@@ -74,6 +77,8 @@ async def _async_spawn(
         encoder=encoder,
         directory=directory,
         verify_tls=async_verify_tls(hass),
+        input_seek=input_seek,
+        duration=duration,
     )
     _LOGGER.debug(
         "Restreaming %s (%s, %s)",
@@ -134,6 +139,7 @@ async def async_start_hls(
             mode=mode,
             output_format=FORMAT_HLS,
             directory=directory,
+            input_seek=async_playback_input_seek(hass, recording),
         )
     except Exception:
         await hass.async_add_executor_job(lambda: shutil.rmtree(directory, ignore_errors=True))

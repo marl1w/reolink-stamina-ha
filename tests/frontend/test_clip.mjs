@@ -18,11 +18,13 @@ import { join } from "node:path";
 import {
   aacConfig,
   avcDimensions,
+  downloadClip,
   FlvDemuxer,
   readAudioTag,
   readVideoTag,
   remuxFlvToMp4,
 } from "../../custom_components/reolink_stamina/frontend/clip.js";
+import { assembleClip } from "../../custom_components/reolink_stamina/frontend/playback/save.js";
 
 const work = mkdtempSync(join(tmpdir(), "reolink-clip-"));
 let failures = 0;
@@ -305,6 +307,110 @@ await asyncTest("the byte ceiling is enforced rather than filling memory", async
 await asyncTest("something that is not FLV is refused", async () => {
   const junk = new Uint8Array(64).fill(7);
   await assert.rejects(() => remuxFlvToMp4(inChunks(junk, 16), { seconds: 5 }), /FLV/);
+});
+
+await asyncTest("a Home Hub MP4 is saved without trying to demux it as FLV", async () => {
+  const bytes = new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109]);
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const contentType of ["video/mp4", "application/octet-stream"]) {
+      globalThis.fetch = async () => new Response(bytes, { headers: { "content-type": contentType } });
+      const clip = await downloadClip("http://hub/recording", { maxBytes: 1024 });
+      assert.deepEqual(new Uint8Array(await clip.arrayBuffer()), bytes);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await asyncTest("a Home Hub download reports progress while it is arriving", async () => {
+  // The caller turns these seconds into the percentage on the "Assembling clip…" overlay.
+  // Reporting only once the transfer had finished left that overlay saying nothing for the
+  // whole download, which on a slow link cannot be told apart from a save that has hung.
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(6));
+      controller.enqueue(new Uint8Array(6));
+      controller.close();
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(body, { headers: { "content-type": "video/mp4", "content-length": "12" } });
+  const seen = [];
+  try {
+    await downloadClip("http://hub/recording", {
+      seconds: 10,
+      maxBytes: 1024,
+      onProgress: ({ seconds }) => seen.push(Math.round(seconds)),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(seen.length > 1, `progress was reported once, at the end: ${seen}`);
+  assert.deepEqual(seen, [5, 10, 10], "half the bytes is half the clip");
+});
+
+await asyncTest("a download of unknown length still finishes at the full clip", async () => {
+  // Chunked, so there is no length to turn bytes into a share of. Better a bar that only
+  // completes than one moving to a percentage invented from nothing.
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(8));
+      controller.close();
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(body, { headers: { "content-type": "video/mp4" } });
+  const seen = [];
+  try {
+    await downloadClip("http://hub/recording", {
+      seconds: 10,
+      onProgress: ({ seconds }) => seen.push(seconds),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(seen, [10]);
+});
+
+await asyncTest("a trimmed Home Hub clip is seeked and cut by the remux route", async () => {
+  const calls = [];
+  const api = {
+    async streamUrl(request) {
+      calls.push(request);
+      return calls.length === 1 ? { file: true, url: "http://hub/whole" } : { url: "http://hub/trim" };
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), {
+      headers: { "content-type": "video/mp4" },
+    });
+  try {
+    await assembleClip({
+      api,
+      event: {
+        entry_id: "hub",
+        channel: 0,
+        start: "2026-08-24T19:36:09-07:00",
+        end: "2026-08-24T19:36:13-07:00",
+        duration: 4,
+        files: { sub: { name: "recording.mp4", start_id: "s", playback_id: "p" } },
+      },
+      stream: "sub",
+      bounds: { start: 1, end: 2 },
+      onProgress() {},
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].route, "remux");
+    assert.equal(calls[1].seek, 1);
+    assert.equal(calls[1].duration, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 process.stdout.write(`\n  ${ran - failures}/${ran} clip checks passed\n`);

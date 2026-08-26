@@ -17,6 +17,7 @@ from custom_components.reolink_stamina.playback_route import (
     async_all_routes,
     async_forget_routes,
     async_open_playback_stream,
+    async_playback_input_seek,
     async_playback_secrets,
     async_playback_source,
     async_remember_route,
@@ -269,6 +270,19 @@ async def test_a_known_route_costs_ffmpeg_no_request(hass, patch_host, patch_ses
 
     assert "cmd=Playback" in source
     assert session.requested == []
+
+
+async def test_a_home_hub_gives_ffmpeg_its_download_url(hass, patch_host, fake_api) -> None:
+    """Home Hubs close both live playback endpoints but serve their event-sized MP4."""
+    from reolink_aio.enums import VodRequestType
+
+    fake_api.is_hub = True
+
+    source = await async_playback_source(hass, RECORDING)
+
+    assert source.startswith("http://nvr/download?")
+    assert async_playback_input_seek(hass, RECORDING) == 240
+    assert fake_api.vod_source_calls[-1]["request_type"] == VodRequestType.DOWNLOAD
 
 
 async def test_routes_are_forgotten_on_demand(hass, patch_host) -> None:

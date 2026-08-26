@@ -218,57 +218,69 @@ export class PlaybackSource {
   }
 
   /**
-   * The recorder's own FLV, demuxed here.
-   *
-   * No server work at all, which is why it is tried first and why this integration needs
-   * no ffmpeg for playback on a desktop browser.
+   * The recorder's own stream: FLV for recorders, or the event-sized MP4 a Home Hub serves.
    */
   async _openPassthrough(file, seek) {
     const event = this._event;
+    let source;
+    try {
+      source = await this._api.streamUrl(this._streamArgs(file, seek));
+    } catch (err) {
+      if (this._event?.id !== event.id) return;
+      // eslint-disable-next-line no-console
+      console.warn("Reolink Stamina: stream unavailable", err);
+      this._giveUpUnless(this.failover("the stream could not be opened"));
+      return;
+    }
+    if (this._event?.id !== event.id) return; // switched away while opening
+
+    if (source.mime === "video/mp4") {
+      this.destroy();
+      this._begin(ROUTE_STREAM, 0);
+      this._video.src = source.url;
+      const startAt = Math.max(0, Number(source.file_seek) || 0);
+      if (startAt) {
+        this._video.addEventListener(
+          "loadedmetadata",
+          () => {
+            if (this._video.getAttribute("src") === source.url) this._video.currentTime = startAt;
+          },
+          { once: true }
+        );
+      }
+      this._video.load();
+      this._armDecodeProbe();
+      this._attemptPlay(this._video.play());
+      return;
+    }
+
     let demuxer;
     try {
       demuxer = await loadDemuxer();
     } catch {
       demuxer = null;
     }
-
     if (!canDemux(demuxer)) {
-      // No Media Source Extensions, which is every iPhone: nothing here can demux the
-      // recorder's FLV at all. The server repackages it instead — the route
-      // that makes the Home Assistant app on an iPhone work. Explicitly not a decode
-      // failure: the browser could not *read* the container and its own decoder was never
-      // asked for an opinion, so repackaging is exactly the fix.
+      // No Media Source Extensions, which is every iPhone: nothing here can demux FLV.
       this._giveUpUnless(this.failover("this browser has no Media Source Extensions", false));
       return;
     }
 
     try {
-      const { url } = await this._api.streamUrl(this._streamArgs(file, seek));
-      if (this._event?.id !== event.id) return; // switched away while opening
-
       this.destroy();
       this._begin(ROUTE_STREAM, seek);
-
-      // Live-paced rather than a seekable file: the recorder sends at roughly real time
-      // and reports no length, so the demuxer must not try to seek within it.
       const player = demuxer.createPlayer(
-        { type: "flv", isLive: true, url },
+        { type: "flv", isLive: true, url: source.url },
         { enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false }
       );
       this._player = player;
       player.attachMediaElement(this._video);
       player.on(demuxer.Events.ERROR, () => this.handleError());
-      // The demuxer names the codec as soon as it has read the stream's header, which is
-      // the earliest anything can know the browser will refuse it. Acting on that saves
-      // several seconds of black window before the watchdog would have noticed.
       player.on(demuxer.Events.MEDIA_INFO, (info) => this.handleMediaInfo(info));
       player.load();
-      // The overlay stays up until a frame actually arrives — see `_checkDecoding`. On a
-      // slow recorder, or a route that is about to fail, that is all the user has to go on.
       this._armDecodeProbe();
       this._attemptPlay(player.play());
     } catch (err) {
-      if (this._event?.id !== event.id) return;
       // eslint-disable-next-line no-console
       console.warn("Reolink Stamina: stream unavailable", err);
       this._giveUpUnless(this.failover("the stream could not be opened"));

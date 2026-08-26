@@ -667,6 +667,39 @@ export async function downloadClip(url, { seconds, maxBytes, onProgress, signal 
   }
 
   const reader = response.body.getReader();
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0];
+  if (contentType === "video/mp4" || contentType === "application/octet-stream") {
+    // Already an MP4 — a Home Hub serves its recordings whole — so there is nothing to
+    // demux and the bytes are kept as they arrive.
+    //
+    // Progress is still reported per chunk, because the caller turns these seconds into
+    // the percentage on the "Assembling clip…" overlay: reporting only at the end leaves
+    // that overlay saying nothing for the whole transfer, which on a slow link is
+    // indistinguishable from a save that has hung. The length is what makes bytes
+    // meaningful as a share of the clip, and a server that does not state one simply gets
+    // the finishing report — better silent than a percentage invented from nothing.
+    const total = Number(response.headers.get("content-length")) || 0;
+    const chunks = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        bytes += value.byteLength;
+        if (maxBytes && bytes > maxBytes) {
+          throw new Error("This clip is larger than the download limit");
+        }
+        chunks.push(value);
+        if (total > 0) onProgress?.({ bytes, seconds: (seconds || 0) * (bytes / total) });
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+    onProgress?.({ seconds: seconds || 0, bytes });
+    return new Blob(chunks, { type: "video/mp4" });
+  }
+
   const chunks = {
     async *[Symbol.asyncIterator]() {
       try {

@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from ..playback_route import (
     PlaybackRouteError,
     Recording,
+    async_playback_input_seek,
     async_playback_secrets,
     async_playback_source,
 )
@@ -47,6 +48,8 @@ from .sessions import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_MAX_DURATION = 15 * 60
 
 
 class ReolinkStaminaRestreamView(HomeAssistantView):
@@ -85,6 +88,13 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
             return web.Response(status=400, text="Malformed recording reference")
 
         try:
+            duration = float(request.query.get("duration", 0))
+        except ValueError:
+            return web.Response(status=400, text="Malformed duration")
+        if not 0 <= duration <= _MAX_DURATION:
+            return web.Response(status=400, text="Duration is out of range")
+
+        try:
             source = await async_playback_source(hass, recording)
         except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
             return web.Response(status=404, text=str(err))
@@ -102,7 +112,13 @@ class ReolinkStaminaRestreamView(HomeAssistantView):
 
         try:
             process, encoder = await _async_spawn(
-                hass, source, label=label, mode=mode, output_format=FORMAT_MP4
+                hass,
+                source,
+                label=label,
+                mode=mode,
+                output_format=FORMAT_MP4,
+                input_seek=async_playback_input_seek(hass, recording),
+                duration=duration,
             )
         except FfmpegUnavailableError as err:
             return web.Response(status=501, text=str(err))

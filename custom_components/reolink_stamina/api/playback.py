@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from homeassistant.components import websocket_api
+from homeassistant.components.reolink.views import async_generate_playback_proxy_url
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -22,6 +23,7 @@ from ..flv_proxy import async_flv_path
 from ..reolink_registry import (
     DeviceUnavailableError,
     ReolinkIncompatibleError,
+    async_get_host,
     async_paired_channel,
 )
 from ..restream import (
@@ -199,6 +201,8 @@ def _async_playback_target(
         # Which container a converted stream should arrive in, decided by what the browser
         # asking can play.
         vol.Optional("format", default=FORMAT_MP4): vol.In(RESTREAM_FORMATS),
+        # Used when saving part of a Home Hub's event-sized MP4 through the remux route.
+        vol.Optional("duration", default=0): vol.Coerce(float),
     }
 )
 @websocket_api.async_response
@@ -278,16 +282,31 @@ async def ws_stream_url(
     }
 
     if route == ROUTE_PASSTHROUGH:
-        result["path"] = async_flv_path(
-            play_entry_id,
-            play_channel,
-            msg["stream"],
-            filename,
-            start_id,
-            playback_id,
-            seek,
-        )
-        result["mime"] = "video/x-flv"
+        # Home Hubs refuse both real-time playback endpoints but serve the recorded MP4
+        # through the official integration's Download route. Unlike an NVR recording this
+        # is already one event-sized file, so the browser can play it directly.
+        try:
+            is_hub = async_get_host(hass, play_entry_id).api.is_hub
+        except (DeviceUnavailableError, ReolinkIncompatibleError):
+            is_hub = False
+        if is_hub:
+            result["path"] = async_generate_playback_proxy_url(
+                play_entry_id, play_channel, filename, msg["stream"], "Download"
+            )
+            result["mime"] = "video/mp4"
+            result["file_seek"] = seek
+            result["file"] = True
+        else:
+            result["path"] = async_flv_path(
+                play_entry_id,
+                play_channel,
+                msg["stream"],
+                filename,
+                start_id,
+                playback_id,
+                seek,
+            )
+            result["mime"] = "video/x-flv"
         connection.send_result(msg["id"], result)
         return
 
@@ -338,6 +357,7 @@ async def ws_stream_url(
         playback_id,
         seek,
         mode,
+        max(0, float(msg["duration"])),
     )
     result["mime"] = "video/mp4"
     connection.send_result(msg["id"], result)
