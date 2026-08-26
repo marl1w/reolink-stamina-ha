@@ -323,6 +323,59 @@ await asyncTest("a Home Hub MP4 is saved without trying to demux it as FLV", asy
   }
 });
 
+await asyncTest("a Home Hub download reports progress while it is arriving", async () => {
+  // The caller turns these seconds into the percentage on the "Assembling clip…" overlay.
+  // Reporting only once the transfer had finished left that overlay saying nothing for the
+  // whole download, which on a slow link cannot be told apart from a save that has hung.
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(6));
+      controller.enqueue(new Uint8Array(6));
+      controller.close();
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(body, { headers: { "content-type": "video/mp4", "content-length": "12" } });
+  const seen = [];
+  try {
+    await downloadClip("http://hub/recording", {
+      seconds: 10,
+      maxBytes: 1024,
+      onProgress: ({ seconds }) => seen.push(Math.round(seconds)),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(seen.length > 1, `progress was reported once, at the end: ${seen}`);
+  assert.deepEqual(seen, [5, 10, 10], "half the bytes is half the clip");
+});
+
+await asyncTest("a download of unknown length still finishes at the full clip", async () => {
+  // Chunked, so there is no length to turn bytes into a share of. Better a bar that only
+  // completes than one moving to a percentage invented from nothing.
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(8));
+      controller.close();
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(body, { headers: { "content-type": "video/mp4" } });
+  const seen = [];
+  try {
+    await downloadClip("http://hub/recording", {
+      seconds: 10,
+      onProgress: ({ seconds }) => seen.push(seconds),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(seen, [10]);
+});
+
 await asyncTest("a trimmed Home Hub clip is seeked and cut by the remux route", async () => {
   const calls = [];
   const api = {
