@@ -23,7 +23,7 @@ from homeassistant.loader import async_get_integration
 
 from .api import async_register as async_register_websocket_api
 from .cache import VodCache
-from .cloud.destination import OneDriveDestination
+from .cloud.destinations import DestinationError, async_create_destination
 from .cloud.devices import async_entry_device_name, async_nvr_identifier, async_nvr_name
 from .cloud.engine import NvrSyncer
 from .const import (
@@ -301,6 +301,11 @@ async def _async_start_syncers(hass: HomeAssistant, entry: ConfigEntry) -> None:
                 subentry.title,
             )
             continue
+        try:
+            destination = async_create_destination(hass, target)
+        except DestinationError as err:
+            _LOGGER.warning("Cloud sync for %s cannot be started: %s", subentry.title, err)
+            continue
 
         syncer = NvrSyncer(
             hass,
@@ -310,7 +315,7 @@ async def _async_start_syncers(hass: HomeAssistant, entry: ConfigEntry) -> None:
             # now still has a name, and the syncer waits for it rather than starting namelessly.
             nvr_name=async_nvr_name(hass, nvr_entry_id) or nvr_entry.title,
             entry_id=nvr_entry_id,
-            destination=OneDriveDestination(hass, target),
+            destination=destination,
             kinds=set(config.get(CONF_SYNC_KINDS) or DEFAULT_SYNC_KINDS),
             quota=int(float(config.get(CONF_QUOTA_GB, DEFAULT_QUOTA_GB)) * BYTES_PER_GB),
             folder=config.get(CONF_REMOTE_FOLDER, DEFAULT_REMOTE_FOLDER),

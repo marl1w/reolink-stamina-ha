@@ -2,9 +2,9 @@
  * What this panel can do, shown once.
  *
  * Reolink Stamina has grown three features and five options, and none of them announce
- * themselves: a timeline that browses every recorder at once, clips copied off-site, and now
- * a record of what each camera normally sees. Somebody who installed it for the timeline has
- * no way of discovering the other two short of reading the repository.
+ * themselves: a timeline that browses every recorder at once, clips copied to a NAS or a
+ * cloud, and now a record of what each camera normally sees. Somebody who installed it for
+ * the timeline has no way of discovering the other two short of reading the repository.
  *
  * So it says so, once, and then never again unless asked. The rules it follows are the ones
  * that decide whether this is useful or irritating:

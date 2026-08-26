@@ -13,14 +13,15 @@ It is a companion to the official [Reolink integration][reolink], not a replacem
 | | |
 | --- | --- |
 | **[One timeline across every device →](docs/timeline.md)** | Every camera's detections in a single list, with the clip one click away and the playhead already at the event. |
-| **[An off-site copy of what mattered →](docs/cloud-sync.md)** | A clip of each detection uploaded to your own OneDrive, so the footage outlives the recorder it was written on. |
+| **[A second copy of what mattered →](docs/cloud-sync.md)** | A clip of each detection sent to your NAS or your own cloud, so the footage outlives the recorder it was written on. |
 | **[Learning what is normal →](docs/relevance.md)** | A record of what each camera usually sees, so the handful of events worth opening can be told from the hundreds that are not. Beta. |
 
 ## Requirements
 
 - Home Assistant 2026.1 or newer, any install type
 - The official **Reolink integration**, with at least one **NVR** with a working HDD
-- An existing **OneDrive** integration, for cloud sync only — its credentials are reused
+- For cloud sync only, one of **Synology DSM**, **WebDAV**, **SFTP Storage**, **OneDrive** or
+  **Google Drive** already set up — whichever you use, its connection is reused
 - **ffmpeg**, only for converted playback and for cutting clips out of 24/7 footage
 
 ## Install

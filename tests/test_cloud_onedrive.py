@@ -13,14 +13,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.reolink_stamina.cloud.destination import (
-    REQUEST_ATTEMPTS,
+from custom_components.reolink_stamina.cloud.destinations import (
     DestinationError,
     OneDriveDestination,
     UploadTooLargeError,
 )
+from custom_components.reolink_stamina.cloud.destinations.base import REQUEST_ATTEMPTS
 
-MOD = "custom_components.reolink_stamina.cloud.destination"
+# The request itself lives with the OAuth machinery both HTTP providers share; the waiting
+# between attempts lives in the base every provider shares.
+MOD = "custom_components.reolink_stamina.cloud.destinations.oauth"
+BASE = "custom_components.reolink_stamina.cloud.destinations.base"
 
 PATH = "Reolink/Main House/260804_215051_main-nvr_Front Gate.mp4"
 CLIP = b"x" * 2048
@@ -152,7 +155,7 @@ async def test_a_throttled_or_broken_gateway_is_retried(status: int) -> None:
 
     with (
         patch(f"{MOD}.async_get_clientsession", return_value=session),
-        patch(f"{MOD}.asyncio.sleep", new=AsyncMock()) as slept,
+        patch(f"{BASE}.asyncio.sleep", new=AsyncMock()) as slept,
     ):
         await destination.async_store(PATH, CLIP)
 
@@ -168,7 +171,7 @@ async def test_graphs_own_retry_after_is_obeyed() -> None:
 
     with (
         patch(f"{MOD}.async_get_clientsession", return_value=session),
-        patch(f"{MOD}.asyncio.sleep", new=AsyncMock()) as slept,
+        patch(f"{BASE}.asyncio.sleep", new=AsyncMock()) as slept,
     ):
         await destination.async_store(PATH, CLIP)
 
@@ -187,7 +190,7 @@ async def test_retrying_does_not_lose_the_clip_or_its_headers() -> None:
 
     with (
         patch(f"{MOD}.async_get_clientsession", return_value=session),
-        patch(f"{MOD}.asyncio.sleep", new=AsyncMock()),
+        patch(f"{BASE}.asyncio.sleep", new=AsyncMock()),
     ):
         await destination.async_store(PATH, CLIP)
 
@@ -204,7 +207,7 @@ async def test_retries_are_not_endless() -> None:
 
     with (
         patch(f"{MOD}.async_get_clientsession", return_value=session),
-        patch(f"{MOD}.asyncio.sleep", new=AsyncMock()),
+        patch(f"{BASE}.asyncio.sleep", new=AsyncMock()),
         pytest.raises(DestinationError, match="attempts"),
     ):
         await destination.async_store(PATH, CLIP)

@@ -15,8 +15,10 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.loader import async_get_integration
 import voluptuous as vol
 
+from .cloud.destinations import DESTINATION_DOMAINS
 from .const import (
     CONF_BROWSE_STREAM,
     CONF_CLIP_LEAD,
@@ -359,6 +361,9 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
             return self.async_abort(
                 reason="no_nvr" if not async_discover_devices(self.hass) else "all_nvrs_configured"
             )
+        destinations = await self._async_destinations()
+        if not destinations:
+            return self.async_abort(reason="no_destination")
 
         if user_input is not None:
             entry_id = user_input[CONF_NVR_ENTRY]
@@ -376,6 +381,7 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
                     CONF_NVR_ENTRY: first,
                     CONF_REMOTE_FOLDER: f"{DEFAULT_REMOTE_FOLDER}/{self._nvr_name(first)}",
                 },
+                destinations,
                 choices=available,
             ),
         )
@@ -392,7 +398,51 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
         subentry = self._get_reconfigure_subentry()
         if user_input is not None:
             return self.async_update_and_abort(self._get_entry(), subentry, data_updates=user_input)
-        return self.async_show_form(step_id="reconfigure", data_schema=self._schema(subentry.data))
+
+        # The destination this syncer already uses stays on the list even when its
+        # integration is not loaded — a OneDrive waiting on reauth must not be the reason
+        # its quota or folder cannot be changed.
+        destinations = await self._async_destinations(
+            keep=subentry.data.get(CONF_DESTINATION_ENTRY)
+        )
+        if not destinations:
+            return self.async_abort(reason="no_destination")
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=self._schema(subentry.data, destinations)
+        )
+
+    async def _async_destinations(
+        self, *, keep: str | None = None
+    ) -> list[selector.SelectOptionDict]:
+        """Return every account and server clips could be sent to, across all providers.
+
+        The list is built here rather than left to a config entry selector because that one
+        filters to a single integration, which would mean asking for the provider on a page
+        of its own before the account could be offered. What the user is actually choosing
+        is "where do clips go", and that is one question — so they get one list, each entry
+        named for the integration it belongs to.
+
+        `keep` names an entry to list regardless of whether its integration is loaded.
+        """
+        options: list[selector.SelectOptionDict] = []
+        for domain in DESTINATION_DOMAINS:
+            entries = self.hass.config_entries.async_loaded_entries(domain)
+            if keep is not None and not any(entry.entry_id == keep for entry in entries):
+                kept = self.hass.config_entries.async_get_entry(keep)
+                if kept is not None and kept.domain == domain:
+                    entries = [*entries, kept]
+            if not entries:
+                continue
+            # The integration's own name, so "SFTP Storage" and "Synology DSM" read as
+            # they do everywhere else in Home Assistant rather than as domains.
+            integration = await async_get_integration(self.hass, domain)
+            for entry in entries:
+                options.append(
+                    selector.SelectOptionDict(
+                        value=entry.entry_id, label=f"{integration.name} — {entry.title}"
+                    )
+                )
+        return options
 
     @callback
     def _unsynced_nvrs(self) -> list[selector.SelectOptionDict]:
@@ -423,6 +473,7 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
     def _schema(
         self,
         current: dict[str, Any] | None,
+        destinations: list[selector.SelectOptionDict],
         *,
         choices: list[selector.SelectOptionDict] | None = None,
     ) -> vol.Schema:
@@ -444,9 +495,12 @@ class CloudSyncSubentryFlow(ConfigSubentryFlow):
             {
                 **fields,
                 vol.Required(
-                    CONF_DESTINATION_ENTRY, default=current.get(CONF_DESTINATION_ENTRY)
-                ): selector.ConfigEntrySelector(
-                    selector.ConfigEntrySelectorConfig(integration="onedrive")
+                    CONF_DESTINATION_ENTRY,
+                    default=current.get(CONF_DESTINATION_ENTRY, destinations[0]["value"]),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=destinations, mode=selector.SelectSelectorMode.DROPDOWN
+                    )
                 ),
                 vol.Required(
                     CONF_QUOTA_GB, default=current.get(CONF_QUOTA_GB, DEFAULT_QUOTA_GB)

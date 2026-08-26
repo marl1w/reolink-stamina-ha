@@ -2,8 +2,13 @@
   "domain": "reolink_stamina",
   "name": "Reolink Stamina",
   "after_dependencies": [
+    "google_drive",
+    "onedrive",
     "recorder",
-    "reolink"
+    "reolink",
+    "sftp_storage",
+    "synology_dsm",
+    "webdav"
   ],
   "codeowners": [
     "@marl1w"
@@ -28,5 +33,5 @@
   "issue_tracker": "https://github.com/marl1w/reolink-stamina-ha/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "1.6.1"
+  "version": "1.7.0"
 }

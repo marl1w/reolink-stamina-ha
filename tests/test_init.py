@@ -13,9 +13,14 @@ from homeassistant.helpers import (
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    MockModule,
+    mock_integration,
+)
 
 from custom_components.reolink_stamina.const import (
+    CONF_DESTINATION_ENTRY,
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_REMOTE_FOLDER,
@@ -45,6 +50,30 @@ def _loaded_reolink(hass: HomeAssistant, name: str = "Backyard NVR") -> MockConf
     entry = MockConfigEntry(domain="reolink", title=name)
     entry.add_to_hass(hass)
     entry.runtime_data = SimpleNamespace(host=FakeHost(api))
+    entry.mock_state(hass, ConfigEntryState.LOADED)
+    return entry
+
+
+#: What Home Assistant calls each storage integration, as its own manifest does.
+_DESTINATION_NAMES = {"onedrive": "OneDrive", "synology_dsm": "Synology DSM"}
+
+
+def _loaded_destination(
+    hass: HomeAssistant, domain: str = "onedrive", title: str = "OneDrive"
+) -> MockConfigEntry:
+    """Add a loaded storage integration for clips to be sent to.
+
+    Every provider borrows one of these, and the flow will not offer a provider that has
+    none — so a cloud sync cannot be configured without it. The integration itself is
+    stubbed, carrying only its real name: setting up the genuine one would need its client
+    library installed, and nothing tested here reaches past the config entry.
+    """
+    mock_integration(
+        hass,
+        MockModule(domain, partial_manifest={"name": _DESTINATION_NAMES.get(domain, domain)}),
+    )
+    entry = MockConfigEntry(domain=domain, title=title)
+    entry.add_to_hass(hass)
     entry.mock_state(hass, ConfigEntryState.LOADED)
     return entry
 
@@ -264,10 +293,19 @@ def _schema_default(result, field: str):
     raise AssertionError(f"{field} not in the form")
 
 
+def _schema_options(result, field: str):
+    """Return the options a form offers for one select field."""
+    for key, value in result["data_schema"].schema.items():
+        if key.schema == field:
+            return value.config["options"]
+    raise AssertionError(f"{field} not in the form")
+
+
 async def test_cloud_sync_offers_the_nvr_and_a_folder_named_after_it(hass: HomeAssistant) -> None:
     """One recorder is the common case, so both fields it decides are filled in already."""
     entry = await _setup(hass)
     reolink = _loaded_reolink(hass)
+    _loaded_destination(hass)
 
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_SYNC), context={"source": "user"}
@@ -276,6 +314,45 @@ async def test_cloud_sync_offers_the_nvr_and_a_folder_named_after_it(hass: HomeA
     assert result["type"] == "form"
     assert _schema_default(result, CONF_NVR_ENTRY) == reolink.entry_id
     assert _schema_default(result, CONF_REMOTE_FOLDER) == f"{DEFAULT_REMOTE_FOLDER}/Backyard NVR"
+
+
+async def test_every_provider_is_offered_in_one_list(hass: HomeAssistant) -> None:
+    """Where clips go is one question, so it is one dropdown rather than a page of its own.
+
+    A config entry selector can only filter to a single integration, which is what would
+    force the provider to be asked first. Building the list here instead means a Synology
+    and a OneDrive sit side by side, each named for the integration it came from.
+    """
+    entry = await _setup(hass)
+    _loaded_reolink(hass)
+    _loaded_destination(hass, "onedrive", "Personal")
+    _loaded_destination(hass, "synology_dsm", "Basement NAS")
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SYNC), context={"source": "user"}
+    )
+
+    labels = [option["label"] for option in _schema_options(result, CONF_DESTINATION_ENTRY)]
+    assert labels == ["Synology DSM — Basement NAS", "OneDrive — Personal"]
+
+
+async def test_cloud_sync_cannot_be_added_without_somewhere_to_put_the_clips(
+    hass: HomeAssistant,
+) -> None:
+    """Every provider borrows an integration's connection; with none set up there is no choice.
+
+    Offering the form anyway would end at an account picker with nothing in it and no
+    explanation of what was missing.
+    """
+    entry = await _setup(hass)
+    _loaded_reolink(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_SYNC), context={"source": "user"}
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_destination"
 
 
 async def test_cloud_sync_offers_the_unusual_rule_off_and_covering_everything(
@@ -288,6 +365,7 @@ async def test_cloud_sync_offers_the_unusual_rule_off_and_covering_everything(
     """
     entry = await _setup(hass)
     _loaded_reolink(hass)
+    _loaded_destination(hass)
 
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, SUBENTRY_TYPE_SYNC), context={"source": "user"}
@@ -308,12 +386,14 @@ async def test_reconfiguring_a_syncer_keeps_the_unusual_rule_it_was_given(
     reconfiguring would silently reset itself the first time anything else was changed.
     """
     reolink = _loaded_reolink(hass)
+    onedrive = _loaded_destination(hass)
     entry = await _setup(
         hass,
         subentries=[
             ConfigSubentryData(
                 data={
                     CONF_NVR_ENTRY: reolink.entry_id,
+                    CONF_DESTINATION_ENTRY: onedrive.entry_id,
                     CONF_SYNC_UNUSUAL: True,
                     CONF_SYNC_UNUSUAL_KINDS: ["motion", "vehicle"],
                 },
@@ -329,8 +409,8 @@ async def test_reconfiguring_a_syncer_keeps_the_unusual_rule_it_was_given(
         (entry.entry_id, SUBENTRY_TYPE_SYNC),
         context={"source": "reconfigure", "subentry_id": subentry.subentry_id},
     )
-
     assert result["type"] == "form"
+    assert _schema_default(result, CONF_DESTINATION_ENTRY) == onedrive.entry_id
     assert _schema_default(result, CONF_SYNC_UNUSUAL) is True
     assert _schema_default(result, CONF_SYNC_UNUSUAL_KINDS) == ["motion", "vehicle"]
 

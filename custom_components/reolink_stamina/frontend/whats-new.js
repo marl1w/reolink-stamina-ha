@@ -23,20 +23,18 @@ export const FEATURES = [
     icon: "mdi:calendar-month-outline",
     title: "One timeline across every camera",
     text:
-      "Every recorder's detections in a single list, with the clip one click away and the " +
-      "playhead already at the event rather than at the top of a five-minute segment.",
+      "Every recorder's detections in one list, with the clip one click away and the " +
+      "playhead already at the event.",
     where: "Pick cameras and a day in the toolbar above.",
   },
   {
     tone: "vehicle",
     icon: "mdi:cloud-off-outline",
-    title: "An off-site copy of what mattered",
+    title: "A second copy of what mattered",
     text:
-      "A clip of each detection uploaded to your own OneDrive, event by event, so the " +
-      "footage outlives the recorder it was written on. One per NVR, each with its own " +
-      "quota and its own switch to automate. It can also keep the odd one out: anything " +
-      "marked unusual goes up too, even when its kind is not on your list, and its file " +
-      "name ends <b>_u</b>.",
+      "A clip of each detection sent to your <b>Synology</b>, <b>WebDAV</b> or <b>SFTP</b> " +
+      "NAS, or to <b>OneDrive</b> or <b>Google Drive</b>, so the footage outlives the " +
+      "recorder. One per NVR, each with its own quota and switch.",
     where: "Settings → Devices & services → Reolink Stamina → <b>Add cloud sync</b>.",
   },
   {
@@ -45,10 +43,9 @@ export const FEATURES = [
     title: "Learning what is normal",
     beta: true,
     text:
-      "Marks the handful of events that are unusual for a camera — not by recognising " +
-      "anything, but by counting. The cat that crosses at one in the morning every night " +
-      "is ordinary; a person doing it is not. What it counts stays on this machine and is " +
-      "deleted with the integration, and it needs a week or so before it can say anything.",
+      "Marks the few events that are unusual for a camera — by counting, not by " +
+      "recognising anything. Stays on this machine, and needs a week or so before it can " +
+      "say anything.",
     where: "Marked rows appear in the timeline. Choose what else it counts in <b>Configure</b>.",
   },
   {
@@ -57,11 +54,8 @@ export const FEATURES = [
     title: "See what a camera has learned",
     beta: true,
     text:
-      "The chart button on any camera opens what it has actually counted: when it sees each " +
-      "kind of thing, how long they last, what fired before them, and what your signals were " +
-      "doing at the time. The toolbar has one for every camera at once, where which camera " +
-      "becomes a distribution of its own. It is also how you spot a camera that has learned " +
-      "something wrong.",
+      "What a camera has actually counted: when it sees each kind of thing, how long they " +
+      "last, what fired before. Also how you spot one that has learned something wrong.",
     where: "The chart button beside a camera, or in the toolbar.",
   },
   {
@@ -70,9 +64,8 @@ export const FEATURES = [
     title: "Playback that works on more browsers",
     beta: true,
     text:
-      "Recordings normally go straight from the recorder to your browser. When that draws " +
-      "a black window — H.265 on Chrome or Firefox, or anything on an iPhone — this " +
-      "converts them instead, and the player says which route the picture took.",
+      "When direct play draws a black window — H.265 on Chrome or Firefox, anything on an " +
+      "iPhone — this converts instead, and the player says which route it took.",
     where: "Nothing to switch on: the player tries it only when direct play fails.",
   },
 ];
