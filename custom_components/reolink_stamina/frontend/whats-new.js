@@ -65,7 +65,7 @@ export const FEATURES = [
     beta: true,
     text:
       "When direct play draws a black window — H.265 on Chrome or Firefox, anything on an " +
-      "iPhone — this converts instead, and the player says which route it took.",
+      "iPhone — this converts instead. <b>Home Hubs</b> now play and save natively.",
     where: "Nothing to switch on: the player tries it only when direct play fails.",
   },
 ];
