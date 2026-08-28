@@ -27,6 +27,7 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
 from .playback_route import (
+    ROUTE_ORDER_REALTIME,
     PlaybackRouteError,
     Recording,
     async_open_playback_stream,
@@ -96,7 +97,12 @@ class ReolinkStaminaFlvView(HomeAssistantView):
             return web.Response(status=400, text="Malformed recording reference")
 
         try:
-            upstream, _route, _url = await async_open_playback_stream(hass, recording)
+            # Only the live-paced routes: a whole file is not something this view can
+            # pipe, and a recorder that has nothing else is handed to the browser as a
+            # file rather than reaching here at all.
+            upstream, _route, _url = await async_open_playback_stream(
+                hass, recording, routes=ROUTE_ORDER_REALTIME
+            )
         except (DeviceUnavailableError, ReolinkIncompatibleError) as err:
             return web.Response(status=404, text=str(err))
         except PlaybackRouteError as err:

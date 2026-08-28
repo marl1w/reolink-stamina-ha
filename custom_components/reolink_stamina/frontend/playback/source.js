@@ -218,7 +218,8 @@ export class PlaybackSource {
   }
 
   /**
-   * The recorder's own stream: FLV for recorders, or the event-sized MP4 a Home Hub serves.
+   * The recorder's own bytes: FLV where it streams them, or the recorded file itself where
+   * it will not -- a Home Hub's event-sized MP4, or an RLN36's, which serves no other way.
    */
   async _openPassthrough(file, seek) {
     const event = this._event;

@@ -20,6 +20,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.reolink_stamina.const import DOMAIN
+from custom_components.reolink_stamina.playback_route import (
+    ROUTE_DOWNLOAD,
+    ROUTE_FLV,
+    async_remember_route,
+)
 
 from .conftest import FakeApi, FakeHost, FakeVodFile
 
@@ -607,6 +612,8 @@ async def test_passthrough_is_still_the_default(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
 ) -> None:
     """Converting is possible on every install; it still only happens when asked."""
+    # Already measured, so answering costs the recorder nothing. See playback_route.py.
+    async_remember_route(hass, setup_stamina.reolink.entry_id, ROUTE_FLV)
     client = await hass_ws_client(hass)
     await client.send_json_auto_id(_stream_url(setup_stamina))
     response = await client.receive_json()
@@ -634,6 +641,24 @@ async def test_a_home_hub_uses_its_working_download_route(
     assert result["file_seek"] == 12
     assert "/sub/Download/" in result["path"]
     assert urlsafe_b64decode(result["path"].rsplit("/", 1)[-1]).decode() == "a-file"
+
+
+async def test_a_recorder_that_only_downloads_is_played_as_a_file(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, setup_stamina
+) -> None:
+    """An RLN36 has neither live endpoint, so the panel is handed the file itself."""
+    async_remember_route(hass, setup_stamina.reolink.entry_id, ROUTE_DOWNLOAD)
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id(_stream_url(setup_stamina, seek=12))
+    response = await client.receive_json()
+
+    assert response["success"]
+    result = response["result"]
+    assert result["mime"] == "video/mp4"
+    assert result["file"] is True
+    # Nothing seeks a whole file for us, so the browser is told where to start.
+    assert result["file_seek"] == 12
+    assert "/sub/Download/" in result["path"]
 
 
 async def test_a_remux_asks_ffmpeg_only_to_repackage(

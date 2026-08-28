@@ -7,6 +7,7 @@ about a failure is how the next attempt picks a different rung.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from typing import Any
@@ -20,10 +21,10 @@ import voluptuous as vol
 
 from ..const import DOMAIN, SEARCH_WINDOW_DAYS
 from ..flv_proxy import async_flv_path
+from ..playback_route import PlaybackRouteError, Recording, async_playback_is_file
 from ..reolink_registry import (
     DeviceUnavailableError,
     ReolinkIncompatibleError,
-    async_get_host,
     async_paired_channel,
 )
 from ..restream import (
@@ -48,6 +49,11 @@ from .shared import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# How long the panel may be kept waiting while a recorder's playback route is discovered.
+# One probe's worth plus room for the route behind it: the common cases are a 404 and a
+# 200, both instant, and the slow case is a recorder that answers nothing at all.
+MEASURE_SECONDS = 20
 
 
 async def _async_resolve_file(
@@ -282,14 +288,37 @@ async def ws_stream_url(
     }
 
     if route == ROUTE_PASSTHROUGH:
-        # Home Hubs refuse both real-time playback endpoints but serve the recorded MP4
-        # through the official integration's Download route. Unlike an NVR recording this
-        # is already one event-sized file, so the browser can play it directly.
+        # Some recorders refuse both real-time playback endpoints — every Home Hub, and
+        # NVRs like the RLN36 whose own web player cannot replay either — but serve the
+        # recorded file through the official integration's Download route. It arrives
+        # whole rather than live-paced, so the browser plays and seeks it as a file.
         try:
-            is_hub = async_get_host(hass, play_entry_id).api.is_hub
-        except (DeviceUnavailableError, ReolinkIncompatibleError):
-            is_hub = False
-        if is_hub:
+            # Bounded: measuring is one refused request per device per run, but a recorder
+            # that has gone silent must not hold a websocket command open while it is
+            # discovered. Past the deadline the pass-through path is handed back, which is
+            # what would have happened before any of this was measured.
+            async with asyncio.timeout(MEASURE_SECONDS):
+                as_file = await async_playback_is_file(
+                    hass,
+                    Recording(
+                        entry_id=play_entry_id,
+                        channel=play_channel,
+                        stream=msg["stream"],
+                        filename=filename,
+                        start_id=start_id,
+                        playback_id=playback_id,
+                        seek=seek,
+                    ),
+                )
+        except (TimeoutError, DeviceUnavailableError, ReolinkIncompatibleError, PlaybackRouteError):
+            # Nothing answered, or the device cannot be read at all. The pass-through path
+            # is still handed back: its own failure is what the panel's ladder is for, and
+            # it reports a great deal more than a websocket error would.
+            as_file = False
+        except Exception:
+            _LOGGER.debug("Could not measure the playback route", exc_info=True)
+            as_file = False
+        if as_file:
             result["path"] = async_generate_playback_proxy_url(
                 play_entry_id, play_channel, filename, msg["stream"], "Download"
             )

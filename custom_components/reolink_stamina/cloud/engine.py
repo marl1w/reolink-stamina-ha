@@ -58,7 +58,11 @@ from ..const import (
     SYNC_WRITE_DELAY_SECONDS,
 )
 from ..detections import async_detection_entities
-from ..playback_route import Recording, async_playback_source
+from ..playback_route import (
+    Recording,
+    async_playback_input_seek,
+    async_playback_source,
+)
 from ..relevance.journal import camera_key
 from ..reolink_registry import async_discover_devices, async_get_host
 from ..tls import async_nvr_session, async_verify_tls
@@ -761,33 +765,33 @@ class NvrSyncer:
                 "this camera records continuously, so the clip has to be cut, and no ffmpeg "
                 "is installed"
             )
-        # Only the clip's bytes cross the network: playback is seeked server-side.
+        # Only the clip's bytes cross the network, where the recorder can seek its own
+        # playback. Where it cannot, the whole file crosses and ffmpeg finds the window.
         file_start = dt.datetime.fromisoformat(recording["start"]).replace(tzinfo=None)
         seek = max(0.0, (job.window.start - file_start).total_seconds())
-        source = await async_playback_source(
-            self.hass,
-            Recording(
-                # The device that answered for this recording, which is the camera unless
-                # its footage lives on a recorder it is paired to. The job stays the
-                # camera's -- that is what the clip is filed and named under.
-                entry_id=recording.get("source_entry_id") or job.entry_id,
-                channel=(
-                    job.channel
-                    if recording.get("source_channel") is None
-                    else int(recording["source_channel"])
-                ),
-                stream=self.stream,
-                filename=recording["name"],
-                start_id=recording.get("file_start_id") or recording["start_id"],
-                playback_id=recording.get("playback_id", ""),
-                seek=int(seek + float(recording.get("offset") or 0.0)),
+        wanted_recording = Recording(
+            # The device that answered for this recording, which is the camera unless its
+            # footage lives on a recorder it is paired to. The job stays the camera's --
+            # that is what the clip is filed and named under.
+            entry_id=recording.get("source_entry_id") or job.entry_id,
+            channel=(
+                job.channel
+                if recording.get("source_channel") is None
+                else int(recording["source_channel"])
             ),
+            stream=self.stream,
+            filename=recording["name"],
+            start_id=recording.get("file_start_id") or recording["start_id"],
+            playback_id=recording.get("playback_id", ""),
+            seek=int(seek + float(recording.get("offset") or 0.0)),
         )
+        source = await async_playback_source(self.hass, wanted_recording)
         return await async_cut_with_ffmpeg(
             binary,
             source,
             wanted,
             SYNC_MAX_CLIP_BYTES,
+            input_seek=async_playback_input_seek(self.hass, wanted_recording),
             verify_tls=async_verify_tls(self.hass),
         )
 

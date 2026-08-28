@@ -1,13 +1,16 @@
 """Which endpoint a recorder serves playback from, and how to address it.
 
 Reolink recorders do not agree on this, and the disagreement does not follow the device
-family. Two endpoints exist:
+family. Three endpoints exist:
 
 * `cmd=Playback` on the CGI API, addressed by timestamp. This is what the recorders'
   own web players use, what Home Assistant's Reolink integration uses, and what this
   integration has always used.
 * `/flv` with `stream=playback.bcs`, addressed by file name, proxying the recorder's
   RTMP service.
+* `cmd=Download`, addressed by file name, which hands over the whole recorded file rather
+  than streaming it. Not real-time playback at all, and it cannot seek — the last resort,
+  for recorders that have neither of the other two.
 
 Measured, on hardware:
 
@@ -16,9 +19,15 @@ Measured, on hardware:
   request — while serving `/flv` live view from the same endpoint perfectly well.
 * RLN16-410 is reported to do the exact reverse: 404 for every `cmd=Playback` however it
   is phrased, and `/flv` playing and seeking correctly.
+* RLN36 is reported to answer neither: 404 on `cmd=Playback`, and `/flv` accepted and then
+  silent until the read times out. Its own web player cannot replay either, so there is no
+  better-phrased request to find — the recorder simply does not serve recordings over
+  either real-time endpoint, and only `cmd=Download` will give them up.
+* Home Hubs behave like the RLN36 and are tried on `cmd=Download` first, because they are
+  known in advance never to have the other two.
 
-So neither endpoint can be assumed, and `is_nvr` does not predict which one a device has:
-both of the above are NVRs. The rule here is therefore not a rule at all but a
+So no endpoint can be assumed, and `is_nvr` does not predict which one a device has:
+three of the four above are NVRs. The rule here is therefore not a rule at all but a
 measurement. The route that has always worked is tried first, the other is tried only
 when it fails, and the answer is remembered per config entry so the cost is one refused
 request per device per Home Assistant run.
@@ -31,6 +40,7 @@ and on reload costs one request and cannot go stale.
 
 from __future__ import annotations
 
+import asyncio
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 import logging
@@ -57,11 +67,22 @@ PLAYBACK_STREAM_TYPE: Final = {STREAM_SUB: 1, STREAM_MAIN: 0}
 # integration has years of behaviour with. `/flv` is the fallback, not the equal.
 ROUTE_PLAYBACK: Final = "playback"
 ROUTE_FLV: Final = "flv"
-ROUTE_ORDER: Final = (ROUTE_PLAYBACK, ROUTE_FLV)
+# Last, and only ever last: it transfers the whole file rather than streaming it, and the
+# recorder will not seek it, so it is what a device gets when it has nothing better.
+ROUTE_DOWNLOAD: Final = "download"
+ROUTE_ORDER: Final = (ROUTE_PLAYBACK, ROUTE_FLV, ROUTE_DOWNLOAD)
+# The two that arrive as a live-paced stream, which is all the FLV pass-through can pipe.
+ROUTE_ORDER_REALTIME: Final = (ROUTE_PLAYBACK, ROUTE_FLV)
 
 # Generous: the recorder sends at roughly real time, so a long clip takes a long time.
 # The browser closing the connection is what normally ends it.
 STREAM_TIMEOUT: Final = ClientTimeout(total=None, sock_connect=15, sock_read=60)
+
+# How long a route gets to answer at all, as opposed to how long it may then take between
+# chunks. Separate because they are different questions: an RLN36 accepts the `/flv`
+# connection and says nothing, and waiting a full read timeout for that costs every route
+# behind it. Once headers arrive the generous read timeout above governs the body.
+PROBE_SECONDS: Final = 15
 
 _ROUTES_KEY: Final = "reolink_stamina_playback_routes"
 
@@ -165,17 +186,23 @@ def async_all_routes(hass: HomeAssistant) -> dict[str, str]:
 
 
 @callback
-def _async_route_order(hass: HomeAssistant, entry_id: str) -> tuple[str, ...]:
+def _async_route_order(
+    hass: HomeAssistant, entry_id: str, *, prefer: str | None = None
+) -> tuple[str, ...]:
     """Return the routes to try, best first.
 
-    A remembered route is tried first but the other is still kept behind it: a recorder
+    A remembered route is tried first but the others are still kept behind it: a recorder
     that stops answering the endpoint it answered an hour ago should fall back rather
     than fail, and re-measuring costs nothing once the first attempt succeeds.
+
+    `prefer` is for what is known before any measurement — a Home Hub has neither
+    real-time endpoint, and making it prove that on every restart is two refused requests
+    nobody learns anything from.
     """
-    remembered = async_remembered_route(hass, entry_id)
-    if remembered is None:
+    first = async_remembered_route(hass, entry_id) or prefer
+    if first is None:
         return ROUTE_ORDER
-    return (remembered, *(route for route in ROUTE_ORDER if route != remembered))
+    return (first, *(route for route in ROUTE_ORDER if route != first))
 
 
 # ------------------------------------------------------------------------ URL building
@@ -255,7 +282,11 @@ async def _async_playback_url(api: Any, recording: Recording) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
 
 
-_BUILDERS: Final = {ROUTE_PLAYBACK: _async_playback_url, ROUTE_FLV: _async_flv_url}
+_BUILDERS: Final = {
+    ROUTE_PLAYBACK: _async_playback_url,
+    ROUTE_FLV: _async_flv_url,
+    ROUTE_DOWNLOAD: _async_download_url,
+}
 
 
 async def async_route_url(hass: HomeAssistant, recording: Recording, route: str) -> str:
@@ -289,7 +320,12 @@ class OpenedStream(NamedTuple):
     url: str
 
 
-async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) -> OpenedStream:
+async def async_open_playback_stream(
+    hass: HomeAssistant,
+    recording: Recording,
+    *,
+    routes: tuple[str, ...] = ROUTE_ORDER,
+) -> OpenedStream:
     """Open the recording on whichever endpoint the recorder serves it from.
 
     The caller owns the response and must close it.
@@ -297,8 +333,11 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
     Success is an HTTP 200 and nothing more. The first bytes are deliberately not read
     here: a recorder that is slow to start sending is still the right route, and waiting
     for video to prove it would turn a busy device into a fallback to an endpoint it does
-    not have. Both failures seen in the wild are unambiguous well before any video — a 404,
-    or the connection closed with no response at all.
+    not have. Every failure seen in the wild is unambiguous well before any video — a 404,
+    the connection closed with no response at all, or nothing said until the probe expires.
+
+    `routes` narrows what may be answered with, for a caller that can only use some of
+    them: the FLV pass-through can pipe a live stream and not a whole file.
     """
     api = async_get_host(hass, recording.entry_id).api
     secrets = api_secrets(api)
@@ -306,8 +345,11 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
     # verifying it is off unless the user has said otherwise. See tls.py.
     session = async_nvr_session(hass)
     problems: list[str] = []
+    prefer = ROUTE_DOWNLOAD if api.is_hub else None
 
-    for route in _async_route_order(hass, recording.entry_id):
+    for route in _async_route_order(hass, recording.entry_id, prefer=prefer):
+        if route not in routes:
+            continue
         try:
             url = await _BUILDERS[route](api, recording)
         except Exception as err:
@@ -319,7 +361,13 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
             continue
 
         try:
-            upstream = await session.get(url, timeout=STREAM_TIMEOUT)
+            # The probe bounds the wait for an answer; STREAM_TIMEOUT then bounds the
+            # gaps between chunks of the answer, which is a much longer thing to allow.
+            async with asyncio.timeout(PROBE_SECONDS):
+                upstream = await session.get(url, timeout=STREAM_TIMEOUT)
+        except TimeoutError:
+            problems.append(f"{route}: no answer within {PROBE_SECONDS}s")
+            continue
         except Exception as err:
             problems.append(f"{route}: {scrub_credentials(str(err), secrets=secrets)}")
             continue
@@ -332,35 +380,62 @@ async def async_open_playback_stream(hass: HomeAssistant, recording: Recording) 
         problems.append(f"{route}: HTTP {upstream.status}")
 
     raise PlaybackRouteError(
-        "The recorder would not serve this recording on either playback endpoint "
+        "The recorder would not serve this recording on any playback endpoint "
         f"({'; '.join(problems)})"
     )
 
 
 @callback
 def async_playback_input_seek(hass: HomeAssistant, recording: Recording) -> int:
-    """Return an ffmpeg input seek when the device cannot seek its own playback stream."""
+    """Return an ffmpeg input seek when the device cannot seek its own playback stream.
+
+    Whole files arrive from their beginning however far in playback should start, so the
+    seek that the other two routes hand to the recorder has to be done locally instead.
+    Read from what was remembered, so it must be called after the source URL, which is
+    what measures.
+    """
+    if async_remembered_route(hass, recording.entry_id) == ROUTE_DOWNLOAD:
+        return recording.seek
     return recording.seek if async_get_host(hass, recording.entry_id).api.is_hub else 0
+
+
+async def async_playback_route(hass: HomeAssistant, recording: Recording) -> str:
+    """Return the route this recorder serves the recording from, measuring if need be.
+
+    Home Hubs are known in advance, so they are answered without a request. Everything
+    else is measured once and remembered, which is the whole point of the module.
+    """
+    api = async_get_host(hass, recording.entry_id).api
+    if api.is_hub:
+        return ROUTE_DOWNLOAD
+
+    remembered = async_remembered_route(hass, recording.entry_id)
+    if remembered is not None:
+        return remembered
+
+    opened = await async_open_playback_stream(hass, recording)
+    # Measured, not consumed: nothing here wants these bytes, and holding the connection
+    # would leave the recorder sending to nobody.
+    opened.response.close()
+    return opened.route
+
+
+async def async_playback_is_file(hass: HomeAssistant, recording: Recording) -> bool:
+    """Whether this recording arrives as a whole file rather than a live-paced stream.
+
+    What the panel needs to know before it is handed a path: a file is given to the video
+    element directly and seeked in the browser, a stream is piped through the FLV view and
+    seeked by reopening it.
+    """
+    return await async_playback_route(hass, recording) == ROUTE_DOWNLOAD
 
 
 async def async_playback_source(hass: HomeAssistant, recording: Recording) -> str:
     """Return a URL for the recording, on a route the recorder is known to answer.
 
-    For ffmpeg, which is handed a URL rather than an open socket. Home Hubs use their
-    whole-file Download route because they close both real-time playback endpoints without
-    sending data. Other recorders use the measured playback route as before.
+    For ffmpeg, which is handed a URL rather than an open socket. A recorder with neither
+    real-time endpoint — a Home Hub, an RLN36 — ends up on its whole-file Download route,
+    and `async_playback_input_seek` is then what starts playback in the right place.
     """
-    api = async_get_host(hass, recording.entry_id).api
-    if api.is_hub:
-        return await _async_download_url(api, recording)
-
-    remembered = async_remembered_route(hass, recording.entry_id)
-    if remembered is not None:
-        return await async_route_url(hass, recording, remembered)
-
-    opened = await async_open_playback_stream(hass, recording)
-    # Measured, not consumed: ffmpeg opens its own connection, and holding this one would
-    # leave the recorder streaming to nobody. The URL is reused rather than rebuilt, so
-    # the token in it is the one that was just proven to work.
-    opened.response.close()
-    return opened.url
+    route = await async_playback_route(hass, recording)
+    return await async_route_url(hass, recording, route)

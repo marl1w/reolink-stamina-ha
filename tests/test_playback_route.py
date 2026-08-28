@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from base64 import urlsafe_b64decode
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,7 +10,9 @@ import pytest
 
 from custom_components.reolink_stamina.playback_route import (
     PLAYBACK_STREAM_TYPE,
+    ROUTE_DOWNLOAD,
     ROUTE_FLV,
+    ROUTE_ORDER_REALTIME,
     ROUTE_PLAYBACK,
     PlaybackRouteError,
     Recording,
@@ -18,6 +21,7 @@ from custom_components.reolink_stamina.playback_route import (
     async_forget_routes,
     async_open_playback_stream,
     async_playback_input_seek,
+    async_playback_is_file,
     async_playback_secrets,
     async_playback_source,
     async_remember_route,
@@ -53,27 +57,60 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """Answers each URL according to which endpoint it names."""
+    """Answers each URL according to which endpoint it names.
 
-    def __init__(self, *, playback: int | Exception, flv: int | Exception) -> None:
-        self._answers = {ROUTE_PLAYBACK: playback, ROUTE_FLV: flv}
+    An answer is a status, an exception to raise, or `_HANGS` for a recorder that accepts
+    the connection and then says nothing, which is what an RLN36 does on `/flv`.
+    """
+
+    def __init__(
+        self,
+        *,
+        playback: int | Exception | object,
+        flv: int | Exception | object,
+        download: int | Exception | object = 200,
+    ) -> None:
+        self._answers = {
+            ROUTE_PLAYBACK: playback,
+            ROUTE_FLV: flv,
+            ROUTE_DOWNLOAD: download,
+        }
         self.requested: list[str] = []
+        self.routes: list[str] = []
 
     async def get(self, url: str, **_kwargs):
         self.requested.append(url)
-        route = ROUTE_FLV if "/flv?" in url else ROUTE_PLAYBACK
+        if "/flv?" in url:
+            route = ROUTE_FLV
+        elif "/download?" in url:
+            route = ROUTE_DOWNLOAD
+        else:
+            route = ROUTE_PLAYBACK
+        self.routes.append(route)
         answer = self._answers[route]
+        if answer is _HANGS:
+            await asyncio.sleep(3600)
         if isinstance(answer, Exception):
             raise answer
         return _FakeResponse(answer)
 
 
+_HANGS = object()
+
+
 @pytest.fixture
 def patch_session(monkeypatch):
     """Install a fake aiohttp session and hand the test its answers."""
+    # So a hanging endpoint costs the test no real time.
+    monkeypatch.setattr("custom_components.reolink_stamina.playback_route.PROBE_SECONDS", 0.05)
 
-    def install(*, playback: int | Exception, flv: int | Exception) -> _FakeSession:
-        session = _FakeSession(playback=playback, flv=flv)
+    def install(
+        *,
+        playback: int | Exception | object,
+        flv: int | Exception | object,
+        download: int | Exception | object = 200,
+    ) -> _FakeSession:
+        session = _FakeSession(playback=playback, flv=flv, download=download)
         monkeypatch.setattr(
             "custom_components.reolink_stamina.playback_route.async_nvr_session",
             lambda _hass: session,
@@ -239,8 +276,12 @@ async def test_a_remembered_route_still_falls_back(hass, patch_host, patch_sessi
 async def test_both_endpoints_refusing_is_one_readable_error(
     hass, patch_host, patch_session
 ) -> None:
-    """Two refusals are one diagnosis, and neither may quote a credential."""
-    patch_session(playback=404, flv=ConnectionResetError("cannot connect: password=s3cr&t"))
+    """Every refusal is one diagnosis, and none of them may quote a credential."""
+    patch_session(
+        playback=404,
+        flv=ConnectionResetError("cannot connect: password=s3cr&t"),
+        download=500,
+    )
 
     with pytest.raises(PlaybackRouteError) as raised:
         await async_open_playback_stream(hass, RECORDING)
@@ -283,6 +324,79 @@ async def test_a_home_hub_gives_ffmpeg_its_download_url(hass, patch_host, fake_a
     assert source.startswith("http://nvr/download?")
     assert async_playback_input_seek(hass, RECORDING) == 240
     assert fake_api.vod_source_calls[-1]["request_type"] == VodRequestType.DOWNLOAD
+
+
+async def test_a_recorder_with_neither_live_endpoint_gets_the_whole_file(
+    hass, patch_host, patch_session
+) -> None:
+    """The RLN36: 404 on one endpoint, silence on the other, and Download left."""
+    session = patch_session(playback=404, flv=_HANGS)
+
+    opened = await async_open_playback_stream(hass, RECORDING)
+
+    assert opened.route == ROUTE_DOWNLOAD
+    assert "/download?" in opened.url
+    assert session.routes == [ROUTE_PLAYBACK, ROUTE_FLV, ROUTE_DOWNLOAD]
+    assert async_remembered_route(hass, "entry") == ROUTE_DOWNLOAD
+
+
+async def test_a_silent_endpoint_says_so_rather_than_quoting_a_socket(
+    hass, patch_host, patch_session
+) -> None:
+    """A recorder that never answers must not cost every route behind it its chance."""
+    patch_session(playback=404, flv=_HANGS, download=500)
+
+    with pytest.raises(PlaybackRouteError) as raised:
+        await async_open_playback_stream(hass, RECORDING)
+
+    assert "flv: no answer within" in str(raised.value)
+    assert "download: HTTP 500" in str(raised.value)
+
+
+async def test_the_pass_through_view_is_never_offered_a_whole_file(
+    hass, patch_host, patch_session
+) -> None:
+    """The FLV view pipes a live stream; a file is not one, so it is not a fallback."""
+    session = patch_session(playback=404, flv=500)
+
+    with pytest.raises(PlaybackRouteError):
+        await async_open_playback_stream(hass, RECORDING, routes=ROUTE_ORDER_REALTIME)
+
+    assert ROUTE_DOWNLOAD not in session.routes
+
+
+async def test_a_whole_file_is_seeked_by_ffmpeg_instead(hass, patch_host, patch_session) -> None:
+    """Nothing seeks a Download, so the offset has to be applied locally."""
+    patch_session(playback=404, flv=404)
+
+    source = await async_playback_source(hass, RECORDING)
+
+    assert "/download?" in source
+    assert await async_playback_is_file(hass, RECORDING) is True
+    assert async_playback_input_seek(hass, RECORDING) == 240
+
+
+async def test_a_streaming_recorder_seeks_itself(hass, patch_host, patch_session) -> None:
+    """Where the recorder can seek, ffmpeg must not seek again on top of it."""
+    patch_session(playback=200, flv=200)
+
+    await async_playback_source(hass, RECORDING)
+
+    assert await async_playback_is_file(hass, RECORDING) is False
+    assert async_playback_input_seek(hass, RECORDING) == 0
+
+
+async def test_a_home_hub_is_not_made_to_prove_it(
+    hass, patch_host, fake_api, patch_session
+) -> None:
+    """A device known to have neither live endpoint should not refuse two per restart."""
+    fake_api.is_hub = True
+    session = patch_session(playback=200, flv=200)
+
+    opened = await async_open_playback_stream(hass, RECORDING)
+
+    assert opened.route == ROUTE_DOWNLOAD
+    assert session.routes == [ROUTE_DOWNLOAD]
 
 
 async def test_routes_are_forgotten_on_demand(hass, patch_host) -> None:

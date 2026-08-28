@@ -252,9 +252,5 @@ def patch_host(fake_api: FakeApi):
             "custom_components.reolink_stamina.playback_route.async_get_host",
             return_value=host,
         ),
-        patch(
-            "custom_components.reolink_stamina.api.playback.async_get_host",
-            return_value=host,
-        ),
     ):
         yield host

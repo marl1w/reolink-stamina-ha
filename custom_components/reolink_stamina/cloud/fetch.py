@@ -100,6 +100,7 @@ async def async_cut_with_ffmpeg(
     seconds: float,
     limit: int,
     *,
+    input_seek: int = 0,
     verify_tls: bool = False,
 ) -> bytes:
     """Copy `seconds` of a stream into a fragmented MP4, in memory.
@@ -112,6 +113,10 @@ async def async_cut_with_ffmpeg(
     mid-clip would otherwise leave ffmpeg waiting for bytes that never come, and a stuck
     subprocess inside Home Assistant is worse than a missing clip.
 
+    `input_seek` is for a recorder that cannot seek its own playback and hands over the
+    whole file instead: the clip then has to be found within it here. Before `-i` so the
+    reader skips ahead rather than decoding everything up to the window.
+
     `verify_tls` follows the option, so this pull agrees with the aiohttp ones about the
     recorder's certificate. Its default matches the option's: ffmpeg does not verify.
     """
@@ -122,6 +127,7 @@ async def async_cut_with_ffmpeg(
         "error",
         "-nostdin",
         *ffmpeg_tls_args(source_url, verify_tls=verify_tls),
+        *(("-ss", f"{input_seek:.3f}") if input_seek > 0 else ()),
         "-i",
         source_url,
         "-t",
