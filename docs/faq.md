@@ -58,6 +58,8 @@ logger:
 | Low resolution needs converting too, not just high | Some models encode H.265 on both streams. The route is chosen by what the stream contains, not by which resolution it is |
 | Playback is slow and the badge says "Re-encoded" | The machine is converting in software. Expected on a Pi at high resolution |
 | `CERTIFICATE_VERIFY_FAILED`, or a 502 with an empty body, while search works fine | The recorder is being reached over HTTPS with a certificate Home Assistant does not trust. Turn *Verify the recorder's HTTPS certificate* off |
+| "The recorder would not serve this recording on any playback endpoint" | Every way of asking was refused. Some recorders — Home Hubs, and NVRs like the RLN36 — will not stream a recording at all and hand over the whole file instead, which is found automatically. Seeing this means even that was refused: check the clip still exists and the recorder is reachable |
+| Playback works but dragging the playhead is slow or lands in the wrong place | The recorder is one that only serves whole files, so the seeking is the browser's rather than the recorder's. How well it works depends on the recorder answering range requests |
 
 ### Cloud sync
 
