@@ -70,6 +70,30 @@ test("every feature says what it is and where to find it", () => {
   }
 });
 
+test("the copy's markup is only what the dialog renders", () => {
+  // Both fields are put on the page as HTML, and the copy bolds provider and device names.
+  // It was not always so: `text` went in as textContent while `where` went in as markup, so
+  // the cloud-sync line read "your <b>Synology</b>, <b>WebDAV</b> or <b>SFTP</b> NAS" with
+  // the tags in front of the reader. Bold is the whole vocabulary, and the styling covers
+  // exactly that — anything else is either invisible or a hole this list should not have.
+  const allowed = /<\/?b>/g;
+  for (const feature of FEATURES) {
+    for (const [field, copy] of [
+      ["text", feature.text],
+      ["where", feature.where],
+    ]) {
+      const left = copy.replace(allowed, "");
+      assert.ok(
+        !/[<>]/.test(left),
+        `${feature.title}: ${field} carries markup the dialog does not style: ${left}`
+      );
+      const opens = (copy.match(/<b>/g) || []).length;
+      const closes = (copy.match(/<\/b>/g) || []).length;
+      assert.equal(opens, closes, `${feature.title}: ${field} has an unclosed <b>`);
+    }
+  }
+});
+
 test("the betas are marked as such", () => {
   // Nothing is off any more, so the mark means "newer, and it has met less hardware" — which
   // is what somebody deciding how much to trust a feature actually wants to know.

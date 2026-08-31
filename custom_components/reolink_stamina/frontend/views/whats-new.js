@@ -88,6 +88,8 @@ h2 { margin: 0; font-size: 1.24rem; font-weight: 650; letter-spacing: -0.01em; }
 }
 .thing__text { font-size: 0.85rem; line-height: 1.5; color: var(--rv-text-dim); }
 .thing__where { font-size: 0.78rem; line-height: 1.5; margin-top: 5px; color: var(--rv-text-dim); }
+/* What the bolding is for in both: a name lifted out of dim prose to full-strength text. */
+.thing__text b,
 .thing__where b { color: var(--rv-text); font-weight: 600; }
 
 .foot {
@@ -171,7 +173,10 @@ export class WhatsNew extends HTMLElement {
                 feature.title,
                 feature.beta ? el("span", { class: "tag", text: "beta" }) : null
               ),
-              el("div", { class: "thing__text", text: feature.text }),
+              // Markup rather than text, and both fields alike: the copy bolds the
+              // provider names and the device names, and rendering that as textContent put
+              // literal <b> tags in front of the reader.
+              el("div", { class: "thing__text", html: feature.text }),
               el("div", { class: "thing__where", html: feature.where })
             )
           )
