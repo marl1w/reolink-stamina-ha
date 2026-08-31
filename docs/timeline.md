@@ -12,7 +12,7 @@ Pick cameras, then a day or a range. Rows say what fired and how often, clips op
 
 Nothing to do — the panel finds your devices through the Reolink integration and appears in the sidebar.
 
-To adjust it: *Reolink Stamina → **Configure***, over three pages — what is switched on, the player, and what the counting should watch.
+To adjust it: *Reolink Stamina → **Configure***, over four pages — what is switched on, the player, what else the counting should watch, and what counts as unusual.
 
 | Option | Default | What it is for |
 | --- | --- | --- |

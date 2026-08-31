@@ -46,7 +46,9 @@ export const FEATURES = [
       "Marks the few events that are unusual for a camera — by counting, not by " +
       "recognising anything. Stays on this machine, and needs a week or so before it can " +
       "say anything.",
-    where: "Marked rows appear in the timeline. Choose what else it counts in <b>Configure</b>.",
+    where:
+      "Marked rows appear in the timeline. What else it counts, how much it marks, and " +
+      "which cameras it compares are in <b>Configure</b>.",
   },
   {
     tone: "motion",

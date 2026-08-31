@@ -76,6 +76,7 @@ logger:
 | --- | --- |
 | Nothing is marked yet | Expected — see [how long it takes](relevance.md#what-to-expect) |
 | A camera says it is still collecting after weeks | It needs a week *and* a few hundred detections; the detail view on any row says which it is short of |
+| One property's cameras are judged against another's rhythm | By default every camera is compared with every other. Set *What each camera is compared with* to *Each recorder on its own* under **Configure** |
 | No history was imported | Home Assistant's recorder is disabled, has purged, or excludes the Reolink sensors. Collecting from now on is unaffected — the import is a head start, not how it works |
 
 [reolink]: https://www.home-assistant.io/integrations/reolink/
