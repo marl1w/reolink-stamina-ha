@@ -364,6 +364,37 @@ RELEVANCE_SENSITIVITY_FLOORS: Final = {
 }
 DEFAULT_RELEVANCE_SENSITIVITY: Final = "balanced"
 
+CONF_RELEVANCE_SCOPE: Final = "relevance_scope"
+# How wide a pool an event is judged against, when its own camera has too little history to
+# judge it alone. It does not change what is counted — every camera keeps its own profile
+# either way — it changes only what a thin profile is allowed to borrow from, and which
+# cameras can count as having fired before this one.
+#
+# One pool is the default, because it is what every installation already has and because it
+# is the setting that asks least of a camera: a new one leans on everything else until it
+# has a history of its own. The other two are for somebody who knows their cameras do not
+# belong together — a Home Assistant serving two properties, where a quiet camera at the
+# coast house should not inherit the rhythm of a street-facing gate two hundred miles away,
+# and where "the drive fired ninety seconds before the hall" is a statement about one
+# building. That is a fact about a household, not something to infer from a config entry.
+#
+#   together — every camera in this Home Assistant pools together, and any of them can
+#              precede any other. The default, and unchanged behaviour.
+#   recorder — each recorder is its own world, matching the granularity the signals picker
+#              already works at.
+#   camera   — nothing is shared. Each camera is judged only against its own past, and the
+#              only thing that can precede it is itself. Honest, and slow to start: a camera
+#              has nothing to lean on until it has a history of its own.
+RELEVANCE_SCOPE_TOGETHER: Final = "together"
+RELEVANCE_SCOPE_RECORDER: Final = "recorder"
+RELEVANCE_SCOPE_CAMERA: Final = "camera"
+RELEVANCE_SCOPES: Final = (
+    RELEVANCE_SCOPE_TOGETHER,
+    RELEVANCE_SCOPE_RECORDER,
+    RELEVANCE_SCOPE_CAMERA,
+)
+DEFAULT_RELEVANCE_SCOPE: Final = RELEVANCE_SCOPE_TOGETHER
+
 # A signal with more distinct values than this is noise wearing a signal's clothes: with six
 # months of history behind it, forty categories hold a handful of events each.
 RELEVANCE_SIGNAL_MAX_VALUES: Final = 12

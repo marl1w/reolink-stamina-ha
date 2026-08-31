@@ -8,11 +8,17 @@ has to know what a cat is for that to fall out.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import datetime as dt
 import math
 
 import pytest
 
+from custom_components.reolink_stamina.const import (
+    RELEVANCE_SCOPE_CAMERA,
+    RELEVANCE_SCOPE_RECORDER,
+    RELEVANCE_SCOPE_TOGETHER,
+)
 from custom_components.reolink_stamina.relevance.events import Event
 from custom_components.reolink_stamina.relevance.rates import (
     CircularRate,
@@ -20,8 +26,10 @@ from custom_components.reolink_stamina.relevance.rates import (
     bands,
     build,
     duration_bucket,
+    group_key,
     interpolate,
     lag_bucket,
+    preceded,
     predecessor_label,
     quantile,
     recency,
@@ -35,6 +43,8 @@ from custom_components.reolink_stamina.relevance.score import (
 )
 
 _CAMERA = "entry1:0"
+# A camera on a second recorder, at a second property. See `_two_properties`.
+_OTHER_NVR = "entry2:0"
 _NOW = 1_800_000_000.0
 _DAY = 86400.0
 
@@ -681,3 +691,100 @@ def test_history_from_before_a_signal_existed_is_not_a_hole():
 
     assert any(term.name == "signal" for term in result.terms)
     assert math.isfinite(result.total)
+
+
+# ---------------------------------------------------------------------- scope
+
+
+def _two_properties(days: int = 180) -> list[Event]:
+    """Return two recorders whose households have nothing in common.
+
+    The first is the boring household above. The second is nocturnal: its people come and go
+    at two in the morning, every night, and have done for six months. Neither has anything to
+    say about the other, which is exactly the claim the scope setting exists to let somebody
+    make.
+    """
+    events = list(_history(days))
+    for day in range(days):
+        base = _NOW - (days - day) * _DAY
+        for started_at, minute in ((base + 2 * 3600, 120), (base + 2 * 3600 + 600, 130)):
+            events.append(replace(_event(started_at, minute, "person"), camera=_OTHER_NVR))
+    events.sort(key=lambda item: item.started_at)
+    return events
+
+
+def test_the_pool_a_camera_backs_off_to_follows_the_scope():
+    """The whole point: a thin profile borrows from its own pool and no other.
+
+    Two properties, one nocturnal. Pooled together, the first property's cameras have seen
+    2 a.m. arrivals several hundred times — through the other recorder — and a person at 2
+    a.m. there is that much less surprising. Kept apart, it is unheard of.
+    """
+    events = _two_properties()
+    together = build(events, now=_NOW, scope=RELEVANCE_SCOPE_TOGETHER)
+    apart = build(events, now=_NOW, scope=RELEVANCE_SCOPE_RECORDER)
+
+    intruder = _event(_NOW, 120, "person")
+    assert (
+        score(intruder, apart, previous=None).total > score(intruder, together, previous=None).total
+    )
+
+
+def test_a_camera_kept_to_itself_has_nothing_to_borrow():
+    """Under the per-camera scope every fallback collapses onto the camera's own profile."""
+    events = _two_properties()
+    model = build(events, now=_NOW, scope=RELEVANCE_SCOPE_CAMERA)
+
+    specific, broader, pooled = model.blended(_CAMERA, "person")
+
+    assert broader.events == specific.events
+    assert pooled.events == model.per_camera[_CAMERA].events
+
+
+def test_nothing_at_another_property_counts_as_having_fired_first():
+    """A camera two hundred miles away did not precede anything.
+
+    Recorded as much as scored: the two must agree on the label or the commonest situation in
+    a quiet household is never found in the table.
+    """
+    events = _two_properties()
+    apart = build(events, now=_NOW, scope=RELEVANCE_SCOPE_RECORDER)
+
+    labels = {
+        predecessor_label(event, previous)
+        for event, previous in preceded(events, scope=RELEVANCE_SCOPE_RECORDER)
+        if event.camera == _CAMERA
+    }
+
+    assert labels, "this fixture is meant to produce predecessors"
+    assert not any(_OTHER_NVR in label for label in labels)
+    assert all(
+        _OTHER_NVR not in label for label in apart.profiles[(_CAMERA, "person")].predecessor.weights
+    )
+
+
+def test_a_group_is_read_off_the_camera_key_rather_than_looked_up():
+    """A recorder that has since been unplugged still groups its history correctly."""
+    assert group_key("entry1:3", RELEVANCE_SCOPE_RECORDER) == "entry1"
+    assert group_key("entry1:3", RELEVANCE_SCOPE_CAMERA) == "entry1:3"
+    assert group_key("entry1:3", RELEVANCE_SCOPE_TOGETHER) == group_key(
+        "entry2:0", RELEVANCE_SCOPE_TOGETHER
+    )
+
+
+def test_each_camera_still_keeps_its_own_profile_whatever_the_scope():
+    """Scope changes what may be borrowed, never what is counted."""
+    events = _two_properties()
+    counts = {
+        scope: {
+            camera: profile.events
+            for camera, profile in build(events, now=_NOW, scope=scope).per_camera.items()
+        }
+        for scope in (
+            RELEVANCE_SCOPE_TOGETHER,
+            RELEVANCE_SCOPE_RECORDER,
+            RELEVANCE_SCOPE_CAMERA,
+        )
+    }
+
+    assert len(set(map(str, counts.values()))) == 1

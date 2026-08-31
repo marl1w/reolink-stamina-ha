@@ -441,9 +441,10 @@ async def test_a_recorder_that_already_syncs_is_not_offered_twice(hass: HomeAssi
 async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     """The options the panel's behaviour depends on, gathered over the pages they live on.
 
-    Three pages rather than one form of twelve fields: what is switched on, how the player
-    behaves, and what the counting should watch alongside a detection. Walking them here is
-    the only place the chaining is exercised.
+    Four pages rather than one form of fourteen fields: what is switched on, how the player
+    behaves, what the counting should watch alongside a detection, and where the line between
+    ordinary and unusual is drawn. Walking them here is the only place the chaining is
+    exercised.
     """
     entry = await _setup(hass)
 
@@ -460,7 +461,8 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
     assert result["step_id"] == "player"
 
     # Page two: the player. No recorder is set up here, so there is nothing to pick signals
-    # for and the third page has nothing to ask.
+    # for and the third page is skipped — but the fourth is not, because how much to mark and
+    # what to compare it with outlive whichever recorders happen to be loaded right now.
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -472,9 +474,18 @@ async def test_options_flow_saves_values(hass: HomeAssistant) -> None:
             "clip_tail": 25,
         },
     )
+    assert result["type"] == "form"
+    assert result["step_id"] == "marking"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"relevance_sensitivity": "few", "relevance_scope": "camera"},
+    )
     await hass.async_block_till_done()
 
     assert result["type"] == "create_entry"
+    assert entry.options["relevance_sensitivity"] == "few"
+    assert entry.options["relevance_scope"] == "camera"
     assert entry.options["browse_stream"] == "main"
     assert entry.options["split_minutes"] == 3
     assert entry.options["require_admin"] is False
@@ -511,10 +522,18 @@ async def test_the_signals_page_is_offered_for_each_recorder(hass: HomeAssistant
 
     # Skippable, and it opens empty: the counting is worth having on time alone.
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["type"] == "form"
+    assert result["step_id"] == "marking"
+
+    # And the last page defaults to one pool, which is what every installation had before
+    # the setting existed. Keeping recorders apart is a fact about a household, so it is
+    # asked for rather than assumed.
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     await hass.async_block_till_done()
 
     assert result["type"] == "create_entry"
     assert entry.options["relevance_signals"] == {}
+    assert entry.options["relevance_scope"] == "together"
 
 
 async def test_panel_modules_are_served_under_a_content_scoped_path(

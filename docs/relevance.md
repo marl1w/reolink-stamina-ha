@@ -21,11 +21,19 @@ Read this first, because it is a record of when your cameras see people — whic
 
 ## Setting it up
 
-Nothing to switch on. The last page of *Reolink Stamina → **Configure*** — **Marking, and what else to count** — holds the two things you can change, both optional.
-
-**How much to mark** — *Only the strangest*, *Balanced*, or *More, including borderline ones*. Measured across nine cameras, the three came out at roughly 1.6, 4 and 9 marks a day for the whole property. Change it whenever; nothing is recounted, the line just moves.
+Nothing to switch on. The last two pages of *Reolink Stamina → **Configure*** hold everything you can change, and all of it is optional.
 
 **What else to count**, as one list per recorder: anything true of the whole property, like whether anybody is in, whether the alarm is set, whether the gate is locked. *"A person on the drive while nobody is home"* then becomes its own thing rather than just a person on the drive. Nothing is pre-selected — the model never interprets a signal, it counts the state as it finds it, so "is anyone home" works as well as a named person. Each camera's own floodlight, siren and day/night state are found automatically and need no picking.
+
+**What counts as unusual** is the last page, and it holds two settings.
+
+*How much to mark* — *Only the strangest*, *Balanced*, or *More, including borderline ones*. Measured across nine cameras, the three came out at roughly 1.6, 4 and 9 marks a day for the whole property.
+
+*What each camera is compared with* — *All cameras together* (the default), *Each recorder on its own*, or *Each camera on its own*. Every camera is always judged against its own past first; this decides what a camera with too little history of its own may borrow from, and which cameras count as having fired before one another.
+
+One pool suits most houses, and it asks least of a new camera — it leans on every other one until it has a history of its own. Keep recorders apart if yours cover *different properties*: a quiet camera at a holiday house should not inherit the rhythm of a street-facing gate two hundred miles away, and *"the drive fired ninety seconds before the hall"* is a statement about one building. *Each camera on its own* shares nothing at all: the most honest setting and the slowest to start, since a new camera has nothing to lean on until it has a history of its own.
+
+Neither setting recounts anything. Both are applied when an event is scored, over a journal that was written down without them, so changing either just moves the line.
 
 ## What to expect
 

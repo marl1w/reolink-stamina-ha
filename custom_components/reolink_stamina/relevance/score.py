@@ -37,6 +37,7 @@ from .rates import (
     Profile,
     duration_bucket,
     interpolate,
+    preceded,
     predecessor_label,
     quantile,
     signal_value,
@@ -179,7 +180,7 @@ def _terms(
     specific, broader, overall = model.blended(event.camera, event.kind)
 
     def blend(pick) -> float:
-        """Fall back from this camera and kind, to the kind anywhere, to everything."""
+        """Fall back from this camera and kind, to the kind across its pool, to the pool."""
         return interpolate(
             pick(specific),
             interpolate(pick(broader), pick(overall), broader.weight),
@@ -439,10 +440,8 @@ def calibrate(
     as "still collecting" — deliberately not the same as a threshold of zero.
     """
     scores: dict[str, list[float]] = {}
-    previous: Event | None = None
-    for event in events:
+    for event, previous in preceded(events, scope=model.scope):
         scores.setdefault(event.camera, []).append(total(event, previous, model))
-        previous = event
 
     model.thresholds = {
         camera: quantile(values, share)

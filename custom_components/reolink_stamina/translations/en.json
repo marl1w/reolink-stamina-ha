@@ -15,7 +15,7 @@
     "step": {
       "init": {
         "title": "Reolink Stamina",
-        "description": "What is switched on. The next pages cover the player, and what the counting should watch.",
+        "description": "What is switched on. The player, what else to count, and where the line is drawn follow.",
         "data": {
           "hide_timer": "Show detections only",
           "require_admin": "Restrict the panel to administrators",
@@ -23,18 +23,8 @@
         },
         "data_description": {
           "hide_timer": "On: person, vehicle and animal, with motion as a filter. Off also brings back scheduled and unlabelled recordings, which dominate a 24/7 recorder.",
-          "require_admin": "Recordings can be sensitive. Off lets non-admin users open the panel.",
-          "verify_tls": "Off suits the self-signed certificate Reolink ships, which no verification can pass. On only if you installed one this Home Assistant trusts."
-        }
-      },
-      "signals": {
-        "title": "Marking, and what else to count",
-        "description": "Relevance already counts the time of day, how long a detection lasted, which camera fired before it, and what each camera reports about itself — its floodlight, its siren, and its day/night state, which is the camera telling you it switched to infrared. Those are found automatically and attached to the camera they belong to.\n\nAdd anything here that is true of the whole property rather than of one lens: whether anybody is in, whether the alarm is set, whether the gate is locked. \"A person on the drive while nobody is home\" then becomes its own thing rather than just a person on the drive.\n\nOne list per recorder, because a Home Assistant often covers more than one property. Leaving them empty is fine.\n\nWhat is counted stays on this machine, is never sent anywhere, and removing the integration deletes it.",
-        "data": {
-          "relevance_sensitivity": "How much to mark"
-        },
-        "data_description": {
-          "relevance_sensitivity": "A row is marked when it is unusual for its camera and unusual at all. This moves the second of those. Measured across nine cameras, the three choices came out at roughly 1.6, 4 and 9 marks a day for the whole property. Change it whenever — nothing is recounted, the line just moves."
+          "require_admin": "Off lets non-admin users open the panel.",
+          "verify_tls": "Off suits the self-signed certificate Reolink ships. On only if you installed one this Home Assistant trusts."
         }
       },
       "player": {
@@ -51,10 +41,26 @@
         "data_description": {
           "browse_stream": "Low resolution searches faster. Playback and downloads can still use high.",
           "split_minutes": "How finely long recordings split into rows. 0 lists one row per file.",
-          "pre_roll": "Where to draw the trigger marker for cameras that do not report their own.",
+          "pre_roll": "Where the trigger marker goes for cameras that do not report their own.",
           "event_lead": "Where the playhead opens inside the clip. It does not change the clip.",
           "clip_lead": "On 24/7 footage, where a trimmed clip starts before the first detection.",
           "clip_tail": "And where it ends, after the last one clears."
+        }
+      },
+      "signals": {
+        "title": "What else to count",
+        "description": "Anything true of the whole property, counted alongside each detection: whether anybody is in, whether the alarm is set, whether the gate is locked.\n\nOne list per recorder. Leaving them empty is fine — the time of day, how long a detection lasted, which camera fired before it, and each camera's own floodlight, siren and day/night state are already counted without being picked.\n\nWhat is counted stays on this machine and is deleted with the integration."
+      },
+      "marking": {
+        "title": "What counts as unusual",
+        "description": "Both are applied when an event is scored, so changing either moves the line without recounting anything.",
+        "data": {
+          "relevance_sensitivity": "How much to mark",
+          "relevance_scope": "What each camera is compared with"
+        },
+        "data_description": {
+          "relevance_sensitivity": "A row is marked when it is unusual for its camera and unusual at all. This moves the second. Across nine cameras the three came out at roughly 1.6, 4 and 9 marks a day.",
+          "relevance_scope": "Every camera is judged against its own past first. This decides what a camera with too little history may borrow from, and which cameras count as having fired before one another. Keep recorders apart only if they cover different properties."
         }
       }
     }
@@ -89,6 +95,13 @@
         "few": "Only the strangest",
         "balanced": "Balanced",
         "many": "More, including borderline ones"
+      }
+    },
+    "relevance_scope": {
+      "options": {
+        "together": "All cameras together",
+        "recorder": "Each recorder on its own",
+        "camera": "Each camera on its own"
       }
     }
   },

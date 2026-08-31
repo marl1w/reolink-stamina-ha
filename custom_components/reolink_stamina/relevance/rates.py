@@ -21,11 +21,12 @@ history grows rather than more expensive, because scoring an event is a lookup e
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 import math
 
 from ..const import (
+    DEFAULT_RELEVANCE_SCOPE,
     RATE_BACKOFF_WEIGHT,
     RATE_BANDWIDTH_MINUTES,
     RATE_BIN_MINUTES,
@@ -33,6 +34,8 @@ from ..const import (
     RATE_FLOOR,
     RATE_HALF_LIFE_DAYS,
     RATE_SMOOTHING,
+    RELEVANCE_SCOPE_CAMERA,
+    RELEVANCE_SCOPE_TOGETHER,
     SCORE_LAG_BUCKETS,
     SIGNAL_BAND_MIN,
     SIGNAL_BANDS,
@@ -40,6 +43,43 @@ from ..const import (
 from .events import Event
 
 _SECONDS_PER_DAY = 86400.0
+
+# What every camera pools into when nothing is being kept apart. A name rather than an empty
+# string, because it is written into a model and read back out of one.
+_EVERYTHING = "*"
+
+
+def group_key(camera: str, scope: str) -> str:
+    """Return the pool this camera belongs to under a given scope.
+
+    A camera is identified as `entry_id:channel` — the recorder's config entry and the channel
+    on it — so which recorder a camera hangs off needs no lookup and no registry. That matters
+    more than the tidiness: this runs while a model is built from six months of history, and
+    it has to give the same answer for a recorder that has since been unplugged.
+    """
+    if scope == RELEVANCE_SCOPE_TOGETHER:
+        return _EVERYTHING
+    if scope == RELEVANCE_SCOPE_CAMERA:
+        return camera
+    return camera.rsplit(":", 1)[0]
+
+
+def preceded(events: Iterable[Event], *, scope: str) -> Iterator[tuple[Event, Event | None]]:
+    """Pair each event with whatever fired before it inside its own pool.
+
+    Every walk over a history needs this and each one used to keep its own `previous`
+    variable, which is one assignment away from a bug that shows up as nothing worse than
+    slightly wrong numbers. It is also where the scope does most of its visible work: under a
+    per-recorder scope the hall camera at one property no longer counts as the thing that
+    preceded a gate at another, which it plainly never was.
+
+    Events must arrive oldest first, which `derive` guarantees.
+    """
+    latest: dict[str, Event] = {}
+    for event in events:
+        group = group_key(event.camera, scope)
+        yield event, latest.get(group)
+        latest[group] = event
 
 
 def _kernel(bandwidth: float) -> list[float]:
@@ -207,15 +247,28 @@ class Model:
     """The learned profiles, plus the fallbacks a thin one is blended with."""
 
     profiles: dict[tuple[str, str], Profile] = field(default_factory=dict)
-    # What this subject does everywhere. The fallback a thin profile is blended towards, and
-    # the choice matters more than it looks: backing off to what the *camera* sees would mix
-    # subjects, so a person at one in the morning would be rescued by every cat that has ever
-    # crossed at one in the morning. That is precisely the discrimination this exists for, so
-    # the backoff holds the subject fixed and generalises the location instead.
-    per_kind: dict[str, Profile] = field(default_factory=dict)
+    # What this subject does across the rest of its pool. The fallback a thin profile is
+    # blended towards, and the choice matters more than it looks: backing off to what the
+    # *camera* sees would mix subjects, so a person at one in the morning would be rescued by
+    # every cat that has ever crossed at one in the morning. That is precisely the
+    # discrimination this exists for, so the backoff holds the subject fixed and generalises
+    # the location instead.
+    #
+    # Keyed by pool and kind, where the pool is whatever `scope` says may be compared. Under
+    # the per-camera scope a pool holds one camera, so this collapses onto the specific
+    # profile and the backoff has nothing to offer — which is exactly what that scope asks
+    # for, and why a camera set up that way takes longer to say anything.
+    per_kind: dict[tuple[str, str], Profile] = field(default_factory=dict)
     # Kept for readiness and thresholds, which are per camera — not used for backoff.
     per_camera: dict[str, Profile] = field(default_factory=dict)
-    overall: Profile = field(default_factory=Profile)
+    # Everything in one pool, whatever the kind. The last fallback, keyed by pool for the
+    # same reason as above.
+    pooled: dict[str, Profile] = field(default_factory=dict)
+    # Which cameras are allowed to be compared with each other. Stored on the model rather
+    # than read from options wherever it is needed, because a model and the scope it was
+    # built under are one thing: scoring against a model built under another scope would
+    # compare a score with a threshold measured over different terms.
+    scope: str = DEFAULT_RELEVANCE_SCOPE
     built_at: float = 0.0
     # One threshold per camera, because surprisal is not on a portable scale. Empty for a
     # camera with too little behind it, which is what "still collecting" means.
@@ -235,12 +288,17 @@ class Model:
         """Return what is known about this camera and kind, possibly nothing."""
         return self.profiles.get((camera, kind), Profile())
 
+    def group(self, camera: str) -> str:
+        """Return the pool this camera is compared within."""
+        return group_key(camera, self.scope)
+
     def blended(self, camera: str, kind: str) -> tuple[Profile, Profile, Profile]:
         """Return the specific profile and the two it backs off to, in order."""
+        group = self.group(camera)
         return (
             self.profile(camera, kind),
-            self.per_kind.get(kind, Profile()),
-            self.overall,
+            self.per_kind.get((group, kind), Profile()),
+            self.pooled.get(group, Profile()),
         )
 
 
@@ -340,13 +398,17 @@ def signal_value(entity_id: str, raw: str, model: Model) -> str:
     return raw if reading is None else band_label(reading, cuts)
 
 
-def build(events: list[Event], *, now: float) -> Model:
+def build(events: list[Event], *, now: float, scope: str = DEFAULT_RELEVANCE_SCOPE) -> Model:
     """Learn from a history of events.
 
     A single linear pass. Events must arrive oldest first, which `derive` guarantees, because
     the predecessor term needs to know what came before each one.
+
+    `scope` decides which cameras share a pool. Nothing about what is *counted* changes with
+    it — every camera keeps its own profile either way — only what a thin profile may borrow
+    from, and which cameras can count as having preceded one another.
     """
-    model = Model(built_at=now)
+    model = Model(built_at=now, scope=scope)
 
     # One pass to learn each numeric signal's own scale, before anything is counted against
     # it. Categorical signals never reach this and are counted as they were recorded.
@@ -360,17 +422,17 @@ def build(events: list[Event], *, now: float) -> Model:
         entity_id: cuts for entity_id, values in readings.items() if (cuts := bands(values))
     }
 
-    previous: Event | None = None
-    for event in events:
+    for event, previous in preceded(events, scope=scope):
         weight = recency((now - event.started_at) / _SECONDS_PER_DAY)
         label = predecessor_label(event, previous)
         bucket = duration_bucket(event.duration)
+        group = group_key(event.camera, scope)
 
         for profile in (
             model.profiles.setdefault((event.camera, event.kind), Profile()),
-            model.per_kind.setdefault(event.kind, Profile()),
+            model.per_kind.setdefault((group, event.kind), Profile()),
             model.per_camera.setdefault(event.camera, Profile()),
-            model.overall,
+            model.pooled.setdefault(group, Profile()),
         ):
             profile.clock.add(event.minute_of_day, weight)
             if event.solar_offset is not None:
@@ -388,8 +450,6 @@ def build(events: list[Event], *, now: float) -> Model:
             if profile.first_seen is None:
                 profile.first_seen = event.started_at
             profile.last_seen = event.started_at
-
-        previous = event
 
     return model
 

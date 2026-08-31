@@ -13,6 +13,7 @@ have been marked, so a value can be chosen by looking rather than by guessing.
     scripts/replay.py ~/homeassistant/reolink_stamina_journal.db
     scripts/replay.py journal.db --merge 12 --quantile 0.995
     scripts/replay.py journal.db --sweep merge
+    scripts/replay.py journal.db --sweep scope
 
 It needs no Home Assistant running, only the file. The solar term is skipped, because sunset
 depends on a configured location that a copied database does not carry — so the numbers here
@@ -31,9 +32,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from custom_components.reolink_stamina.const import (
+    DEFAULT_RELEVANCE_SCOPE,
+    RELEVANCE_SCOPES,
+)
 from custom_components.reolink_stamina.relevance.events import Event
 from custom_components.reolink_stamina.relevance.journal import Transition
-from custom_components.reolink_stamina.relevance.rates import build
+from custom_components.reolink_stamina.relevance.rates import build, preceded
 from custom_components.reolink_stamina.relevance.score import (
     calibrate,
     ready,
@@ -113,19 +118,19 @@ def _event(camera: str, kind: str, started_at: float, ended_at: float | None) ->
     )
 
 
-def run(events: list[Event], *, quantile: float) -> tuple[list[tuple[Event, object]], object]:
+def run(
+    events: list[Event], *, quantile: float, scope: str = DEFAULT_RELEVANCE_SCOPE
+) -> tuple[list[tuple[Event, object]], object]:
     """Build a model, calibrate it, and score everything against itself."""
     now = max((event.started_at for event in events), default=0.0)
-    model = build(events, now=now)
+    model = build(events, now=now, scope=scope)
     calibrate(model, events, share=quantile)
 
     marked: list[tuple[Event, object]] = []
-    previous: Event | None = None
-    for event in events:
+    for event, previous in preceded(events, scope=model.scope):
         result = score(event, model, previous=previous)
         if result.unusual:
             marked.append((event, result))
-        previous = event
     return marked, model
 
 
@@ -168,8 +173,14 @@ def main() -> int:
     parser.add_argument("--longest", type=float, default=600.0, help="longest event, seconds")
     parser.add_argument("--quantile", type=float, default=0.99, help="threshold quantile")
     parser.add_argument(
+        "--scope",
+        choices=RELEVANCE_SCOPES,
+        default=DEFAULT_RELEVANCE_SCOPE,
+        help="which cameras may be compared with each other",
+    )
+    parser.add_argument(
         "--sweep",
-        choices=("merge", "quantile"),
+        choices=("merge", "quantile", "scope"),
         help="try a range of values for one constant and print only the summary of each",
     )
     args = parser.parse_args()
@@ -186,7 +197,7 @@ def main() -> int:
         print("\n  merge   events  per event   marked   %")
         for window in (5.0, 10.0, 20.0, 30.0, 60.0, 120.0):
             events = derive(transitions, window=window, longest=args.longest)
-            marked, _ = run(events, quantile=args.quantile)
+            marked, _ = run(events, quantile=args.quantile, scope=args.scope)
             ratio = len(transitions) / max(len(events), 1)
             share = 100 * len(marked) / max(len(events), 1)
             print(f"  {window:5.0f}s {len(events):8d} {ratio:10.2f} {len(marked):8d} {share:6.2f}")
@@ -199,15 +210,26 @@ def main() -> int:
             (events[-1].started_at - events[0].started_at) / 604800.0 if events else 1.0, 1e-9
         )
         for quantile in (0.95, 0.98, 0.99, 0.995, 0.999):
-            marked, _ = run(events, quantile=quantile)
+            marked, _ = run(events, quantile=quantile, scope=args.scope)
             share = 100 * len(marked) / max(len(events), 1)
             print(
                 f"  {quantile:8.3f} {len(marked):8d} {share:6.2f} {len(marked) / span_weeks:11.1f}"
             )
         return 0
 
+    if args.sweep == "scope":
+        # The one sweep worth running on a Home Assistant that covers more than one property:
+        # it says, in marks, what pooling those properties together is costing.
+        events = derive(transitions, window=args.merge, longest=args.longest)
+        print("\n  scope       groups   marked   %")
+        for scope in RELEVANCE_SCOPES:
+            marked, model = run(events, quantile=args.quantile, scope=scope)
+            share = 100 * len(marked) / max(len(events), 1)
+            print(f"  {scope:<10} {len(model.pooled):7d} {len(marked):8d} {share:6.2f}")
+        return 0
+
     events = derive(transitions, window=args.merge, longest=args.longest)
-    marked, model = run(events, quantile=args.quantile)
+    marked, model = run(events, quantile=args.quantile, scope=args.scope)
     report(events, len(transitions), marked, model, window=args.merge)
     return 0
 

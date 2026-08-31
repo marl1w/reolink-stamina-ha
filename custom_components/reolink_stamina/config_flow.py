@@ -29,6 +29,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SCOPE,
     CONF_RELEVANCE_SENSITIVITY,
     CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
@@ -48,6 +49,7 @@ from .const import (
     DEFAULT_HIDE_TIMER,
     DEFAULT_PRE_ROLL,
     DEFAULT_QUOTA_GB,
+    DEFAULT_RELEVANCE_SCOPE,
     DEFAULT_RELEVANCE_SENSITIVITY,
     DEFAULT_REMOTE_FOLDER,
     DEFAULT_REQUIRE_ADMIN,
@@ -60,6 +62,7 @@ from .const import (
     DEFAULT_VERIFY_TLS,
     DOMAIN,
     PANEL_TITLE,
+    RELEVANCE_SCOPES,
     RELEVANCE_SENSITIVITY_FLOORS,
     RELEVANCE_SIGNAL_DOMAINS,
     RELEVANCE_SIGNAL_ENUM_DOMAINS,
@@ -199,8 +202,7 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="player",
-            # The signals page follows, unless there are no devices to pick signals for —
-            # which cannot be known from here without asking the Reolink integration twice.
+            # Two pages still to come: what else to count, and how much to mark.
             last_step=False,
             data_schema=vol.Schema(
                 {
@@ -275,23 +277,18 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         current = dict(self._pending.get(CONF_RELEVANCE_SIGNALS) or {})
 
         if user_input is not None:
-            chosen = {
+            self._pending[CONF_RELEVANCE_SIGNALS] = {
                 entry_id: list(user_input.get(name) or [])
                 for name, entry_id in by_name.items()
                 if user_input.get(name)
             }
-            return self.async_create_entry(
-                data={
-                    **self._pending,
-                    CONF_RELEVANCE_SIGNALS: chosen,
-                    CONF_RELEVANCE_SENSITIVITY: user_input.get(
-                        CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY
-                    ),
-                }
-            )
+            return await self.async_step_marking()
 
+        # Nothing to pick signals for, but there is still a line to draw and a boundary to
+        # draw it within — both of which outlive whichever recorders happen to be loaded
+        # right now, so the last page is shown either way.
         if not by_name:
-            return self.async_create_entry(data=self._pending)
+            return await self.async_step_marking()
 
         unhelpful = async_unhelpful_signals(self.hass)
         # Two filters rather than one list of domains, because `sensor` is admitted only for
@@ -312,6 +309,7 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
         ]
         return self.async_show_form(
             step_id="signals",
+            last_step=False,
             data_schema=vol.Schema(
                 {
                     **{
@@ -325,7 +323,40 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                             )
                         )
                         for name, entry_id in by_name.items()
-                    },
+                    }
+                }
+            ),
+        )
+
+    async def async_step_marking(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Decide how much gets marked, and what each camera is compared with.
+
+        The two questions on this page are the same question asked from either end. One moves
+        the line an event has to clear; the other decides whose history the line is drawn
+        from. Neither recounts anything — both are applied when scoring, over a journal that
+        was written down without either of them — so changing one is instant and costs no
+        history.
+        """
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    **self._pending,
+                    CONF_RELEVANCE_SENSITIVITY: user_input.get(
+                        CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY
+                    ),
+                    CONF_RELEVANCE_SCOPE: user_input.get(
+                        CONF_RELEVANCE_SCOPE, DEFAULT_RELEVANCE_SCOPE
+                    ),
+                }
+            )
+
+        return self.async_show_form(
+            step_id="marking",
+            last_step=True,
+            data_schema=vol.Schema(
+                {
                     # Words rather than the quantile behind them. "0.95" is meaningful to
                     # whoever wrote the scorer and to nobody else, and the question somebody
                     # actually has is whether they are seeing too many of these or too few.
@@ -339,6 +370,16 @@ class ReolinkStaminaOptionsFlow(OptionsFlow):
                             options=list(RELEVANCE_SENSITIVITY_FLOORS),
                             mode=selector.SelectSelectorMode.LIST,
                             translation_key="relevance_sensitivity",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_RELEVANCE_SCOPE,
+                        default=self._pending.get(CONF_RELEVANCE_SCOPE, DEFAULT_RELEVANCE_SCOPE),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(RELEVANCE_SCOPES),
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key="relevance_scope",
                         )
                     ),
                 }

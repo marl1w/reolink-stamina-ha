@@ -20,10 +20,14 @@ import time
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 
-from ..const import DEFAULT_RELEVANCE_SENSITIVITY, RELEVANCE_SENSITIVITY_FLOORS
+from ..const import (
+    DEFAULT_RELEVANCE_SCOPE,
+    DEFAULT_RELEVANCE_SENSITIVITY,
+    RELEVANCE_SENSITIVITY_FLOORS,
+)
 from .events import Event, derive
 from .journal import Journal
-from .rates import Model, build
+from .rates import Model, build, preceded
 from .score import Score, calibrate, ready, score
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,16 +52,20 @@ class Analysis:
         journal: Journal,
         *,
         sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY,
+        scope: str = DEFAULT_RELEVANCE_SCOPE,
     ) -> None:
         """Prepare an analysis, without building anything yet."""
         self._hass = hass
         self._journal = journal
+        # Which cameras may be compared with each other. Held here and stamped onto every
+        # model built, so the scope a score was measured under travels with it.
+        self._scope = scope
         # The word the user chose, resolved here rather than stored as a number: retuning what
         # "balanced" means then reaches everybody who picked it, on the next rebuild.
         self._floor = RELEVANCE_SENSITIVITY_FLOORS.get(
             sensitivity, RELEVANCE_SENSITIVITY_FLOORS[DEFAULT_RELEVANCE_SENSITIVITY]
         )
-        self._model = Model()
+        self._model = Model(scope=scope)
         self._events: list[Event] = []
         self._cancel: CALLBACK_TYPE | None = None
 
@@ -113,20 +121,23 @@ class Analysis:
         """Read the whole journal and learn from it again."""
         transitions = await self._journal.async_transitions()
         if not transitions:
-            self._model, self._events = Model(), []
+            self._model, self._events = Model(scope=self._scope), []
             return self._model
 
         now = time.time()
         events = derive(self._hass, transitions)
-        model = build(events, now=now)
+        model = build(events, now=now, scope=self._scope)
         calibrate(model, events, floor=self._floor)
 
         self._model, self._events = model, events
         _LOGGER.debug(
-            "Relevance model rebuilt from %s transitions into %s events across %s cameras",
+            "Relevance model rebuilt from %s transitions into %s events across %s cameras "
+            "in %s comparison group(s), scope %s",
             len(transitions),
             len(events),
             len(model.per_camera),
+            len(model.pooled),
+            self._scope,
         )
         return model
 
@@ -178,13 +189,14 @@ class Analysis:
         a fortnight.
         """
         # Every camera, not just the one asked about: the predecessor term is "what fired
-        # before this, anywhere", and a camera-filtered read would answer a different question.
+        # before this, within this camera's pool", and a camera-filtered read would answer a
+        # different question. Which pool that is depends on the scope, and narrowing the read
+        # to match would only trade a filter for a lookup.
         transitions = await self._journal.async_transitions(since=since - _LEAD_IN, until=until)
         events = derive(self._hass, transitions)
 
         found: list[tuple[Event, Score]] = []
-        previous: Event | None = None
-        for event in events:
+        for event, previous in preceded(events, scope=self._model.scope):
             if since <= event.started_at < until and (camera is None or event.camera == camera):
                 found.append(
                     (
@@ -192,5 +204,4 @@ class Analysis:
                         score(event, self._model, previous=previous, names=names, labels=labels),
                     )
                 )
-            previous = event
         return found

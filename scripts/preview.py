@@ -48,7 +48,7 @@ FRONTEND = ROOT / "custom_components" / "reolink_stamina" / "frontend"
 sys.path.insert(0, str(ROOT))
 
 from custom_components.reolink_stamina.relevance.events import Event  # noqa: E402
-from custom_components.reolink_stamina.relevance.rates import build  # noqa: E402
+from custom_components.reolink_stamina.relevance.rates import build, preceded  # noqa: E402
 from custom_components.reolink_stamina.relevance.score import (  # noqa: E402
     SCORE_MIN_DAYS,
     SCORE_MIN_EVENTS,
@@ -530,10 +530,8 @@ def build_fixtures(seed: int = 1, days: int | None = None) -> dict:
                 **profile_payload(model, list(chosen), names=names, label=labels.get),
             }
 
-    previous = None
-    for event in events:
+    for event, previous in preceded(events, scope=model.scope):
         result = score(event, model, previous=previous, names=names, labels=signal_labels())
-        previous = event
         relevance[event.camera]["events"].append(
             {
                 "at": datetime.fromtimestamp(event.started_at, UTC).isoformat(),

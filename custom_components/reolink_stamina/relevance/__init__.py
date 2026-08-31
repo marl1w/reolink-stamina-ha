@@ -22,7 +22,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.start import async_at_started
 
-from ..const import DEFAULT_RELEVANCE_SENSITIVITY, DOMAIN
+from ..const import DEFAULT_RELEVANCE_SCOPE, DEFAULT_RELEVANCE_SENSITIVITY, DOMAIN
 from .analysis import Analysis
 from .backfill import async_backfill, async_backfill_signals
 from .journal import Journal
@@ -47,6 +47,7 @@ async def async_start(
     *,
     signals: dict[str, list[str]] | None = None,
     sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY,
+    scope: str = DEFAULT_RELEVANCE_SCOPE,
 ) -> RelevanceRuntime:
     """Open the journal and begin recording.
 
@@ -61,7 +62,7 @@ async def async_start(
     journal = Journal(hass)
     await journal.async_open()
     watcher = TransitionWatcher(hass, journal, signals=signals)
-    analysis = Analysis(hass, journal, sensitivity=sensitivity)
+    analysis = Analysis(hass, journal, sensitivity=sensitivity, scope=scope)
     runtime = RelevanceRuntime(journal=journal, watcher=watcher, analysis=analysis)
 
     async def _begin(_hass: HomeAssistant) -> None:

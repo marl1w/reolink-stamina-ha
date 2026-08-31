@@ -38,6 +38,7 @@ from .const import (
     CONF_NVR_ENTRY,
     CONF_PRE_ROLL,
     CONF_QUOTA_GB,
+    CONF_RELEVANCE_SCOPE,
     CONF_RELEVANCE_SENSITIVITY,
     CONF_RELEVANCE_SIGNALS,
     CONF_REMOTE_FOLDER,
@@ -58,6 +59,7 @@ from .const import (
     DEFAULT_INCLUDE_UNLABELLED,
     DEFAULT_PRE_ROLL,
     DEFAULT_QUOTA_GB,
+    DEFAULT_RELEVANCE_SCOPE,
     DEFAULT_RELEVANCE_SENSITIVITY,
     DEFAULT_REMOTE_FOLDER,
     DEFAULT_REQUIRE_ADMIN,
@@ -125,6 +127,9 @@ class StaminaOptions:
     # A word, not the quantile it maps to. Stored as chosen so the mapping can be retuned
     # without rewriting what anybody picked.
     relevance_sensitivity: str = DEFAULT_RELEVANCE_SENSITIVITY
+    # Which cameras are compared with each other: everything together, each recorder on its
+    # own, or each camera on its own.
+    relevance_scope: str = DEFAULT_RELEVANCE_SCOPE
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> StaminaOptions:
@@ -147,6 +152,7 @@ class StaminaOptions:
             relevance_sensitivity=str(
                 options.get(CONF_RELEVANCE_SENSITIVITY, DEFAULT_RELEVANCE_SENSITIVITY)
             ),
+            relevance_scope=str(options.get(CONF_RELEVANCE_SCOPE, DEFAULT_RELEVANCE_SCOPE)),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -164,6 +170,7 @@ class StaminaOptions:
             "verify_tls": self.verify_tls,
             "relevance_signals": self.relevance_signals,
             "relevance_sensitivity": self.relevance_sensitivity,
+            "relevance_scope": self.relevance_scope,
         }
 
 
@@ -212,6 +219,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry,
         signals=options.relevance_signals,
         sensitivity=options.relevance_sensitivity,
+        scope=options.relevance_scope,
     )
 
     # Whatever an earlier run left behind in the temporary directory. A conversion that was
