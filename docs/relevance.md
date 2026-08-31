@@ -52,6 +52,7 @@ And, plainly, what it will **not** do:
 - **Common is not safe.** It ranks by rarity and makes no claim about risk. A burglar at three in the afternoon in a busy driveway is statistically unremarkable.
 - **It learns whatever it sees, including the bad.** A camera that has fired on spiders every night for months has made spiders normal.
 - **Something genuinely new is marked for a while.** A new family car stands out daily for a fortnight, then stops.
+- **A kind a camera rarely sees stands out every time it appears.** "Rare here" is a fact about the camera, not about the moment, so it applies equally to all of them: on a lens that sees almost nothing but motion, every animal that wanders past scores. Measured on one installation, animals went from no marks in a month to fourteen.
 - **A person walking past three cameras is three events.** Grouping them into one arrival is not built.
 
 ## Requirements

@@ -42,10 +42,15 @@ Not on a browser reload. No restart needed, and no clearing the cache: reloading
 The journal stores raw state changes and every constant is applied when they are *read*, so nothing is baked in and everything can be re-tried against history already collected. `scripts/replay.py` is what does the re-trying:
 
 ```bash
-make replay JOURNAL=~/homeassistant/reolink_stamina_journal.db
-make replay JOURNAL=journal.db ARGS=--sweep\ merge      # try several merge windows
-make replay JOURNAL=journal.db ARGS=--sweep\ quantile   # try several thresholds
+make replay JOURNAL=journal.db ARGS=--tz\ Europe/Rome    # the recorder's own clock
+make replay JOURNAL=journal.db ARGS=--sweep\ merge       # try several merge windows
+make replay JOURNAL=journal.db ARGS=--sweep\ quantile    # try several thresholds
+make replay JOURNAL=journal.db ARGS=--sweep\ scope       # what pooling recorders costs
 ```
+
+**Pass `--tz`.** A copied database carries timestamps and no location, and Home Assistant defaults to UTC until something tells it otherwise — so without it every hour in the report sits an offset away from the hour the panel shows, and asking whether a person at two in the morning would be marked quietly asks about four. It defaults to this machine's zone, which is right when you are replaying your own journal and wrong when you are replaying somebody else's.
+
+The solar term is absent for the same reason: no location, so where the sun was cannot be recovered and is reported as unknown rather than guessed. Everything else — the local clock, the configured signals stamped on each transition, the merge window — goes through the same `events.derive` the panel uses, so what comes out is what the panel would say.
 
 It needs no Home Assistant running, only the file. If you change a constant, say in the pull request what the replay output looked like before and after — these numbers were first guesses, and real journals are the only thing that can improve them.
 
