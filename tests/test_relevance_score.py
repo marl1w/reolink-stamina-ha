@@ -26,6 +26,7 @@ from custom_components.reolink_stamina.relevance.rates import (
     bands,
     build,
     duration_bucket,
+    gap,
     group_key,
     interpolate,
     lag_bucket,
@@ -143,6 +144,52 @@ def test_a_distant_predecessor_is_the_same_as_none():
     assert lag_bucket(None) == "none"
     assert lag_bucket(5000.0) == "none"
     assert lag_bucket(5.0) != "none"
+
+
+def _at(camera: str, started_at: float, duration: float) -> Event:
+    """One event on a named camera, of a stated length. For the window tests below."""
+    return replace(_event(started_at, 600, "vehicle", duration=duration), camera=camera)
+
+
+def test_the_window_measures_the_quiet_in_between_rather_than_start_to_start():
+    """A long detection can still be what came first.
+
+    Measured start to start, a detection lasting longer than the window could never be a
+    predecessor however tightly the next one followed: a car sitting in the drive for three
+    minutes and a person at the door two seconds after it cleared came out as "nothing fired
+    first", which is precisely backwards.
+    """
+    car = _at("entry1:0", _NOW, 180.0)
+    person = _at("entry1:1", _NOW + 182.0, 5.0)
+
+    assert gap(person, car) == 2.0
+    assert predecessor_label(person, car) == "entry1:0|<10s"
+
+
+def test_a_quiet_gap_past_the_window_is_still_nothing():
+    """The window is the point. Twenty minutes of quiet is not somebody walking."""
+    gate = _at("entry1:0", _NOW, 8.0)
+    later = _at("entry1:1", _NOW + 20 * 60, 8.0)
+
+    assert predecessor_label(later, gate) == "none"
+
+
+def test_two_cameras_seeing_the_same_person_at_once_is_the_strongest_after():
+    """Overlap floors at zero rather than going negative."""
+    drive = _at("entry1:0", _NOW, 30.0)
+    hall = _at("entry1:1", _NOW + 10.0, 8.0)
+
+    assert gap(hall, drive) == 0.0
+    assert predecessor_label(hall, drive) == "entry1:0|<10s"
+
+
+def test_an_event_still_running_is_measured_from_where_it_began():
+    """No end recorded, so there is nothing else to measure from."""
+    open_run = replace(_at("entry1:0", _NOW, 8.0), ended_at=None, duration=None)
+    after = _at("entry1:1", _NOW + 25.0, 8.0)
+
+    assert gap(after, open_run) == 25.0
+    assert predecessor_label(after, open_run) == "entry1:0|<30s"
 
 
 def test_interpolation_leans_on_the_fallback_when_evidence_is_thin():
@@ -788,3 +835,51 @@ def test_each_camera_still_keeps_its_own_profile_whatever_the_scope():
     }
 
     assert len(set(map(str, counts.values()))) == 1
+
+
+def test_the_predecessor_says_how_long_ago_so_it_can_be_checked():
+    """Naming the camera alone sends the reader to a row that is not the one meant.
+
+    The detection that preceded an event is often motion, and the timeline hides motion by
+    default — so the nearest visible row for the named camera can be forty minutes back, and
+    the sentence looks wrong when it is right. The gap is what makes it checkable.
+    """
+    model, _ = _model()
+    gate = _at("entry1:0", _NOW - 45.0, 8.0)
+    hall = _at("entry1:1", _NOW, 8.0)
+
+    term = next(
+        t
+        for t in score(hall, model, previous=gate, names={"entry1:0": "Gate"}).terms
+        if t.name == "predecessor"
+    )
+
+    assert term.label == "37s after Gate"
+
+
+def test_cameras_seeing_the_same_person_at_once_read_as_alongside():
+    """Most of what a house full of cameras records. "0s after" reads as a rounding error."""
+    model, _ = _model()
+    drive = _at("entry1:0", _NOW, 30.0)
+    hall = _at("entry1:1", _NOW + 10.0, 8.0)
+
+    term = next(
+        t
+        for t in score(hall, model, previous=drive, names={"entry1:0": "Drive"}).terms
+        if t.name == "predecessor"
+    )
+
+    assert term.label == "alongside Drive"
+
+
+def test_nothing_first_still_says_so_plainly():
+    """The absent case is the interesting one and must not grow a number."""
+    model, _ = _model()
+
+    term = next(
+        t
+        for t in score(_at("entry1:1", _NOW, 8.0), model, previous=None).terms
+        if t.name == "predecessor"
+    )
+
+    assert term.label == "nothing fired first"

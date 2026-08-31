@@ -462,8 +462,15 @@ RATE_FLOOR: Final = 0.05
 
 # ------------------------------------------------------------------ scoring
 
-# Where the predecessor term stops looking. Beyond a couple of minutes, one camera firing
-# after another is a coincidence rather than the same subject walking.
+# Where the predecessor term stops looking, as the quiet seconds between one detection
+# finishing and the next starting — see `rates.gap`. Beyond a couple of minutes, one camera
+# firing after another is a coincidence rather than the same subject walking: two minutes is
+# already long enough to cross any domestic property on foot several times over, and every
+# gap beyond it is counted as "nothing fired first", which is a category in its own right
+# rather than a gap in the table.
+#
+# The last edge is the window; the two before it are what make it worth having, since
+# "three seconds after the gate" and "ninety seconds after the gate" are different events.
 SCORE_LAG_BUCKETS: Final = (10.0, 30.0, 120.0)
 
 # How rare an event has to be before it is worth marking. A quantile of that camera's own

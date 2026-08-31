@@ -313,6 +313,29 @@ def interpolate(specific: float, backoff: float, weight: float) -> float:
     return share * specific + (1.0 - share) * backoff
 
 
+def gap(event: Event, previous: Event) -> float:
+    """Return the quiet seconds between one detection finishing and the next starting.
+
+    Measured from the end of the previous event, not from its start, and the difference is
+    the whole point of the window. Start to start, a detection that *lasted* longer than the
+    window could never be a predecessor however tightly the next one followed: a car sitting
+    in the drive for three minutes and a person at the door two seconds after it cleared came
+    out as "nothing fired first", which is precisely backwards. The window is meant to ask
+    whether this could be the same subject still moving, and that is a question about the
+    quiet in between.
+
+    It also makes this agree with `EVENT_MERGE_SECONDS`, which has always been measured as
+    the gap between one detection ending and the next starting. Two windows over the same
+    history, measured two different ways, was an inconsistency waiting to be read as a bug.
+
+    Overlap floors at zero rather than going negative: two cameras seeing the same person at
+    once is the strongest form of "after there was one", not a special case. An event still
+    open has no end to measure from, so its start is used, exactly as before.
+    """
+    finished = previous.started_at if previous.ended_at is None else previous.ended_at
+    return max(0.0, event.started_at - finished)
+
+
 def predecessor_label(event: Event, previous: Event | None) -> str:
     """Describe what fired before this event, as a countable label.
 
@@ -328,7 +351,7 @@ def predecessor_label(event: Event, previous: Event | None) -> str:
     """
     if previous is None:
         return "none"
-    lag = lag_bucket(event.started_at - previous.started_at)
+    lag = lag_bucket(gap(event, previous))
     return "none" if lag == "none" else f"{previous.camera}|{lag}"
 
 

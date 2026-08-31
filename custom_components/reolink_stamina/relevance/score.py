@@ -36,6 +36,7 @@ from .rates import (
     Model,
     Profile,
     duration_bucket,
+    gap,
     interpolate,
     preceded,
     predecessor_label,
@@ -227,11 +228,26 @@ def _terms(
 
     # What the other cameras were doing. The absent case is the interesting one: something at
     # the back that never appeared at the front did not use the approach route.
+    #
+    # Said with the time between them, because "after Balcone Nord" on its own is not
+    # checkable. The reader goes looking for that camera in the timeline and finds its
+    # nearest row forty minutes earlier — because the detection that actually preceded this
+    # was motion, and the timeline hides motion unless asked. The gap is what turns a claim
+    # they cannot verify into one they can: a second is obviously the same person, and if the
+    # row they can see is forty minutes back then it plainly is not the row being named.
+    #
+    # Display only. `predecessor_label` above is what gets counted, and it is unchanged —
+    # putting a continuous number into a counted label would give every event a category of
+    # its own, which is the one thing the bucketing exists to prevent.
     label = predecessor_label(event, previous)
     if label == "none":
         phrase = "nothing fired first"
     else:
-        phrase = f"after {names.get(previous.camera, 'another camera')}"
+        who = names.get(previous.camera, "another camera")
+        since_previous = round(gap(event, previous))
+        # Zero means they overlapped: several cameras seeing the same person at once, which is
+        # most of what a house full of cameras records. "0s after" reads as a rounding error.
+        phrase = f"alongside {who}" if since_previous == 0 else f"{since_previous}s after {who}"
     categories = max(len(specific.predecessor.weights), len(overall.predecessor.weights), 2)
     terms.append(
         Term(
@@ -406,7 +422,8 @@ def _phrase(term: Term) -> str:
     if term.name == "weekend":
         return f"on {term.label}"
     if term.name == "predecessor":
-        # Already a phrase in both of its forms: "nothing fired first", "after Gate".
+        # Already a phrase in all of its forms: "nothing fired first", "3s after Gate",
+        # "alongside Gate".
         return term.label
     if term.name == "signal" and term.subject:
         # A chosen signal has a name of its own, and the state alone is meaningless in a
