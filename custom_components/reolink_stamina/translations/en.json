@@ -49,7 +49,7 @@
       },
       "signals": {
         "title": "What else to count",
-        "description": "Anything true of the whole property, counted alongside each detection: whether anybody is in, whether the alarm is set, whether the gate is locked.\n\nOne list per recorder. Leaving them empty is fine — the time of day, how long a detection lasted, which camera fired before it, and each camera's own floodlight, siren and day/night state are already counted without being picked.\n\nWhat is counted stays on this machine and is deleted with the integration."
+        "description": "Anything true of the whole property, counted alongside each detection: whether anybody is in, whether the alarm is set, whether the gate is locked.\n\nOne list per recorder. Leaving them empty is fine — what kind of thing it was, the time of day, how long a detection lasted, which camera fired before it, and each camera's own floodlight, siren and day/night state are already counted without being picked.\n\nWhat is counted stays on this machine and is deleted with the integration."
       },
       "marking": {
         "title": "What counts as unusual",

@@ -188,7 +188,42 @@ def _terms(
             specific.weight,
         )
 
-    terms = [
+    terms: list[Term] = []
+
+    # What it was. Every other term is measured against a profile the kind was used to
+    # select, so none of them can say that a person here is rare — they all answer "given a
+    # person, how odd is the hour". This is the missing first factor, and adding it makes the
+    # sum a likelihood of the whole event rather than of its attributes given its kind. It is
+    # not double counting: P(person here) x P(this hour | person here) is the chain rule, and
+    # the model was previously dropping the left half on the floor.
+    #
+    # Measured against this camera's own mix, backing off to the pool's. A camera facing a
+    # street sees people all day and a bedroom camera does not, and neither fact should be
+    # imported into the other.
+    own, pool = model.marginal(event.camera)
+    # Skipped where a camera has only ever seen one kind: its probability is 1, so the
+    # surprisal is a *constant* negative subtracted from every score that camera ever
+    # produces. The same trap the configured signals already guard against, and it costs
+    # nothing to notice here too.
+    if len(own.kinds.weights) > 1:
+        many = max(len(own.kinds.weights), len(pool.kinds.weights), 2)
+        terms.append(
+            Term(
+                name="kind",
+                label=event.kind.replace("_", " ").capitalize(),
+                contribution=_surprisal(
+                    interpolate(
+                        own.kinds.probability(event.kind, categories=many),
+                        pool.kinds.probability(event.kind, categories=many),
+                        own.weight,
+                    ),
+                    many,
+                ),
+                seen=own.kinds.count(event.kind),
+            )
+        )
+
+    terms.append(
         Term(
             name="clock",
             label=_clock_time(event.minute_of_day),
@@ -197,7 +232,7 @@ def _terms(
             ),
             seen=specific.clock.nearby(event.minute_of_day),
         )
-    ]
+    )
 
     if event.solar_offset is not None:
         offset = event.solar_offset
@@ -401,18 +436,27 @@ def _reason(event: Event, terms: list[Term], profile: Profile, names: dict[str, 
     sentence = f"{opening} on {subject} — {occurrence} time in {span}"
 
     if len(leading) > 1:
-        sentence += f", and {_phrase(leading[1])}"
+        sentence += f", and {_phrase(leading[1], lead=False)}"
     return f"{sentence}."
 
 
-def _phrase(term: Term) -> str:
+def _phrase(term: Term, *, lead: bool = True) -> str:
     """Render one signal as part of a sentence rather than as a label.
 
     The labels are written for the breakdown, where each sits in its own row and needs no
     grammar. Dropped into prose they read badly — "Person with after Gate", "and 04:41" —
     and the sentence is the whole feature's credibility, so each kind of signal gets the
     words that make it a phrase.
+
+    `lead` says whether this is the phrase the sentence opens on or the one appended after
+    "and". Only the kind term needs to know: the opening already names the kind, so it has to
+    finish that clause, while the tail is a clause of its own and has to stand up alone.
     """
+    if term.name == "kind":
+        # The sentence already opens with the kind, so repeating it reads as a stutter.
+        # "Person at all on the Balcone Nord" is the claim, and it is the right one — but
+        # ", and at all" appended to another clause is too clipped to parse.
+        return "at all" if lead else "rarely seen here"
     if term.name == "clock":
         return f"at {term.label}"
     if term.name == "solar":

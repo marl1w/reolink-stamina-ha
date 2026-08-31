@@ -8,7 +8,7 @@
 
 A 24/7 recorder produces hundreds of detections a day, and almost all of them are the same detections it produced yesterday. This tells you which three are worth opening — not by recognising anything, but by counting.
 
-It keeps a record of what each camera normally sees, at what hour, on what sort of day, for how long. An event is interesting when that combination is rare. The cat that crosses the drive at one in the morning every night has told you what normal looks like there; a person doing the same thing has not.
+It keeps a record of what each camera normally sees — what kind of thing, at what hour, on what sort of day, for how long. An event is interesting when that combination is rare, and *what kind of thing* is counted in its own right: a person on a camera that only ever sees the wind stands out before the hour is even considered. The cat that crosses the drive at one in the morning every night has told you what normal looks like there; a person doing the same thing has not.
 
 ## What it keeps
 

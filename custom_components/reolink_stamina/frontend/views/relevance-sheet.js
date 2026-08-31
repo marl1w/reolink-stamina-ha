@@ -551,6 +551,7 @@ export class RelevanceSheet extends HTMLElement {
    */
   _detailFor(item, known) {
     const names = {
+      kind: "What it was",
       clock: "Time of day",
       solar: "Light",
       duration: "How long it lasted",

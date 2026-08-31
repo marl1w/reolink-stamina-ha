@@ -25,18 +25,26 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
-from datetime import UTC, datetime
+import datetime as dt
 from pathlib import Path
 import sqlite3
 import sys
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from homeassistant.util import dt as dt_util
+
 from custom_components.reolink_stamina.const import (
     DEFAULT_RELEVANCE_SCOPE,
+    DEFAULT_RELEVANCE_SENSITIVITY,
+    EVENT_MAX_SECONDS,
+    EVENT_MERGE_SECONDS,
     RELEVANCE_SCOPES,
+    RELEVANCE_SENSITIVITY_FLOORS,
+    SCORE_QUANTILE,
 )
-from custom_components.reolink_stamina.relevance.events import Event
+from custom_components.reolink_stamina.relevance.events import Event, derive as events_derive
 from custom_components.reolink_stamina.relevance.journal import Transition
 from custom_components.reolink_stamina.relevance.rates import build, preceded
 from custom_components.reolink_stamina.relevance.score import (
@@ -61,70 +69,56 @@ def read(path: Path) -> list[Transition]:
     return [Transition(*row) for row in rows]
 
 
-def derive(transitions: Iterable[Transition], *, window: float, longest: float) -> list[Event]:
-    """Fold transitions into events without Home Assistant.
+class _NoSun:
+    """A solar clock for a journal that arrived without a location.
 
-    Deliberately a copy of the shape of `events.derive` rather than a call into it: that one
-    needs a running Home Assistant for the local clock and the sun, and the point of this
-    script is to run against a file on a laptop. The clock is taken as UTC here, which shifts
-    every event by the same amount and so leaves every comparison between constants intact.
+    A copied database carries timestamps and nothing else — no latitude, no longitude — so
+    where the sun was cannot be recovered and is reported as unknown rather than guessed.
+    `derive` treats that exactly as it treats a Home Assistant with no location set, and the
+    solar term simply does not appear.
     """
-    grouped: dict[tuple[str, str], list[Transition]] = {}
-    for row in transitions:
-        grouped.setdefault((row.camera, row.kind), []).append(row)
 
-    events: list[Event] = []
-    for (camera, kind), rows in grouped.items():
-        rows.sort(key=lambda item: item.at)
-        start: float | None = None
-        end: float | None = None
-        active: set[str] = set()
-        for row in rows:
-            if row.state == _ON:
-                if start is not None and end is not None and row.at - end > window:
-                    events.append(_event(camera, kind, start, end))
-                    start = None
-                if start is None:
-                    start, end = row.at, None
-                active.add(row.entity_id)
-            else:
-                active.discard(row.entity_id)
-                if not active and start is not None:
-                    end = row.at
-            if start is not None and row.at - start >= longest:
-                events.append(_event(camera, kind, start, end if end is not None else row.at))
-                start, end, active = None, None, set()
-        if start is not None:
-            events.append(_event(camera, kind, start, end))
+    def offset(self, _moment: dt.datetime) -> int | None:
+        """Return no offset, because there is no sunset to measure from."""
+        return None
 
-    events.sort(key=lambda item: (item.started_at, item.camera, item.kind))
-    return events
+    def phase(self, _moment: dt.datetime) -> str | None:
+        """Return no phase, for the same reason."""
+        return None
 
 
-def _event(camera: str, kind: str, started_at: float, ended_at: float | None) -> Event:
-    """Build one event with a UTC clock."""
-    moment = datetime.fromtimestamp(started_at, UTC)
-    return Event(
-        camera=camera,
-        kind=kind,
-        started_at=started_at,
-        ended_at=ended_at,
-        duration=None if ended_at is None else round(ended_at - started_at, 3),
-        minute_of_day=moment.hour * 60 + moment.minute,
-        solar_offset=None,
-        solar_phase=None,
-        is_weekend=moment.weekday() >= 5,
-        day_of_week=("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[moment.weekday()],
-    )
+def derive(transitions: Iterable[Transition], *, window: float, longest: float) -> list[Event]:
+    """Fold transitions into events, through the code the panel itself uses.
+
+    This was a copy of `events.derive` once, on the reasoning that the real one needs a
+    running Home Assistant. It does not — it needs a clock and a sun, and both can be handed
+    to it — and the copy quietly drifted from the original in two ways that matter.
+
+    It read the clock as **UTC**. Every clock-based number then sat an offset away from what
+    the panel would say: asking this tool whether a person at two in the morning would be
+    marked actually asked about four in the morning in Rome. Comparisons between constants
+    survived that, which is what the copy was written for, but nothing absolute did.
+
+    It also merged runs the old way, holding an event open while *any* sensor of the same
+    kind was on. `events.derive` stopped doing that — a lingering sensor made a car parking
+    into a two-hour detection — and the copy did not follow.
+
+    A tool used to choose the shipped constants has to be running the shipped code.
+    """
+    return events_derive(None, transitions, window=window, longest=longest, clock=_NoSun())
 
 
 def run(
-    events: list[Event], *, quantile: float, scope: str = DEFAULT_RELEVANCE_SCOPE
+    events: list[Event],
+    *,
+    quantile: float,
+    scope: str = DEFAULT_RELEVANCE_SCOPE,
+    floor: float = RELEVANCE_SENSITIVITY_FLOORS[DEFAULT_RELEVANCE_SENSITIVITY],
 ) -> tuple[list[tuple[Event, object]], object]:
     """Build a model, calibrate it, and score everything against itself."""
     now = max((event.started_at for event in events), default=0.0)
     model = build(events, now=now, scope=scope)
-    calibrate(model, events, share=quantile)
+    calibrate(model, events, share=quantile, floor=floor)
 
     marked: list[tuple[Event, object]] = []
     for event, previous in preceded(events, scope=model.scope):
@@ -161,7 +155,11 @@ def report(events: list[Event], transitions: int, marked, model, *, window: floa
     if marked:
         print("\n  the ones it would have marked:\n")
         for event, result in marked[-25:]:
-            when = datetime.fromtimestamp(event.started_at, UTC).strftime("%Y-%m-%d %H:%M")
+            # The household's clock, not UTC: the point of the line is that somebody can
+            # recognise the event in their own timeline.
+            when = dt_util.as_local(dt_util.utc_from_timestamp(event.started_at)).strftime(
+                "%Y-%m-%d %H:%M"
+            )
             print(f"    {when}  {result.total:6.2f}  {result.reason}")
 
 
@@ -169,9 +167,30 @@ def main() -> int:
     """Read a journal and report what the current constants would do to it."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("journal", type=Path, help="path to reolink_stamina_journal.db")
-    parser.add_argument("--merge", type=float, default=20.0, help="merge window, seconds")
-    parser.add_argument("--longest", type=float, default=600.0, help="longest event, seconds")
-    parser.add_argument("--quantile", type=float, default=0.99, help="threshold quantile")
+    # Defaulted from the shipped constants rather than restated. These drifted once — 20s
+    # against a shipped 3s, 600s against a shipped 300s — so the tool used to choose the
+    # numbers was reporting on numbers nobody was running.
+    parser.add_argument(
+        "--merge", type=float, default=EVENT_MERGE_SECONDS, help="merge window, seconds"
+    )
+    parser.add_argument(
+        "--longest", type=float, default=EVENT_MAX_SECONDS, help="longest event, seconds"
+    )
+    parser.add_argument("--quantile", type=float, default=SCORE_QUANTILE, help="threshold quantile")
+    parser.add_argument(
+        "--sensitivity",
+        choices=list(RELEVANCE_SENSITIVITY_FLOORS),
+        default=DEFAULT_RELEVANCE_SENSITIVITY,
+        help="which floor to judge against, by the name the options page uses",
+    )
+    # The clock a household lives by, which a copied database does not carry. Home Assistant
+    # defaults to UTC until something tells it otherwise, and every hour in the report would
+    # then be an offset away from the hour the panel shows.
+    parser.add_argument(
+        "--tz",
+        default=str(dt.datetime.now().astimezone().tzinfo),
+        help="the recorder's timezone, e.g. Europe/Rome (default: this machine's)",
+    )
     parser.add_argument(
         "--scope",
         choices=RELEVANCE_SCOPES,
@@ -188,6 +207,12 @@ def main() -> int:
     if not args.journal.exists():
         parser.error(f"no such journal: {args.journal}")
 
+    try:
+        dt_util.set_default_time_zone(ZoneInfo(args.tz))
+    except (ZoneInfoNotFoundError, ValueError):
+        parser.error(f"unknown timezone: {args.tz}")
+    floor = RELEVANCE_SENSITIVITY_FLOORS[args.sensitivity]
+
     transitions = read(args.journal)
     if not transitions:
         print("The journal is empty. Nothing to replay yet.")
@@ -197,7 +222,7 @@ def main() -> int:
         print("\n  merge   events  per event   marked   %")
         for window in (5.0, 10.0, 20.0, 30.0, 60.0, 120.0):
             events = derive(transitions, window=window, longest=args.longest)
-            marked, _ = run(events, quantile=args.quantile, scope=args.scope)
+            marked, _ = run(events, quantile=args.quantile, scope=args.scope, floor=floor)
             ratio = len(transitions) / max(len(events), 1)
             share = 100 * len(marked) / max(len(events), 1)
             print(f"  {window:5.0f}s {len(events):8d} {ratio:10.2f} {len(marked):8d} {share:6.2f}")
@@ -210,7 +235,7 @@ def main() -> int:
             (events[-1].started_at - events[0].started_at) / 604800.0 if events else 1.0, 1e-9
         )
         for quantile in (0.95, 0.98, 0.99, 0.995, 0.999):
-            marked, _ = run(events, quantile=quantile, scope=args.scope)
+            marked, _ = run(events, quantile=quantile, scope=args.scope, floor=floor)
             share = 100 * len(marked) / max(len(events), 1)
             print(
                 f"  {quantile:8.3f} {len(marked):8d} {share:6.2f} {len(marked) / span_weeks:11.1f}"
@@ -223,13 +248,13 @@ def main() -> int:
         events = derive(transitions, window=args.merge, longest=args.longest)
         print("\n  scope       groups   marked   %")
         for scope in RELEVANCE_SCOPES:
-            marked, model = run(events, quantile=args.quantile, scope=scope)
+            marked, model = run(events, quantile=args.quantile, scope=scope, floor=floor)
             share = 100 * len(marked) / max(len(events), 1)
             print(f"  {scope:<10} {len(model.pooled):7d} {len(marked):8d} {share:6.2f}")
         return 0
 
     events = derive(transitions, window=args.merge, longest=args.longest)
-    marked, model = run(events, quantile=args.quantile, scope=args.scope)
+    marked, model = run(events, quantile=args.quantile, scope=args.scope, floor=floor)
     report(events, len(transitions), marked, model, window=args.merge)
     return 0
 

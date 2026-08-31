@@ -38,6 +38,7 @@ from custom_components.reolink_stamina.relevance.rates import (
 )
 from custom_components.reolink_stamina.relevance.score import (
     Score,
+    Term,
     calibrate,
     ready,
     score,
@@ -883,3 +884,79 @@ def test_nothing_first_still_says_so_plainly():
     )
 
     assert term.label == "nothing fired first"
+
+
+# ----------------------------------------------------------------- what it was
+
+
+def _on(camera: str, started_at: float, minute: int, kind: str, duration: float) -> Event:
+    """One event on a named camera, at a stated minute of the day."""
+    return replace(_event(started_at, minute, kind, duration=duration), camera=camera)
+
+
+_BALCONY = "entry1:5"
+
+
+def _mostly_motion(days: int = 180) -> list[Event]:
+    """Return a balcony camera: motion four times a day, a person every tenth day.
+
+    The shape the kind term exists for. Every other term is measured against a profile the
+    kind was used to select, so none of them can say that a person here is rare at all.
+    """
+    events: list[Event] = []
+    for day in range(days):
+        base = _NOW - (days - day) * _DAY
+        for hour in (7, 12, 19, 22):
+            events.append(_on(_BALCONY, base + hour * 3600, hour * 60, "motion", 20.0))
+        if day % 10 == 0:
+            events.append(_on(_BALCONY, base + 19 * 3600, 19 * 60, "person", 8.0))
+    events.sort(key=lambda item: item.started_at)
+    return events
+
+
+def test_a_kind_a_camera_rarely_sees_is_scored_as_such():
+    """The whole point: a person on a motion-only camera is unusual before anything else."""
+    model = build(_mostly_motion(), now=_NOW)
+
+    # Seven in the evening is this camera's busiest hour for both, so the clock cannot be
+    # what separates them. Only the kind can.
+    def kind_term(kind: str, duration: float) -> Term:
+        result = score(_on(_BALCONY, _NOW, 19 * 60, kind, duration), model, previous=None)
+        return next(term for term in result.terms if term.name == "kind")
+
+    person, motion = kind_term("person", 8.0), kind_term("motion", 20.0)
+
+    assert person.contribution > 0 > motion.contribution
+    assert person.label == "Person"
+    assert person.seen == 18
+
+
+def test_the_kind_term_is_skipped_where_a_camera_has_seen_only_one():
+    """Its probability is 1, so it would subtract a constant from every score for ever.
+
+    The same trap the configured signals guard against: a term that cannot vary is not a
+    term, it is an offset, and it moves the line for that camera and nothing else.
+    """
+    events = [_event(_NOW - hour * 3600, 60, "person") for hour in range(300)]
+    model = build(events, now=_NOW)
+
+    terms = score(_event(_NOW, 60, "person"), model, previous=None).terms
+
+    assert not any(term.name == "kind" for term in terms)
+
+
+def test_the_kind_reads_as_a_clause_in_both_positions():
+    """A phrase appended after "and" has to stand up alone; "at all" does not."""
+    events = _mostly_motion()
+    model = build(events, now=_NOW)
+    calibrate(model, events, floor=0.0)
+    names = {_BALCONY: "Balcone Nord"}
+
+    # Leading: at this camera's busiest hour, being a person at all is the whole story.
+    leading = score(_on(_BALCONY, _NOW, 19 * 60, "person", 8.0), model, previous=None, names=names)
+    assert "Person at all on Balcone Nord" in leading.reason
+
+    # Trailing: three in the morning is stranger still, so the kind falls to second place
+    # and has to become a clause of its own.
+    trailing = score(_on(_BALCONY, _NOW, 3 * 60, "person", 8.0), model, previous=None, names=names)
+    assert trailing.reason.endswith("and rarely seen here.")

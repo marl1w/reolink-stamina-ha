@@ -225,6 +225,12 @@ class Profile:
     # against a timezone — and "is anybody home" covers most of what a holiday would say.
     weekend: Categorical = field(default_factory=Categorical)
     day_of_week: Categorical = field(default_factory=Categorical)
+    # What kinds of thing this profile has seen, and in what proportion.
+    #
+    # Only ever read off the per-camera and per-pool profiles, where it is the marginal the
+    # kind term is measured against. On a `(camera, kind)` profile it holds a single category
+    # by construction and says nothing, which is why the scorer never asks it.
+    kinds: Categorical = field(default_factory=Categorical)
     # One distribution per configured signal, keyed by entity id. Added rather than
     # conditioned on: three booleans used as conditions would cut six months of history into
     # three weeks per bucket, while three more terms in a sum cost nothing in sample size.
@@ -291,6 +297,19 @@ class Model:
     def group(self, camera: str) -> str:
         """Return the pool this camera is compared within."""
         return group_key(camera, self.scope)
+
+    def marginal(self, camera: str) -> tuple[Profile, Profile]:
+        """Return what this camera sees regardless of kind, and what its whole pool sees.
+
+        A different chain from `blended`, and deliberately so. Every other term asks "given
+        that this is a person, how odd is the hour" and so must hold the kind fixed; the kind
+        term asks "how odd is a person here at all", which is the one question that cannot be
+        answered from a profile the kind has already been used to select.
+        """
+        return (
+            self.per_camera.get(camera, Profile()),
+            self.pooled.get(self.group(camera), Profile()),
+        )
 
     def blended(self, camera: str, kind: str) -> tuple[Profile, Profile, Profile]:
         """Return the specific profile and the two it backs off to, in order."""
@@ -464,6 +483,7 @@ def build(events: list[Event], *, now: float, scope: str = DEFAULT_RELEVANCE_SCO
             profile.predecessor.add(label, weight)
             profile.weekend.add("weekend" if event.is_weekend else "weekday", weight)
             profile.day_of_week.add(event.day_of_week, weight)
+            profile.kinds.add(event.kind, weight)
             for entity_id, value in event.context:
                 profile.signals.setdefault(entity_id, Categorical()).add(
                     signal_value(entity_id, value, model), weight
