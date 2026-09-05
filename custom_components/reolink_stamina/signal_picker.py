@@ -95,7 +95,7 @@ def async_unhelpful_signals(hass: HomeAssistant) -> list[str]:
     # area: an alarm's area is the house, and that would hide everything in it.
     alarm_children = {
         device.id
-        for device in devices.devices.values()
+        for device in devices.devices
         if device.via_device_id is not None and device.via_device_id in alarms
     }
 

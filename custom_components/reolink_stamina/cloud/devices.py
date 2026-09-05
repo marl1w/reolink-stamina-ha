@@ -22,8 +22,8 @@ def async_nvr_device(hass: HomeAssistant, entry_id: str) -> dr.DeviceEntry | Non
     hanging off the NVR by `via_device`, so the root device is the NVR.
     """
     devices = dr.async_get(hass)
-    for device in devices.devices.values():
-        if device.via_device_id is None and entry_id in device.config_entries:
+    for device in dr.async_entries_for_config_entry(devices, entry_id):
+        if device.via_device_id is None:
             return device
     return None
 
@@ -60,7 +60,7 @@ def async_entry_device_name(hass: HomeAssistant, entry_id: str) -> str | None:
     device too, and this is how it gets named alongside rather than lost.
     """
     devices = dr.async_get(hass)
-    for device in devices.devices.values():
-        if entry_id in device.config_entries:
-            return device.name_by_user or device.name
-    return None
+    device = next(iter(dr.async_entries_for_config_entry(devices, entry_id)), None)
+    if device is None:
+        return None
+    return device.name_by_user or device.name
