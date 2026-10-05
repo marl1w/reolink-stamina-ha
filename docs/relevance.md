@@ -4,8 +4,6 @@
 
 ![Relevance in the timeline](../img/relevance.png)
 
-> **Beta.** It collects, it learns and it marks, from the moment the panel is set up. What it has not had yet is months of real households, which is what the numbers behind it need in order to be right. Reports are the point.
-
 A 24/7 recorder produces hundreds of detections a day, and almost all of them are the same detections it produced yesterday. This tells you which three are worth opening — not by recognising anything, but by counting.
 
 It keeps a record of what each camera normally sees — what kind of thing, at what hour, on what sort of day, for how long. An event is interesting when that combination is rare, and *what kind of thing* is counted in its own right: a person on a camera that only ever sees the wind stands out before the hour is even considered. The cat that crosses the drive at one in the morning every night has told you what normal looks like there; a person doing the same thing has not.

@@ -16,6 +16,10 @@
  * because a setup with six decisions in it is a setup most people get wrong. It means the
  * feature is newer than the rest and has met less hardware, which is worth saying plainly
  * to somebody deciding how much to trust it.
+ *
+ * Nothing carries it at the moment. Learning what is normal, the learned-profile chart and
+ * converted playback all graduated in one go, once a stretch of releases came and went with
+ * no reports against any of them. The flag stays for whatever is new next.
  */
 export const FEATURES = [
   {
@@ -41,7 +45,6 @@ export const FEATURES = [
     tone: "alert",
     icon: "mdi:circle-slice-8",
     title: "Learning what is normal",
-    beta: true,
     text:
       "Marks the few events that are unusual for a camera — by counting, not by " +
       "recognising anything. Stays on this machine, and needs a week or so before it can " +
@@ -54,7 +57,6 @@ export const FEATURES = [
     tone: "motion",
     icon: "mdi:chart-box-outline",
     title: "See what a camera has learned",
-    beta: true,
     text:
       "What a camera has actually counted: when it sees each kind of thing, how long they " +
       "last, what fired before. Also how you spot one that has learned something wrong.",
@@ -64,7 +66,6 @@ export const FEATURES = [
     tone: "animal",
     icon: "mdi:video-switch-outline",
     title: "Playback that works on more browsers",
-    beta: true,
     text:
       "When direct play draws a black window — H.265 on Chrome or Firefox, anything on an " +
       "iPhone — this converts instead. <b>Home Hubs</b> now play and save natively.",

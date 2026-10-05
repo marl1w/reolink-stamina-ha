@@ -94,14 +94,12 @@ test("the copy's markup is only what the dialog renders", () => {
   }
 });
 
-test("the betas are marked as such", () => {
-  // Nothing is off any more, so the mark means "newer, and it has met less hardware" — which
-  // is what somebody deciding how much to trust a feature actually wants to know.
+test("nothing is marked beta once it has graduated", () => {
+  // The mark means "newer, and it has met less hardware". Everything in the list has now met
+  // enough of it, and a tag left on a feature that graduated is a warning nobody can act on.
   const betas = FEATURES.filter((feature) => feature.beta).map((feature) => feature.title);
-  assert.ok(
-    betas.some((title) => title.toLowerCase().includes("normal")),
-    "learning what is normal is a beta and must say so"
-  );
+  assert.deepEqual(betas, [], `still marked beta: ${betas.join(", ")}`);
+  assert.ok(!summarise().includes("beta"), "the summary still talks about betas");
 });
 
 test("the summary counts the list rather than claiming a number", () => {
