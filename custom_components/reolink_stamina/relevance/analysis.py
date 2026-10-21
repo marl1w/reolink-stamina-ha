@@ -4,8 +4,8 @@ Rebuilt from the whole journal rather than updated in place, once a night. That 
 wasteful and is the opposite: a model that is only ever added to can never un-learn a
 constant that turned out to be wrong, whereas one rebuilt from raw transitions picks up a
 changed merge window, a changed bandwidth or a changed bucketing the very next night, across
-every event ever collected. It is a linear pass in plain Python, and it happens while the
-household is asleep.
+every event ever collected. It is a linear pass in plain Python, it happens while the
+household is asleep, and it runs in an executor thread so the event loop never waits on it.
 
 Scoring an event is then a handful of lookups, which is why reads get *cheaper* as history
 grows rather than more expensive.
@@ -26,7 +26,7 @@ from ..const import (
     RELEVANCE_SENSITIVITY_FLOORS,
 )
 from .events import Event, derive
-from .journal import Journal
+from .journal import Journal, Transition
 from .rates import Model, build, preceded
 from .score import Score, calibrate, ready, score
 
@@ -124,10 +124,11 @@ class Analysis:
             self._model, self._events = Model(scope=self._scope), []
             return self._model
 
-        now = time.time()
-        events = derive(self._hass, transitions)
-        model = build(events, now=now, scope=self._scope)
-        calibrate(model, events, floor=self._floor)
+        # Off the event loop. The pass is linear, but linear in months of a busy recorder is
+        # seconds of arithmetic, and it runs at every setup and reload as well as at night.
+        # Nothing in it touches Home Assistant state beyond the configured location the solar
+        # clock reads, which is a plain attribute and safe from any thread.
+        events, model = await self._hass.async_add_executor_job(self._learn, transitions)
 
         self._model, self._events = model, events
         _LOGGER.debug(
@@ -140,6 +141,13 @@ class Analysis:
             self._scope,
         )
         return model
+
+    def _learn(self, transitions: list[Transition]) -> tuple[list[Event], Model]:
+        """Fold transitions into events and learn a model from them, in an executor thread."""
+        events = derive(self._hass, transitions)
+        model = build(events, now=time.time(), scope=self._scope)
+        calibrate(model, events, floor=self._floor)
+        return events, model
 
     def state(self, camera: str) -> str:
         """Return what the panel should say about this camera.

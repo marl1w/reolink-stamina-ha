@@ -217,3 +217,24 @@ async def test_scheduling_replaces_a_previous_registration(hass, journal):
 
     analysis.async_cancel()
     assert analysis._cancel is None
+
+
+async def test_the_rebuild_arithmetic_runs_off_the_event_loop(hass, journal):
+    """Months of a busy recorder is seconds of CPU, and the loop must not wait on it."""
+    import threading
+    from unittest.mock import patch
+
+    from custom_components.reolink_stamina.relevance import analysis as module
+
+    await journal.async_add([*_pair(1000.0)])
+    threads: list[threading.Thread] = []
+    real = module.derive
+
+    def _derive(*args, **kwargs):
+        threads.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    with patch.object(module, "derive", _derive):
+        await Analysis(hass, journal).async_rebuild()
+
+    assert threads and threads[0] is not threading.main_thread()
