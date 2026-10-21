@@ -79,7 +79,8 @@ CONTINUOUS_COVERAGE: Final = 0.7
 # cached records written by an older version are then treated as stale and refetched,
 # instead of silently lacking the new field. Playback needs playback_id, and its absence
 # from records cached before it existed made every clip unplayable.
-FILE_SCHEMA_VERSION: Final = 9
+# 10: start and end restated in the recorder's own DST zone (issue #14).
+FILE_SCHEMA_VERSION: Final = 10
 
 STORAGE_KEY: Final = f"{DOMAIN}.cache"
 STORAGE_VERSION: Final = 1

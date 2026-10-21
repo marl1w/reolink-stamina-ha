@@ -40,6 +40,7 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN, JOURNAL_META_BACKFILLED
 from .ffmpeg import async_ffmpeg_binary
 from .playback_route import async_all_routes
+from .recorder_zone import recorder_zone, rezoned
 from .relevance.backfill import async_retention_days
 from .reolink_registry import async_discover, async_discover_devices, async_get_host
 from .restream import SESSION_PREFIX, async_get_manager
@@ -71,8 +72,12 @@ def _clock(hass: HomeAssistant) -> dict[str, Any]:
         recorder: dict[str, Any] = {"name": device.name, "model": device.model}
         try:
             api = async_get_host(hass, device.entry_id).api
-            tzinfo = api.timezone()
+            # The zone the panel actually uses, not the library's, whose DST dates can be
+            # wrong (issue #14): a report has to describe what the timestamps were built from.
+            tzinfo = recorder_zone(api) or api.timezone()
             device_time = api.time()
+            if device_time is not None:
+                device_time = rezoned(device_time, tzinfo)
             # Named for the moment being reported, not for the zone in the abstract. A
             # recorder's tzinfo prints as its *standard* offset when asked without one --
             # "UTC-05:00" for a device sitting on -04:00 in summer -- which reads as a

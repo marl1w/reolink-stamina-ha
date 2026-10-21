@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .const import CONTINUOUS_COVERAGE, STREAM_MAIN, STREAM_SUB
+from .recorder_zone import recorder_zone, rezoned
 from .reolink_registry import async_get_host
 
 _LOGGER = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ def _file_name(file: Any, playback_time: dt.datetime) -> str:
         return playback_time.strftime("%Y%m%d%H%M%S")
 
 
-def playback_time_is_utc(files: list[Any]) -> bool:
+def playback_time_is_utc(files: list[Any], *, zone: dt.tzinfo | None = None) -> bool:
     """Measure whether the recorder states PlaybackTime in UTC or in its own time.
 
     reolink_aio reads `PlaybackTime` as UTC unconditionally. On the recorders this was
@@ -192,7 +193,7 @@ def playback_time_is_utc(files: list[Any]) -> bool:
         if stated is None:
             continue
         try:
-            start = file.start_time
+            start = rezoned(file.start_time, zone)
             playback = _wall_clock(stated)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
@@ -225,6 +226,7 @@ def serialize_file(
     file: Any,
     *,
     playback_is_utc: bool = True,
+    zone: dt.tzinfo | None = None,
     source_entry_id: str | None = None,
     source_channel: int | None = None,
 ) -> dict[str, Any]:
@@ -244,6 +246,9 @@ def serialize_file(
     `playback_time_is_utc` over a whole search rather than decided per row. It defaults to
     the library's own assumption, which is right far more often than not.
 
+    `zone` is the recorder's own timezone where `recorder_zone` could rebuild it, replacing
+    the one reolink_aio attached: same wall clock, the offset that was actually in force.
+
     A device that does not state PlaybackTime at all is served by StartTime, and safely:
     the field exists to survive splitting, and reolink_aio does not split the recordings of
     a device that is not an NVR -- hubs included, explicitly. Every row from such a device
@@ -259,8 +264,8 @@ def serialize_file(
     written down because the two facts have to keep holding together, and only the second
     of them is enforced anywhere.
     """
-    start = file.start_time
-    end = file.end_time
+    start = rezoned(file.start_time, zone)
+    end = rezoned(file.end_time, zone)
 
     # PlaybackTime is the *file's* start and survives splitting, so it is the only reliable
     # anchor for where this window sits inside the recording. reolink_aio hands it over
@@ -450,11 +455,16 @@ async def async_search_day(
     # Measured over the whole result set, before anything is serialised: telling the two
     # PlaybackTime conventions apart needs the rows that share a recording, and a single
     # row cannot say which convention produced it.
-    playback_is_utc = playback_time_is_utc(vod_files)
+    #
+    # Both read the recordings in the recorder's own zone rather than the library's, whose
+    # DST dates are wrong: see recorder_zone.
+    zone = recorder_zone(host.api)
+    playback_is_utc = playback_time_is_utc(vod_files, zone=zone)
     serialised = [
         serialize_file(
             file,
             playback_is_utc=playback_is_utc,
+            zone=zone,
             source_entry_id=search_entry_id,
             source_channel=search_channel,
         )

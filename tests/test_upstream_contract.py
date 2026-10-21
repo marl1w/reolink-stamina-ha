@@ -290,3 +290,21 @@ def test_installed_reolink_aio_is_the_version_we_pin() -> None:
         f"Tests expect reolink-aio=={SUPPORTED_REOLINK_AIO} but {installed} is "
         f"installed. Fix with: pip install reolink-aio=={SUPPORTED_REOLINK_AIO}"
     )
+
+
+def test_the_recorder_time_settings_are_still_where_we_read_them() -> None:
+    """recorder_zone rebuilds the DST zone from Host._time_settings, a private attribute.
+
+    Should this move, the panel falls back to reolink_aio's own zone, which is the one whose
+    DST dates are wrong (issue #14) -- quietly an hour out for part of the year.
+    """
+    import inspect
+
+    from reolink_aio.api import Host
+    from reolink_aio.typings import Reolink_timezone
+
+    assert "self._time_settings" in inspect.getsource(Host.__init__)
+    assert "_time_settings" in inspect.getsource(Host.timezone)
+    rules = inspect.getsource(Reolink_timezone)
+    for key in ("Mon", "Week", "Weekday", "Hour", "Min", "Sec"):
+        assert f"{{prefix}}{key}" in rules, f"the DST rule no longer carries '{key}'"
